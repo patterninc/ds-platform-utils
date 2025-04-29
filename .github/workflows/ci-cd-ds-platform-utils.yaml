@@ -1,0 +1,139 @@
+name: Publish DS Projen
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  check-version:
+    name: Check Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
+
+      - name: Check version
+        # https://github.com/gnprice/toml-cli
+        run: |
+          VERSION=$(uvx --from=toml-cli toml get --toml-path pyproject.toml project.version)
+          git tag $VERSION
+
+  code-quality-checks:
+    name: Lint, Format, and Static Code Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
+
+      - name: Run pre-commit hooks
+        run: SKIP=no-commit-to-branch ./run lint  # using poethepoet needs to be setup before using poe lint
+
+  build-wheel:
+    name: Build Wheel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
+
+      - name: Build Wheel
+        run: uv build --wheel
+
+      - name: Upload Wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-dist
+          path: ./dist/
+
+  execute-tests:
+    needs:
+      - build-wheel
+    name: Run Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
+
+      # - name: Configure Outerbounds
+      #   run: |-
+      #     uvx outerbounds service-principal-configure \
+      #     --name github-user-ds-projen \
+      #     --deployment-domain pattern.obp.outerbounds.com \
+      #     --perimeter default \
+      #     --github-actions
+
+      - name: Download Wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-dist
+          path: ./dist/
+
+      # Temporarily disabling pytest-coverage in CI to avoid --
+      # coverage.exceptions.DataError: Can't combine branch coverage data with statement data
+      - name: Install Wheel & Run Tests against Wheel
+        run: |
+          uv venv
+          source .venv/bin/activate
+          uv pip install ./dist/*whl
+          uv pip install --group dev
+          COVERAGE_DIR="$(python -c 'import ds_projen; print(ds_projen.__path__[0])')"
+          poe clean
+          poe test --cov="$COVERAGE_DIR" --no-cov
+
+  tag-version:
+    needs: [check-version, code-quality-checks, build-wheel, execute-tests]
+    # if - this is a merge to main or push directly to the main branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Tag Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+
+      - name: Push Version Tag
+        # https://github.com/gnprice/toml-cli
+        run: |
+          VERSION=$(uvx --from=toml-cli toml get --toml-path pyproject.toml project.version)
+          git tag "$VERSION" -m "Release version $VERSION"
+          git push origin "$VERSION"
