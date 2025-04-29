@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 def make_pydantic_parser_fn(pydantic_model: type[BaseModel]) -> Callable[[str], dict]:
-    """Return a function that can be passed to as `parser=` for a Metaflow config.
+    '''Return a function that can be passed to as `parser=` for a Metaflow config.
 
     It is great to use Pydantic models to validate config files for 2 reasons:
 
@@ -23,25 +23,34 @@ def make_pydantic_parser_fn(pydantic_model: type[BaseModel]) -> Callable[[str], 
     from ds_platform_utils.metaflow import make_pydantic_parser_fn
 
     class PydanticFlowConfig(BaseModel):
+        """Validate and provide autocompletion for values in the config file."""
 
-        n_rows: int = Field(..., ge=1)
+        n_rows: int = Field(ge=1)
 
 
     @pypi_base(
         python="3.11",
-        packages={}
+        packages={
+            "git+https://github.com/patterninc/ds-platform-utils.git": "@main"
+        }
     )
     @project(name="ds_projen")
     class PydanticFlow(FlowSpec):
-        '''A sample flow.'''
+        """A sample flow."""
 
         config: PydanticFlowConfig = Config(
             name="config",
-            default="./configs/default.toml",
+            default="./configs/default.yaml",
             parser=make_pydantic_parser_fn(PydanticFlowConfig)
         ) # type: ignore[assignment]
+
+        @step
+        def start(self):
+            """Start step."""
+            print(f"{self.config.n_rows=}")
+            self.next(self.end)
     ```
-    """
+    '''
 
     def _parse_config(config_txt: str) -> dict:
         # Try to parse the config as JSON

@@ -1,7 +1,9 @@
-from pydantic import BaseModel, Field
+import textwrap
+
 import pydantic
 import pytest
-import textwrap
+from pydantic import BaseModel, Field
+
 from ds_platform_utils.metaflow import make_pydantic_parser_fn
 
 
@@ -13,13 +15,13 @@ class TestConfig(BaseModel):
 
 def test_valid_json():
     parser = make_pydantic_parser_fn(TestConfig)
-    config = parser('''
+    config = parser("""
         {
             "name": "test_json",
             "value": 42,
             "optional_field": "custom"
         }
-    ''')
+    """)
     assert config["name"] == "test_json"
     assert config["value"] == 42
     assert config["optional_field"] == "custom"
