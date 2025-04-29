@@ -1,5 +1,6 @@
 import uuid
 from typing import Any
+
 from snowflake.connector.connection import SnowflakeConnection
 
 PROD_SCHEMA = "DATA_SCIENCE"
@@ -132,14 +133,14 @@ def publish(
 
     # Create target table if it doesn't exist by cloning branch table
     create_target = f"""
-    CREATE TABLE IF NOT EXISTS PATTERN_DB.{to_schema}.{table_name} 
+    CREATE TABLE IF NOT EXISTS PATTERN_DB.{to_schema}.{table_name}
     CLONE PATTERN_DB.{from_schema}.{branch_table};
     """
     run_query(query=create_target, conn=conn)
 
     # Perform the swap
     swap_query = f"""
-    ALTER TABLE PATTERN_DB.{to_schema}.{table_name} 
+    ALTER TABLE PATTERN_DB.{to_schema}.{table_name}
     SWAP WITH PATTERN_DB.{from_schema}.{branch_table};
     """
     run_query(query=swap_query, conn=conn)
@@ -171,7 +172,7 @@ if __name__ == "__main__":
     query = """
     -- First temp table: extract raw data and filter
     create or replace temp table PATTERN_DB.{schema}._TEMP_POKEMON_RAW as
-    select 
+    select
         pokemon_name,
         pokedex_id,
         age,
@@ -196,7 +197,7 @@ if __name__ == "__main__":
 
     -- Final table: create the published dataset
     create table PATTERN_DB.{schema}.{table_name} as
-    select 
+    select
         pokemon_name,
         pokedex_id,
         age,
