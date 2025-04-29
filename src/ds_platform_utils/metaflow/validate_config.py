@@ -2,6 +2,7 @@ import json
 from typing import Callable
 
 import tomllib
+import yaml
 from pydantic import BaseModel
 
 
@@ -50,8 +51,15 @@ def make_pydantic_parser_fn(pydantic_model: type[BaseModel]) -> Callable[[str], 
             # If JSON parsing fails, try to parse as TOML
             try:
                 cfg = tomllib.loads(config_txt)
-            except tomllib.TOMLDecodeError as e:
-                raise ValueError("Config parsing failed. Ensure it is valid JSON or TOML.") from e
+            except tomllib.TOMLDecodeError:
+                # If TOML parsing fails, try to parse as YAML
+                try:
+                    cfg = yaml.safe_load(config_txt)
+                except yaml.YAMLError as e:
+                    raise ValueError(
+                        "Config parsing failed. Ensure it is valid JSON, TOML, or YAML."
+                        "YAML is preferred because it supports comments."
+                    ) from e
 
         pydantic_model.model_validate(cfg)
 

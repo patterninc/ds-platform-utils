@@ -3,14 +3,13 @@ name = "ds-platform-utils"
 version = "0.0.0"
 description = "Add your description here"
 readme = "README.md"
-authors = [
-    { name = "avr2002", email = "avr13405@gmail.com" }
-]
-requires-python = ">=3.7"
+authors = []
+# requires-python = ">=3.7"
 dependencies = [
     "outerbounds",
     "pydantic>=2",
     "snowflake-connector-python>=3",
+    "PyYAML",
 ]
 
 [dependency-groups]
