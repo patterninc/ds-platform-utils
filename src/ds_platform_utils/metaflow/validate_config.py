@@ -1,7 +1,7 @@
 import json
-import tomllib
 from typing import Callable
 
+import tomllib
 from pydantic import BaseModel
 
 
