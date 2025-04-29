@@ -1,3 +1,4 @@
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -33,7 +34,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     audits = audits or []
 
     query = get_query_from_string_or_fpath(query)
-    audits = [get_query_from_string_or_fpath(audit.strip()) for audit in audits if audit.strip()]
+    audits = [get_query_from_string_or_fpath(audit) for audit in audits]
 
     if ctx:
         if "schema" in ctx:
@@ -79,15 +80,18 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
 
 
 def run_query(
-    query: str, conn: SnowflakeConnection | None = None, multi: bool = True
+    query: str,
+    conn: SnowflakeConnection | None = None,
+    multi: bool = True,
 ) -> list[tuple[Any, ...]] | list[dict[Any, Any]]:
     """Execute a query and return results.
 
     :param query: SQL query to execute or print
     :param conn: Snowflake connection. If None, prints query instead of executing
+    :param multi: set this to true if there are multiple sql statements in the query
     """
     # for debugging: just print the queries rather than run them
-    if conn is None:
+    if conn is None or "DEBUG_QUERY" in os.environ.keys():
         # imports are nested here so that rich can be a 'dev' dependency;
         # this way 'rich' is not installed into flows that use this library
         # thus reducing the number of dependencies this utils library adds
@@ -181,9 +185,11 @@ def get_query_from_string_or_fpath(query_str_or_fpath: str | Path) -> str:
     :param query_str_or_fpath: SQL query string or path to a .sql file
     :return: The SQL query as a string
     """
-    if isinstance(query_str_or_fpath, Path) or query_str_or_fpath.endswith(".sql"):
+    stripped_query = str(query).strip()
+    query_is_file_path = isinstance(query_str_or_fpath, Path) or stripped_query.endswith(".sql")
+    if query_is_file_path:
         return Path(query_str_or_fpath).read_text()
-    return query_str_or_fpath
+    return stripped_query
 
 
 if __name__ == "__main__":
