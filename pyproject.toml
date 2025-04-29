@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "outerbounds>=0.3.159",
     "pyarrow>=20.0.0",
+    "pydantic>=2",
     "snowflake-connector-python>=3.15.0",
 ]
 
