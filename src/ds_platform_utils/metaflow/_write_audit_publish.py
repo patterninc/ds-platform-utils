@@ -185,7 +185,7 @@ def get_query_from_string_or_fpath(query_str_or_fpath: str | Path) -> str:
     :param query_str_or_fpath: SQL query string or path to a .sql file
     :return: The SQL query as a string
     """
-    stripped_query = str(query).strip()
+    stripped_query = str(query_str_or_fpath).strip()
     query_is_file_path = isinstance(query_str_or_fpath, Path) or stripped_query.endswith(".sql")
     if query_is_file_path:
         return Path(query_str_or_fpath).read_text()
