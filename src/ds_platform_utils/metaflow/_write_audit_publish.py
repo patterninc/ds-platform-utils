@@ -78,7 +78,9 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         )
 
 
-def run_query(query: str, conn: SnowflakeConnection | None = None) -> list[tuple[Any, ...]] | list[dict[Any, Any]]:
+def run_query(
+    query: str, conn: SnowflakeConnection | None = None, multi: bool = True
+) -> list[tuple[Any, ...]] | list[dict[Any, Any]]:
     """Execute a query and return results.
 
     :param query: SQL query to execute or print
@@ -98,8 +100,11 @@ def run_query(query: str, conn: SnowflakeConnection | None = None) -> list[tuple
         console.print(syntax)
         return []
 
+    if multi:
+        conn.execute_string(query)
+        return []
+
     with conn.cursor() as cur:
-        cur.execute(query)
         try:
             return cur.fetchall()
         except Exception:  # snowflake returns exception when no results
@@ -120,7 +125,7 @@ def audit(table_name: str, schema: str, audits: list[str], conn: SnowflakeConnec
 
     for i, audit_query in enumerate(audits, 1):
         formatted_query = audit_query.replace("{schema}", schema).replace("{table_name}", table_name)
-        results = run_query(query=formatted_query, conn=conn)
+        results = run_query(query=formatted_query, conn=conn, multi=False)
 
         # Check if all boolean columns in the result are True
         if not all(bool(col) for row in results for col in row):
