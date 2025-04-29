@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 from typing import Any
 
 from snowflake.connector.connection import SnowflakeConnection
@@ -10,7 +11,7 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
     query: str,
-    audits: list[str],
+    audits: list[str] | None = None,
     conn: SnowflakeConnection | None = None,
     is_production: bool = False,
     is_test: bool = False,
@@ -28,6 +29,11 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     """
     audit_schema = NON_PROD_SCHEMA
     publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+
+    audits = audits or []
+
+    query = get_query_from_string_or_fpath(query)
+    audits = [get_query_from_string_or_fpath(audit.strip()) for audit in audits if audit.strip()]
 
     if ctx:
         if "schema" in ctx:
@@ -162,6 +168,17 @@ def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
             return f"{{{key}}}"
 
     return string.format_map(SafeDict(values))
+
+
+def get_query_from_string_or_fpath(query_str_or_fpath: str | Path) -> str:
+    """Get the SQL query from a string or file path.
+
+    :param query_str_or_fpath: SQL query string or path to a .sql file
+    :return: The SQL query as a string
+    """
+    if isinstance(query_str_or_fpath, Path) or query_str_or_fpath.endswith(".sql"):
+        return Path(query_str_or_fpath).read_text()
+    return query_str_or_fpath
 
 
 if __name__ == "__main__":
