@@ -10,8 +10,8 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
-    query: str,
-    audits: list[str] | None = None,
+    query: str | Path,
+    audits: list[str | Path] | None = None,
     conn: SnowflakeConnection | None = None,
     is_production: bool = False,
     is_test: bool = False,

@@ -5,12 +5,15 @@ from metaflow import Snowflake, current
 
 from ._write_audit_publish import write_audit_publish
 
+# an integration with this name exists both in the default and prod perimeters
+SNOWFLAKE_INTEGRATION = "snowflake-default"
+
 
 def publish(
     table_name: str,
     query: str | Path,
-    audits: list[str],
-    ctx: dict[str, Any],
+    audits: list[str | Path] | None = None,
+    ctx: dict[str, Any] | None = None,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection.
 
@@ -21,7 +24,7 @@ def publish(
     :param audits: List of SQL audit queries with boolean checks
     :param is_test: When True, adds test suffix to avoid name conflicts
     """
-    with Snowflake(integration="snowflake-default") as conn:
+    with Snowflake(integration=SNOWFLAKE_INTEGRATION) as conn:
         write_audit_publish(
             table_name=table_name,
             query=query,
