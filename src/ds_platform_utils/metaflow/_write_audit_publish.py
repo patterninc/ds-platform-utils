@@ -17,24 +17,34 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     is_production: bool = False,
     is_test: bool = False,
     ctx: dict[str, Any] | None = None,
+    branch_name: str | None = None,
 ) -> None:
-    """Write table with audit checks and optional production promotion.
-
-    :param table_name: Name of the singular table created by the query
-    :param query: SQL query containing {schema} and {table_name} placeholders
-    :param audits: List of SQL queries that perform boolean checks
-    :param conn: Snowflake connection. If None, prints queries instead of executing
-    :param is_production: When True, writes to DATA_SCIENCE schema
-    :param is_test: When True, adds test suffix to avoid name conflicts
-    :param ctx: Context dictionary for substituting variables in query and audits
-    """
+    """Write table with audit checks and optional production promotion."""
+    # gather inputs
     audit_schema = NON_PROD_SCHEMA
     publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
-
     audits = audits or []
+    query: str = get_query_from_string_or_fpath(query)
+    audits: list[str] = [get_query_from_string_or_fpath(audit) for audit in audits]
 
-    query = get_query_from_string_or_fpath(query)
-    audits = [get_query_from_string_or_fpath(audit) for audit in audits]
+    # validate inputs
+    if "{schema}.{table_name}" not in query:
+        raise ValueError(
+            "You must use the literal string '{schema}.{table_name}' in your query to "
+            "select the table you are writing to, so that the publish() function "
+            "can dynamically substitute values into these to perform the write-audit-publish"
+            "pattern.\n\n"
+            f"Query:\n{query[:100]}"
+        )
+
+    for i, audit_query in enumerate(audits, 1):
+        if "{schema}.{table_name}" not in audit_query:
+            raise ValueError(
+                f"The audit query at index {i} must use the literal string '{{schema}}.{{table_name}}' to "
+                "reference the table being audited, so that the audit() function can dynamically "
+                "substitute values into these to perform the checks.\n\n"
+                f"Audit query:\n{audit_query[:100]}"
+            )
 
     if ctx:
         if "schema" in ctx:
@@ -45,12 +55,12 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         audits = [substitute_map_into_string(audit, ctx) for audit in audits]
 
     # Generate unique branch name
-    branch_name = str(uuid.uuid4())[:8]
+    branch_name = branch_name or str(uuid.uuid4())[:8]
     if is_test:
         branch_name += "_test"
 
     try:
-        branch_table = write(
+        branch_table_name = write(
             table_name=table_name,
             query=query,
             branch_name=branch_name,
@@ -58,7 +68,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
             conn=conn,
         )
         audit(
-            table_name=branch_table,
+            table_name=branch_table_name,
             schema=audit_schema,
             audits=audits,
             conn=conn,
