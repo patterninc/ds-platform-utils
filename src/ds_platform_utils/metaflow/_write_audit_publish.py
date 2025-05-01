@@ -1,12 +1,14 @@
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Generator, Literal
+from dataclasses import dataclass
 
 from snowflake.connector.connection import SnowflakeConnection
 
 PROD_SCHEMA = "DATA_SCIENCE"
 NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
+
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -18,7 +20,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     is_test: bool = False,
     ctx: dict[str, Any] | None = None,
     branch_name: str | None = None,
-) -> None:
+) -> Generator["SQLOperation", None, None]:
     """Write table with audit checks and optional production promotion."""
     # gather inputs
     audit_schema = NON_PROD_SCHEMA
@@ -59,28 +61,37 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     branch_name = branch_name or str(uuid.uuid4())[:8]
     if is_test:
         branch_name += "_test"
+    branch_table_name = f"{table_name}_{branch_name}"
 
     try:
-        branch_table_name = write(
-            table_name=table_name,
+        # Write
+        for op in write(
             query=query,
-            branch_name=branch_name,
+            branch_table_name=branch_table_name,
             schema=audit_schema,
             conn=conn,
-        )
-        audit(
+        ):
+            yield op
+
+        # Audit
+        for op in audit(
             table_name=branch_table_name,
             schema=audit_schema,
             audits=audits,
             conn=conn,
-        )
-        publish(
+        ):
+            yield op
+
+        # Publish
+        for op in publish(
             table_name=table_name,
             branch_name=branch_name,
             from_schema=audit_schema,
             to_schema=publish_schema,
             conn=conn,
-        )
+        ):
+            yield op
+
     finally:
         cleanup(
             table_name=table_name,
@@ -90,90 +101,167 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         )
 
 
+@dataclass
+class SQLOperation:
+    """SQL operation details."""
+    
+    query: str
+    schema: str
+    table_name: str
+    operation_type: Literal["write", "audit", "publish"]
+
+@dataclass
+class AuditSQLOperation(SQLOperation):
+    """SQL operation details for audits, including results."""
+
+    results: list[dict[str, Any]]
+
 def run_query(
     query: str,
     conn: SnowflakeConnection | None = None,
     multi: bool = True,
-) -> list[tuple[Any, ...]] | list[dict[Any, Any]]:
-    """Execute a query and return results.
+) -> tuple[tuple[Any, ...] | None, list[str]]:
+    """Execute a query and return a single result row and column names.
 
     :param query: SQL query to execute or print
     :param conn: Snowflake connection. If None, prints query instead of executing
     :param multi: set this to true if there are multiple sql statements in the query
     """
-    try:
-        # imports are nested here so that rich can be a 'dev' dependency;
-        # this way 'rich' is not installed into flows that use this library
-        # thus reducing the number of dependencies this utils library adds
-        # to the flows that use it.
-        from rich.console import Console
-        from rich.syntax import Syntax
-
-        console = Console()
-        syntax = Syntax(query, "sql", theme="monokai", line_numbers=True)
-        console.print(syntax)
-    except ImportError:
-        print(query)
+    if os.getenv("DEBUG_QUERY"):
+        try:
+            from rich.console import Console
+            from rich.syntax import Syntax
+            console = Console()
+            syntax = Syntax(query, "sql", theme="monokai", line_numbers=True)
+            console.print(syntax)
+        except ImportError:
+            print(query)
 
     if multi:
-        print("in multi")
         conn.execute_string(query)
-        return []
+        return None, []
 
     with conn.cursor() as cur:
-        print("in single")
-        cur.execute(query)  # Add this line to execute the query
-        return cur.fetchall()
+        cur.execute(query)
+        result = cur.fetchone()
+        column_names = [col[0] for col in (cur.description or [])]
+        return result, column_names
 
 
-def write(table_name: str, query: str, branch_name: str, schema: str, conn: SnowflakeConnection | None = None) -> str:
-    """Write table to a temporary branch table."""
-    branch_table = f"{table_name}_{branch_name}"
-    formatted_query = query.replace("{schema}", schema).replace("{table_name}", branch_table)
+def write(
+    query: str, 
+    branch_table_name: str,
+    schema: str,
+    conn: SnowflakeConnection | None = None
+) -> Generator[SQLOperation, None, None]:
+    """Write table to a temporary branch table.
+    
+    :param query: SQL query to execute
+    :param branch_table_name: Full name of the temporary branch table
+    :param schema: Schema to write to
+    :param conn: Optional Snowflake connection
+    """
+    formatted_query = substitute_map_into_string(query, {"schema": schema, "table_name": branch_table_name})
+    
+    # Yield write operation
+    yield SQLOperation(
+        query=formatted_query,
+        schema=schema,
+        table_name=branch_table_name,
+        operation_type="write"
+    )
+    
     run_query(query=formatted_query, conn=conn)
-    return branch_table
 
 
-def audit(table_name: str, schema: str, audits: list[str], conn: SnowflakeConnection | None = None) -> None:
+def audit(
+    table_name: str,
+    schema: str, 
+    audits: list[str],
+    conn: SnowflakeConnection | None = None
+) -> Generator[SQLOperation, None, list[dict[str, Any]]]:
     """Run audit queries and raise error if any fail."""
     failed_audits = []
+    results = []
 
     for i, audit_query in enumerate(audits, 1):
-        formatted_query = substitute_map_into_string(audit_query, {"schema": schema, "table_name": table_name})
-        results = run_query(query=formatted_query, conn=conn, multi=False)
+        formatted_query = substitute_map_into_string(
+            audit_query, 
+            {"schema": schema, "table_name": table_name}
+        )
+        
+        row, columns = run_query(query=formatted_query, conn=conn, multi=False)
+        
+        # Convert row to dict with column names
+        if conn and row:
+            result_dict = {columns[i]: value for i, value in enumerate(row)}
+        else:
+            result_dict = {"mock_col": "mock_val"}  # For when conn is None
+            
+        results.append({"query": formatted_query, "results": result_dict})
+        
+        yield AuditSQLOperation(
+            query=formatted_query,
+            schema=schema,
+            table_name=table_name,
+            results=result_dict,
+            operation_type="audit",
+        )
 
-        print(f"Audit #{i} results for {schema}.{table_name}: {results}")
-
-        # Check if all boolean columns in the result are True
-        if not all(bool(col) for row in results for col in row):
+        if not all(bool(v) for v in result_dict.values()):
             failed_audits.append(f"Audit #{i}")
 
     if failed_audits:
-        raise AssertionError(f"Audits failed for {schema}.{table_name}: {', '.join(failed_audits)}")
+        raise AssertionError(
+            f"Audits failed for {schema}.{table_name}: {', '.join(failed_audits)}"
+        )
+    
+    return results
 
 
 def publish(
-    table_name: str, branch_name: str, from_schema: str, to_schema: str, conn: SnowflakeConnection | None = None
-) -> None:
-    """Promote branch table to final table using SWAP."""
+    table_name: str,
+    branch_name: str,
+    from_schema: str,
+    to_schema: str,
+    conn: SnowflakeConnection | None = None
+) -> Generator[SQLOperation, None, None]:
+    """Promote branch table to final table using SWAP.
+    
+    :param table_name: Name of the final table
+    :param branch_name: Name of the branch/temporary table
+    :param from_schema: Source schema containing the branch table
+    :param to_schema: Target schema for the final table
+    :param conn: Optional Snowflake connection
+    """
     branch_table = f"{table_name}_{branch_name}"
-    print(f"Publishing {from_schema}.{branch_table} to {to_schema}.{table_name}")
-
-    # Create target table if it doesn't exist by cloning branch table
-    # NOTE: "CLONE" is a "zero-copy" operation in Snowflake--it only copies metadata about the table
-    # and saves a pointer to a snapshot. It does not actually copy the data. Cheap. Fast.
-    # docs on CLONE: https://docs.snowflake.com/en/sql-reference/sql/create-clone
-    create_target = f"""
+    
+    # Create target table if doesn't exist
+    create_query = f"""
     CREATE TABLE IF NOT EXISTS PATTERN_DB.{to_schema}.{table_name}
     CLONE PATTERN_DB.{from_schema}.{branch_table};
     """
-    run_query(query=create_target, conn=conn, multi=False)
+    create_op = SQLOperation(
+        query=create_query,
+        schema=to_schema,
+        table_name=table_name,
+        operation_type="publish"
+    )
+    yield create_op
+    run_query(query=create_query, conn=conn, multi=False)
 
-    # Perform the swap
+    # Perform swap
     swap_query = f"""
-    ALTER TABLE PATTERN_DB.{to_schema}.{table_name}
+    ALTER TABLE PATTERN_DB.{to_schema}.{table_name} 
     SWAP WITH PATTERN_DB.{from_schema}.{branch_table};
     """
+    swap_op = SQLOperation(
+        query=swap_query,
+        schema=to_schema,
+        table_name=table_name,
+        operation_type="publish"
+    )
+    yield swap_op
     run_query(query=swap_query, conn=conn, multi=False)
 
 
@@ -274,11 +362,12 @@ if __name__ == "__main__":
 
     # For demonstration, using None as context
     # In real usage, this would be a Snowflake connection
-    write_audit_publish(
+    for step in write_audit_publish(
         table_name=table_name,
         query=query,
         audits=audits,
         is_production=False,  # Set to True for production deployment
         is_test=True,  # Using test mode to see table names
         conn=None,  # Would be snowflake.connector.connect() in practice
-    )
+    ):
+        print(step)
