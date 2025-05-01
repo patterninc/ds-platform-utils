@@ -24,8 +24,8 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     audit_schema = NON_PROD_SCHEMA
     publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
     audits = audits or []
-    query: str = get_query_from_string_or_fpath(query)
-    audits: list[str] = [get_query_from_string_or_fpath(audit) for audit in audits]
+    query = get_query_from_string_or_fpath(query)
+    audits = [get_query_from_string_or_fpath(audit) for audit in audits]
 
     # validate inputs
     if "{schema}.{table_name}" not in query:
@@ -38,7 +38,8 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         )
 
     for i, audit_query in enumerate(audits, 1):
-        if "{schema}.{table_name}" not in audit_query:
+        audit_query = str(audit_query)
+        if "{schema}.{table_name}" not in str(audit_query):
             raise ValueError(
                 f"The audit query at index {i} must use the literal string '{{schema}}.{{table_name}}' to "
                 "reference the table being audited, so that the audit() function can dynamically "
@@ -100,8 +101,7 @@ def run_query(
     :param conn: Snowflake connection. If None, prints query instead of executing
     :param multi: set this to true if there are multiple sql statements in the query
     """
-    # for debugging: just print the queries rather than run them
-    if conn is None or "DEBUG_QUERY" in os.environ.keys():
+    try:
         # imports are nested here so that rich can be a 'dev' dependency;
         # this way 'rich' is not installed into flows that use this library
         # thus reducing the number of dependencies this utils library adds
@@ -112,17 +112,18 @@ def run_query(
         console = Console()
         syntax = Syntax(query, "sql", theme="monokai", line_numbers=True)
         console.print(syntax)
-        return []
+    except ImportError:
+        print(query)
 
     if multi:
+        print("in multi")
         conn.execute_string(query)
         return []
 
     with conn.cursor() as cur:
-        try:
-            return cur.fetchall()
-        except Exception:  # snowflake returns exception when no results
-            return []
+        print("in single")
+        cur.execute(query)  # Add this line to execute the query
+        return cur.fetchall()
 
 
 def write(table_name: str, query: str, branch_name: str, schema: str, conn: SnowflakeConnection | None = None) -> str:
@@ -138,8 +139,10 @@ def audit(table_name: str, schema: str, audits: list[str], conn: SnowflakeConnec
     failed_audits = []
 
     for i, audit_query in enumerate(audits, 1):
-        formatted_query = audit_query.replace("{schema}", schema).replace("{table_name}", table_name)
+        formatted_query = substitute_map_into_string(audit_query, {"schema": schema, "table_name": table_name})
         results = run_query(query=formatted_query, conn=conn, multi=False)
+
+        print(f"Audit #{i} results for {schema}.{table_name}: {results}")
 
         # Check if all boolean columns in the result are True
         if not all(bool(col) for row in results for col in row):
@@ -157,18 +160,21 @@ def publish(
     print(f"Publishing {from_schema}.{branch_table} to {to_schema}.{table_name}")
 
     # Create target table if it doesn't exist by cloning branch table
+    # NOTE: "CLONE" is a "zero-copy" operation in Snowflake--it only copies metadata about the table
+    # and saves a pointer to a snapshot. It does not actually copy the data. Cheap. Fast.
+    # docs on CLONE: https://docs.snowflake.com/en/sql-reference/sql/create-clone
     create_target = f"""
     CREATE TABLE IF NOT EXISTS PATTERN_DB.{to_schema}.{table_name}
     CLONE PATTERN_DB.{from_schema}.{branch_table};
     """
-    run_query(query=create_target, conn=conn)
+    run_query(query=create_target, conn=conn, multi=False)
 
     # Perform the swap
     swap_query = f"""
     ALTER TABLE PATTERN_DB.{to_schema}.{table_name}
     SWAP WITH PATTERN_DB.{from_schema}.{branch_table};
     """
-    run_query(query=swap_query, conn=conn)
+    run_query(query=swap_query, conn=conn, multi=False)
 
 
 def cleanup(table_name: str, branch_name: str, schema: str, conn: SnowflakeConnection | None = None) -> None:

@@ -17,7 +17,11 @@ def publish(
     warehouse: str | None = None,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    with Snowflake(integration=SNOWFLAKE_INTEGRATION, warehouse=warehouse) as conn:
+    snowflake_kwargs = {"integration": SNOWFLAKE_INTEGRATION}
+    if warehouse is not None:
+        snowflake_kwargs["warehouse"] = warehouse
+
+    with Snowflake(**snowflake_kwargs) as conn:
         write_audit_publish(
             table_name=table_name,
             query=query,
