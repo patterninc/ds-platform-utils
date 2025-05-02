@@ -14,7 +14,7 @@ def publish_pandas(
     table_name: str,
     df: pd.DataFrame,
     conn: SnowflakeConnection,
-    is_production: bool = False,  # Should be use if current.is_production instead of passing this param?
+    is_production: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
