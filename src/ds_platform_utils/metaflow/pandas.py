@@ -3,11 +3,13 @@ from typing import Literal, Optional, Union
 
 import pandas as pd
 import pyarrow
-from metaflow import Snowflake, current
 from snowflake.connector.pandas_tools import write_pandas
 
+from ds_platform_utils._snowflake.write_audit_publish import (
+    get_query_from_string_or_fpath,
+)
 from ds_platform_utils.consts import NON_PROD_SCHEMA, PROD_SCHEMA, SNOWFLAKE_INTEGRATION
-from ds_platform_utils.snowflake.write_audit_publish import get_query_from_string_or_fpath
+from metaflow import Snowflake, current
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -59,7 +61,9 @@ def fetch_pandas_from_snowflake(query: Union[str, Path]) -> pd.DataFrame:
     query = get_query_from_string_or_fpath(query)
     with Snowflake(integration=SNOWFLAKE_INTEGRATION) as conn:
         # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
-        result: pyarrow.Table = conn.cursor().execute(query).fetch_arrow_all(force_return_table=True)
+        result: pyarrow.Table = (
+            conn.cursor().execute(query).fetch_arrow_all(force_return_table=True)
+        )
         if not result:
             raise ValueError("Query returned no results")
 

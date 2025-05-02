@@ -2,9 +2,9 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator, List, Literal, Optional, Union
+from typing import Any, Generator, Literal, Optional, Union
 
-from snowflake.connector.connection import SnowflakeConnection
+from snowflake.connector.cursor import SnowflakeCursor
 
 PROD_SCHEMA = "DATA_SCIENCE"
 NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
@@ -12,9 +12,9 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
-    query: Union[str, Path],
-    audits: Optional[List[Union[str, Path]]] = None,
-    conn: Optional[SnowflakeConnection] = None,
+    query: str | Path,
+    audits: list[str | Path] | None = None,
+    cursor: SnowflakeCursor | None = None,
     is_production: bool = False,
     is_test: bool = False,
     ctx: Optional[dict[str, Any]] = None,
@@ -22,6 +22,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
 ) -> Generator["SQLOperation", None, None]:
     """Write table with audit checks and optional production promotion.
 
+    :param cursor: Snowflake cursor for executing queries
     :param audits: SQL queries that return a single row of boolean values representing assertions
         against PATTERN_DB.{schema}.{table_name}. If len(audits) == 0, write-audit-publish is not
         performed and the query is simply run against the final table.
@@ -71,11 +72,9 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         for op in write(
             query=query,
             table_name=table_name,
-            # write() writes to the branch table; in this case, we we want to want to write
-            # directly to the final table, so we set the final table name as the branch table name
             branch_table_name=table_name,
             schema=publish_schema,
-            conn=conn,
+            cursor=cursor,
             skip_clone_branch=True,  # Skip cloning since we're not auditing
         ):
             yield op
@@ -85,7 +84,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
             table_name=table_name,
             query=query,
             audits=audits,
-            conn=conn,
+            cursor=cursor,
             is_production=is_production,
             is_test=is_test,
             branch_name=branch_name,
@@ -97,7 +96,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
     table_name: str,
     query: str,
     audits: list[str],
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
     is_production: bool = False,
     is_test: bool = False,
     branch_name: Optional[str] = None,
@@ -121,7 +120,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
             table_name=table_name,  # Add this parameter
             branch_table_name=branch_table_name,
             schema=audit_schema,
-            conn=conn,
+            cursor=cursor,
         ):
             yield op
 
@@ -129,7 +128,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
             table_name=branch_table_name,
             schema=audit_schema,
             audits=audits,
-            conn=conn,
+            cursor=cursor,
         ):
             yield op
 
@@ -138,7 +137,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
             branch_name=branch_name,
             from_schema=audit_schema,
             to_schema=publish_schema,
-            conn=conn,
+            cursor=cursor,
         ):
             yield op
 
@@ -147,7 +146,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
             table_name=table_name,
             branch_name=branch_name,
             schema=audit_schema,
-            conn=conn,
+            cursor=cursor,
         )
 
 
@@ -168,46 +167,68 @@ class AuditSQLOperation(SQLOperation):
     results: dict[str, Any]
 
 
-def run_query(
-    query: str,
-    conn: Optional[SnowflakeConnection] = None,
-    multi: bool = True,
-) -> Optional[dict[str, Any]]:
-    """Execute a query and return results as a dictionary of column names to values.
-
-    :param query: SQL query to execute or print
-    :param conn: Snowflake connection. If None, prints query instead of executing
-    :param multi: set this to true if there are multiple sql statements in the query
-    """
+def _debug_print_query(query: str) -> None:
+    """Print query if DEBUG_QUERY env var is set."""
     if os.getenv("DEBUG_QUERY"):
-        try:
-            from rich.console import Console
-            from rich.syntax import Syntax
+        print("\n=== DEBUG SQL QUERY ===")
+        print(query)
+        print("=====================\n")
 
-            console = Console()
-            syntax = Syntax(query, "sql", theme="monokai", line_numbers=True)
-            console.print(syntax)
-        except ImportError:
-            print(query)
 
-    if conn is None:
+def _count_sql_statements(query: str) -> int:
+    """Count the number of SQL statements in a query string.
+
+    :param query: SQL query string, potentially containing multiple statements
+    :return: Number of statements found
+
+    Statements are expected to be separated by semicolons, but the last statement
+    may not have a trailing semicolon.
+    """
+    # Add trailing semicolon if missing to ensure last statement is counted
+    if not query.strip().endswith(";"):
+        query = query.strip() + ";"
+
+    # Split on semicolons and filter out empty/whitespace-only statements
+    statements = [s.strip() for s in query.split(";")]
+    return len([s for s in statements if s])
+
+
+def run_query(query: str, cursor: SnowflakeCursor | None = None) -> None:
+    """Execute one or more SQL statements.
+
+    :param query: SQL query or queries to execute. Multiple statements must be separated by semicolons.
+    :param cursor: Snowflake cursor. If None, prints query instead of executing
+    """
+    _debug_print_query(query)
+
+    if cursor is None:
         print(f"Would execute query:\n{query}")
-        if multi:
-            return None
-        return {"mock_result": True}  # Return mock successful audit result
+        return
 
-    if multi:
-        conn.execute_string(query)
-        return None
+    # Count statements so we can tell Snowflake exactly how many to expect
+    num_statements = _count_sql_statements(query)
+    cursor.execute(query, num_statements=num_statements)
+    cursor.connection.commit()
 
-    with conn.cursor() as cur:
-        cur.execute(query)
-        result = cur.fetchone()
-        if not result:
-            return {}
 
-        column_names = [col[0] for col in (cur.description or [])]
-        return dict(zip(column_names, result))
+def run_audit_query(query: str, cursor: SnowflakeCursor | None = None) -> dict[str, Any]:
+    """Execute a single audit query and return results.
+
+    :param query: SQL query that returns a single row of boolean values
+    :param cursor: Snowflake cursor. If None, returns mock successful result
+    """
+    _debug_print_query(query)
+
+    if cursor is None:
+        return {"mock_result": True}
+
+    cursor.execute(query)
+    result = cursor.fetchone()
+    if not result:
+        return {}
+
+    column_names = [col[0] for col in (cursor.description or [])]
+    return dict(zip(column_names, result))
 
 
 def fetch_table_preview(
@@ -215,7 +236,7 @@ def fetch_table_preview(
     database: str,
     schema: str,
     table_name: str,
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch a preview of n rows from a table.
 
@@ -223,20 +244,19 @@ def fetch_table_preview(
     :param database: Database name
     :param schema: Schema name
     :param table_name: Table name
-    :param conn: Snowflake connection
+    :param cursor: Snowflake cursor
     """
-    if not conn:
+    if not cursor:
         return [{"mock_col": "mock_val"}]
 
-    with conn.cursor() as cur:
-        cur.execute(f"""
-            SELECT *
-            FROM {database}.{schema}.{table_name}
-            LIMIT {n_rows};
-        """)
-        columns = [col[0] for col in cur.description]
-        rows = cur.fetchall()
-        return [dict(zip(columns, row)) for row in rows]
+    cursor.execute(f"""
+        SELECT *
+        FROM {database}.{schema}.{table_name}
+        LIMIT {n_rows};
+    """)
+    columns = [col[0] for col in cursor.description]
+    rows = cursor.fetchall()
+    return [dict(zip(columns, row)) for row in rows]
 
 
 def write(  # noqa: PLR0913 (too-many-arguments)
@@ -244,7 +264,7 @@ def write(  # noqa: PLR0913 (too-many-arguments)
     table_name: str,
     branch_table_name: str,
     schema: str,
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
     skip_clone_branch: bool = False,
 ) -> Generator[SQLOperation, None, None]:
     """Write table to a temporary branch table, attempting to clone existing table first.
@@ -253,7 +273,7 @@ def write(  # noqa: PLR0913 (too-many-arguments)
     :param table_name: Name of the source table to try cloning
     :param branch_table_name: Name for the temporary branch table
     :param schema: Schema to write to
-    :param conn: Optional Snowflake connection
+    :param cursor: Optional Snowflake cursor
     :param skip_clone_branch: If True, skip the cloning step and just run the query. Used when
         there are no audits to run, so write-audit-publish is skipped, and data is simply written
         directly to the final table.
@@ -267,25 +287,33 @@ def write(  # noqa: PLR0913 (too-many-arguments)
         """
 
         clone_op = SQLOperation(
-            query=clone_query, schema=schema, table_name=branch_table_name, operation_type="clone to branch"
+            query=clone_query,
+            schema=schema,
+            table_name=branch_table_name,
+            operation_type="clone to branch",
         )
         yield clone_op
 
-        run_query(query=clone_query, conn=conn)
+        run_query(query=clone_query, cursor=cursor)
 
     # Now that we know the branch table exists, we can run the main query
     formatted_query = substitute_map_into_string(query, {"schema": schema, "table_name": branch_table_name})
-    write_op = SQLOperation(query=formatted_query, schema=schema, table_name=branch_table_name, operation_type="write")
+    write_op = SQLOperation(
+        query=formatted_query,
+        schema=schema,
+        table_name=branch_table_name,
+        operation_type="write",
+    )
     yield write_op
 
-    run_query(query=formatted_query, conn=conn)
+    run_query(query=formatted_query, cursor=cursor)
 
 
 def audit(
     table_name: str,
     schema: str,
     audits: list[str],
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
 ) -> Generator[SQLOperation, None, None]:
     """Run audit queries and raise error if any fail."""
     failed_audits = []
@@ -293,7 +321,7 @@ def audit(
     for i, audit_query in enumerate(audits, 1):
         formatted_query = substitute_map_into_string(audit_query, {"schema": schema, "table_name": table_name})
 
-        result_dict = run_query(query=formatted_query, conn=conn, multi=False) or {}
+        result_dict = run_audit_query(query=formatted_query, cursor=cursor)
 
         yield AuditSQLOperation(
             query=formatted_query,
@@ -320,7 +348,7 @@ def publish(
     branch_name: str,
     from_schema: str,
     to_schema: str,
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
 ) -> Generator[SQLOperation, None, None]:
     """Promote branch table to final table using SWAP.
 
@@ -331,7 +359,7 @@ def publish(
     :param branch_name: Name of the branch/temporary table
     :param from_schema: Source schema containing the branch table
     :param to_schema: Target schema for the final table
-    :param conn: Optional Snowflake connection
+    :param cursor: Optional Snowflake cursor
     """
     branch_table = f"{table_name}_{branch_name}"
 
@@ -345,23 +373,28 @@ def publish(
     SWAP WITH PATTERN_DB.{from_schema}.{branch_table};
     """
 
-    create_op = SQLOperation(query=create_query, schema=to_schema, table_name=table_name, operation_type="publish")
+    create_op = SQLOperation(
+        query=create_query,
+        schema=to_schema,
+        table_name=table_name,
+        operation_type="publish",
+    )
     yield create_op
 
-    run_query(query=create_query, conn=conn, multi=True)
+    run_query(query=create_query, cursor=cursor)
 
 
 def cleanup(
     table_name: str,
     branch_name: str,
     schema: str,
-    conn: Optional[SnowflakeConnection] = None,
+    cursor: SnowflakeCursor | None = None,
 ) -> None:
     """Drop temporary branch table."""
     branch_table = f"{table_name}_{branch_name}"
     drop_query = f"DROP TABLE IF EXISTS PATTERN_DB.{schema}.{branch_table};"
     print(f"Dropping temp table: {schema}.{branch_table}")
-    run_query(query=drop_query, conn=conn)
+    run_query(query=drop_query, cursor=cursor)
 
 
 def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
@@ -457,6 +490,6 @@ if __name__ == "__main__":
         audits=audits,
         is_production=False,  # Set to True for production deployment
         is_test=True,  # Using test mode to see table names
-        conn=None,  # Would be snowflake.connector.connect() in practice
+        cursor=None,  # Would be snowflake.connector.connect().cursor() in practice
     ):
         print(step)

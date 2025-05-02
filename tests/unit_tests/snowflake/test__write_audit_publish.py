@@ -1,6 +1,6 @@
 import pytest
 
-from ds_platform_utils.snowflake.write_audit_publish import (
+from ds_platform_utils._snowflake.write_audit_publish import (
     write_audit_publish,
 )
 
@@ -17,7 +17,9 @@ def test_write_audit_publish_basic():
     ]
 
     # Collect all operations
-    operations = list(write_audit_publish(table_name=table_name, query=query, audits=audits, is_test=True, conn=None))
+    operations = list(
+        write_audit_publish(table_name=table_name, query=query, audits=audits, is_test=True, cursor=None)
+    )
 
     # Should have 4 operations: clone, write, audit, publish
     assert len(operations) == 4
@@ -43,7 +45,7 @@ def test_write_audit_publish_no_audits():
     SELECT * FROM source_table;
     """
 
-    operations = list(write_audit_publish(table_name=table_name, query=query, audits=None, conn=None))
+    operations = list(write_audit_publish(table_name=table_name, query=query, audits=None, cursor=None))
 
     assert len(operations) == 1
     assert operations[0].operation_type == "write"
@@ -66,7 +68,7 @@ def test_write_audit_publish_production():
 
     operations = list(
         write_audit_publish(
-            table_name=table_name, query=query, audits=audits, is_production=True, is_test=True, conn=None
+            table_name=table_name, query=query, audits=audits, is_production=True, is_test=True, cursor=None
         )
     )
 
@@ -84,7 +86,7 @@ def test__write_audit_publish__invalid_query():
     query = "SELECT * FROM source_table"  # Missing {schema}.{table_name}
 
     with pytest.raises(ValueError, match="must use the literal string"):
-        list(write_audit_publish(table_name=table_name, query=query, audits=None, conn=None))
+        list(write_audit_publish(table_name=table_name, query=query, audits=None, cursor=None))
 
 
 def test__write_audit_publish__invalid_audit():
@@ -99,7 +101,7 @@ def test__write_audit_publish__invalid_audit():
     ]
 
     with pytest.raises(ValueError, match="must use the literal string"):
-        list(write_audit_publish(table_name=table_name, query=query, audits=audits, conn=None))
+        list(write_audit_publish(table_name=table_name, query=query, audits=audits, cursor=None))
 
 
 def test__write_audit_publish__invalid_ctx_schema():
@@ -112,7 +114,7 @@ def test__write_audit_publish__invalid_ctx_schema():
     invalid_ctx = {"schema": "INVALID_SCHEMA"}
 
     with pytest.raises(ValueError, match="Context must not contain 'schema' key"):
-        list(write_audit_publish(table_name=table_name, query=query, audits=None, conn=None, ctx=invalid_ctx))
+        list(write_audit_publish(table_name=table_name, query=query, audits=None, cursor=None, ctx=invalid_ctx))
 
 
 def test__write_audit_publish__invalid_ctx_table_name():
@@ -125,7 +127,7 @@ def test__write_audit_publish__invalid_ctx_table_name():
     invalid_ctx = {"table_name": "INVALID_TABLE"}
 
     with pytest.raises(ValueError, match="Context must not contain 'table_name' key"):
-        list(write_audit_publish(table_name=table_name, query=query, audits=None, conn=None, ctx=invalid_ctx))
+        list(write_audit_publish(table_name=table_name, query=query, audits=None, cursor=None, ctx=invalid_ctx))
 
 
 def test_write_audit_publish_with_ctx():
@@ -148,7 +150,7 @@ def test_write_audit_publish_with_ctx():
     ctx = {"date": "2024-01-01", "region": "US"}
 
     operations = list(
-        write_audit_publish(table_name=table_name, query=query, audits=audits, is_test=True, conn=None, ctx=ctx)
+        write_audit_publish(table_name=table_name, query=query, audits=audits, is_test=True, cursor=None, ctx=ctx)
     )
 
     assert len(operations) == 4

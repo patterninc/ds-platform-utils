@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from metaflow import FlowSpec, project, step
 
 THIS_DIR = Path(__file__).parent
@@ -108,6 +110,7 @@ if __name__ == "__main__":
     TestPublishFlow()
 
 
+@pytest.mark.slow
 def test_publish_flow():
     """Test that the publish flow runs successfully."""
     cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]

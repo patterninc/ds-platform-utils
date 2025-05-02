@@ -10,10 +10,7 @@ dependencies = [
     "pydantic>=2",
     "snowflake-connector-python>=3",
     "PyYAML",
-    "pyarrow",
-    # Python versions 3.11+ ship with a version of Tomli: the tomllib standard library module.
-    # https://pypi.org/project/tomli/
-    "tomli; python_version < '3.11'",
+    "tenacity>=9.1.2",
 ]
 
 [dependency-groups]

@@ -2,14 +2,16 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
-from metaflow import Snowflake, current
+from ds_platform_utils._snowflake.write_audit_publish import (
+    AuditSQLOperation,
+    SQLOperation,
+    write_audit_publish,
+)
+from ds_platform_utils.metaflow.get_snowflake_connection import (
+    get_snowflake_connection_singleton,
+)
+from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
-from snowflake.connector.connection import SnowflakeConnection
-
-from ds_platform_utils.snowflake.write_audit_publish import AuditSQLOperation, SQLOperation, write_audit_publish
-
-# an integration with this name exists both in the default and prod perimeters
-SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 
 def publish(
@@ -20,17 +22,18 @@ def publish(
     warehouse: Optional[str] = None,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    snowflake_kwargs = {"integration": SNOWFLAKE_INTEGRATION}
-    if warehouse is not None:
-        snowflake_kwargs["warehouse"] = warehouse
+    conn = get_snowflake_connection_singleton()
 
-    last_op_was_write = False
-    with Snowflake(**snowflake_kwargs) as conn:
+    with conn.cursor() as cur:
+        if warehouse is not None:
+            cur.execute(f"USE WAREHOUSE {warehouse}")
+
+        last_op_was_write = False
         for operation in write_audit_publish(
             table_name=table_name,
             query=query,
             audits=audits,
-            conn=conn,
+            cursor=cur,
             is_production=current.is_production,
             ctx=ctx,
             branch_name=current.run_id,
@@ -38,7 +41,7 @@ def publish(
             update_card_with_operation_info(
                 operation=operation,
                 last_op_was_write=last_op_was_write,
-                conn=conn,
+                cursor=cur,
             )
             last_op_was_write = operation.operation_type == "write"
 
@@ -46,13 +49,13 @@ def publish(
 def update_card_with_operation_info(
     operation: SQLOperation,
     last_op_was_write: bool,
-    conn: SnowflakeConnection,
+    cursor: "SnowflakeCursor",
 ) -> None:
     """Update the Metaflow card with operation info and table preview if applicable.
 
     :param operation: SQL operation to display
     :param last_op_was_write: Whether the previous operation was a write
-    :param conn: Snowflake connection for fetching previews
+    :param cursor: Snowflake cursor for fetching previews
     """
     print(operation.operation_type)
 
@@ -63,7 +66,7 @@ def update_card_with_operation_info(
             database="PATTERN_DB",
             schema=operation.schema,
             table_name=operation.table_name,
-            conn=conn,
+            cursor=cursor,
         ):
             current.card.append(element)
 
@@ -76,7 +79,9 @@ def update_card_with_operation_info(
     current.card.refresh()
 
 
-def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[Union[Markdown, Table]]:
+def get_card_content(
+    operation: SQLOperation, last_op_was_write: bool
+) -> list[Union[Markdown, Table]]:
     """Generate Markdown card content for an operation.
 
     :param op: SQL operation to generate card content for
@@ -88,12 +93,18 @@ def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[U
     3. Audit operations: Additionally shows audit results in tabular format
     """
     content: List[Union[Markdown, Table]] = [
-        Markdown(f"## **{operation.operation_type.title()}**: {operation.schema}.{operation.table_name}"),
+        Markdown(
+            f"## **{operation.operation_type.title()}**: {operation.schema}.{operation.table_name}"
+        ),
         Markdown(f"```sql\n{dedent(operation.query)}\n```"),
     ]
 
     # for writes: show table preview if available
-    if operation.operation_type == "write" and isinstance(operation, AuditSQLOperation) and operation.results:
+    if (
+        operation.operation_type == "write"
+        and isinstance(operation, AuditSQLOperation)
+        and operation.results
+    ):
         content.append(Markdown("\nTable Preview:"))
         table_rows = [[col, Artifact(val)] for col, val in operation.results.items()]
         content.append(Table(table_rows))
@@ -128,31 +139,30 @@ def fetch_table_preview(
     database: str,
     schema: str,
     table_name: str,
-    conn: SnowflakeConnection,
-) -> list[Union[Markdown, Table]]:
+    cursor: "SnowflakeCursor",
+) -> list[Markdown | Table]:
     """Fetch a preview of n rows from a table.
 
     :param n_rows: Number of rows to preview
     :param database: Database name
     :param schema: Schema name
     :param table_name: Table name
-    :param conn: Snowflake connection
+    :param cursor: Snowflake cursor
     """
-    with conn.cursor() as cur:
-        cur.execute(f"""
-            SELECT *
-            FROM {database}.{schema}.{table_name}
-            LIMIT {n_rows};
-        """)
-        columns = [col[0] for col in cur.description]
-        rows = cur.fetchall()
+    cursor.execute(f"""
+        SELECT *
+        FROM {database}.{schema}.{table_name}
+        LIMIT {n_rows};
+    """)
+    columns = [col[0] for col in cursor.description]
+    rows = cursor.fetchall()
 
-        # Create header row plus data rows
-        table_rows = [[Artifact(col) for col in columns]]  # Header row
-        for row in rows:
-            table_rows.append([Artifact(val) for val in row])  # Data rows
+    # Create header row plus data rows
+    table_rows = [[Artifact(col) for col in columns]]  # Header row
+    for row in rows:
+        table_rows.append([Artifact(val) for val in row])  # Data rows
 
-        return [
-            Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
-            Table(table_rows),
-        ]
+    return [
+        Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
+        Table(table_rows),
+    ]
