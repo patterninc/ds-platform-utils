@@ -14,7 +14,7 @@ SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 def publish(
     table_name: str,
-    query: str | Path,
+    query: Union[str, Path],
     audits: Optional[List[str, Path]] = None,
     ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[str] = None,
@@ -76,7 +76,7 @@ def update_card_with_operation_info(
     current.card.refresh()
 
 
-def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[Markdown | Table]:
+def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[Union[Markdown, Table]]:
     """Generate Markdown card content for an operation.
 
     :param op: SQL operation to generate card content for
@@ -129,7 +129,7 @@ def fetch_table_preview(
     schema: str,
     table_name: str,
     conn: SnowflakeConnection,
-) -> list[Markdown | Table]:
+) -> list[Union[Markdown, Table]]:
     """Fetch a preview of n rows from a table.
 
     :param n_rows: Number of rows to preview

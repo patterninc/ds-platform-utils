@@ -12,12 +12,12 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
-    query: str | Path,
+    query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
     is_production: bool = False,
     is_test: bool = False,
-    ctx: dict[str, Any] | None = None,
+    ctx: Optional[dict[str, Any]] = None,
     branch_name: Optional[str] = None,
 ) -> Generator["SQLOperation", None, None]:
     """Write table with audit checks and optional production promotion.
@@ -170,7 +170,7 @@ class AuditSQLOperation(SQLOperation):
 
 def run_query(
     query: str,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
     multi: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Execute a query and return results as a dictionary of column names to values.
@@ -215,7 +215,7 @@ def fetch_table_preview(
     database: str,
     schema: str,
     table_name: str,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
 ) -> list[dict[str, Any]]:
     """Fetch a preview of n rows from a table.
 

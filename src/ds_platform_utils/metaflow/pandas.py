@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 import pyarrow
@@ -51,7 +51,7 @@ def publish_pandas(
 
 
 def read_pandas(
-    query: str | Path,
+    query: Union[str, Path],
     conn: Optional[SnowflakeConnection] = None,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
