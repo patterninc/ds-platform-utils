@@ -1,7 +1,15 @@
+import sys
+
+# Python versions 3.11+ ship with a version of Tomli: the tomllib standard library module.
+# https://pypi.org/project/tomli/
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
 import json
 from typing import Callable
 
-import tomllib
 import yaml
 from pydantic import BaseModel
 
