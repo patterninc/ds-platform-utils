@@ -15,7 +15,7 @@ SNOWFLAKE_INTEGRATION = "snowflake-default"
 def publish(
     table_name: str,
     query: Union[str, Path],
-    audits: Optional[List[str, Path]] = None,
+    audits: Optional[List[Union[str, Path]]] = None,
     ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[str] = None,
 ) -> None:
