@@ -2,7 +2,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Any, Generator, List, Literal, Optional, Union
 
 from snowflake.connector.connection import SnowflakeConnection
 
@@ -13,12 +13,12 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
     query: str | Path,
-    audits: list[str | Path] | None = None,
+    audits: Optional[List[Union[str, Path]]] = None,
     conn: SnowflakeConnection | None = None,
     is_production: bool = False,
     is_test: bool = False,
     ctx: dict[str, Any] | None = None,
-    branch_name: str | None = None,
+    branch_name: Optional[str] = None,
 ) -> Generator["SQLOperation", None, None]:
     """Write table with audit checks and optional production promotion.
 
@@ -97,10 +97,10 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
     table_name: str,
     query: str,
     audits: list[str],
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
     is_production: bool = False,
     is_test: bool = False,
-    branch_name: str | None = None,
+    branch_name: Optional[str] = None,
 ) -> Generator["SQLOperation", None, None]:
     """Write table with audit checks and optional production promotion.
 
@@ -172,7 +172,7 @@ def run_query(
     query: str,
     conn: SnowflakeConnection | None = None,
     multi: bool = True,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     """Execute a query and return results as a dictionary of column names to values.
 
     :param query: SQL query to execute or print
@@ -244,7 +244,7 @@ def write(  # noqa: PLR0913 (too-many-arguments)
     table_name: str,
     branch_table_name: str,
     schema: str,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
     skip_clone_branch: bool = False,
 ) -> Generator[SQLOperation, None, None]:
     """Write table to a temporary branch table, attempting to clone existing table first.
@@ -282,7 +282,10 @@ def write(  # noqa: PLR0913 (too-many-arguments)
 
 
 def audit(
-    table_name: str, schema: str, audits: list[str], conn: SnowflakeConnection | None = None
+    table_name: str,
+    schema: str,
+    audits: list[str],
+    conn: Optional[SnowflakeConnection] = None,
 ) -> Generator[SQLOperation, None, None]:
     """Run audit queries and raise error if any fail."""
     failed_audits = []
@@ -317,7 +320,7 @@ def publish(
     branch_name: str,
     from_schema: str,
     to_schema: str,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
 ) -> Generator[SQLOperation, None, None]:
     """Promote branch table to final table using SWAP.
 
@@ -348,7 +351,12 @@ def publish(
     run_query(query=create_query, conn=conn, multi=True)
 
 
-def cleanup(table_name: str, branch_name: str, schema: str, conn: SnowflakeConnection | None = None) -> None:
+def cleanup(
+    table_name: str,
+    branch_name: str,
+    schema: str,
+    conn: Optional[SnowflakeConnection] = None,
+) -> None:
     """Drop temporary branch table."""
     branch_table = f"{table_name}_{branch_name}"
     drop_query = f"DROP TABLE IF EXISTS PATTERN_DB.{schema}.{branch_table};"
@@ -366,7 +374,7 @@ def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
     return string.format_map(SafeDict(values))
 
 
-def get_query_from_string_or_fpath(query_str_or_fpath: str | Path) -> str:
+def get_query_from_string_or_fpath(query_str_or_fpath: Union[str, Path]) -> str:
     """Get the SQL query from a string or file path.
 
     :param query_str_or_fpath: SQL query string or path to a .sql file

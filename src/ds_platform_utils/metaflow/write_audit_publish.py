@@ -1,6 +1,6 @@
 from pathlib import Path
 from textwrap import dedent
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from metaflow import Snowflake, current
 from metaflow.cards import Artifact, Markdown, Table
@@ -15,9 +15,9 @@ SNOWFLAKE_INTEGRATION = "snowflake-default"
 def publish(
     table_name: str,
     query: str | Path,
-    audits: list[str | Path] | None = None,
-    ctx: dict[str, Any] | None = None,
-    warehouse: str | None = None,
+    audits: Optional[List[str, Path]] = None,
+    ctx: Optional[Dict[str, Any]] = None,
+    warehouse: Optional[str] = None,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
     snowflake_kwargs = {"integration": SNOWFLAKE_INTEGRATION}
@@ -87,7 +87,7 @@ def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[M
     2. Operations without schema/table (e.g. utility queries): Shows basic operation type
     3. Audit operations: Additionally shows audit results in tabular format
     """
-    content: list[Markdown | Table] = [
+    content: List[Union[Markdown, Table]] = [
         Markdown(f"## **{operation.operation_type.title()}**: {operation.schema}.{operation.table_name}"),
         Markdown(f"```sql\n{dedent(operation.query)}\n```"),
     ]

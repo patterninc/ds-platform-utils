@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import pyarrow
@@ -15,7 +16,7 @@ def publish_pandas(
     df: pd.DataFrame,
     is_production: bool = False,  # Should be use if current.is_production instead of passing this param?
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -51,7 +52,7 @@ def publish_pandas(
 
 def read_pandas(
     query: str | Path,
-    conn: SnowflakeConnection | None = None,
+    conn: Optional[SnowflakeConnection] = None,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
