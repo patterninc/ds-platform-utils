@@ -313,7 +313,11 @@ def audit(
 
 
 def publish(
-    table_name: str, branch_name: str, from_schema: str, to_schema: str, conn: SnowflakeConnection | None = None
+    table_name: str,
+    branch_name: str,
+    from_schema: str,
+    to_schema: str,
+    conn: SnowflakeConnection | None = None,
 ) -> Generator[SQLOperation, None, None]:
     """Promote branch table to final table using SWAP.
 
