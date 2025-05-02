@@ -45,7 +45,7 @@ class TestPublishFlow(FlowSpec):
 
         -- Insert some data
         INSERT INTO PATTERN_DB.{schema}.{table_name} (id, name, age)
-        VALUES 
+        VALUES
             (1, 'Mario', 27),
             (2, 'Luigi', 30),
             (3, 'Peach', 25),

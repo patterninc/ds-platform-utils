@@ -138,7 +138,7 @@ def test_write_audit_publish_with_ctx():
     """
     audits = [
         """
-        SELECT 
+        SELECT
             COUNT(*) > 0 as has_rows,
             region = '{region}' as correct_region
         FROM PATTERN_DB.{schema}.{table_name}

@@ -239,7 +239,7 @@ def fetch_table_preview(
         return [dict(zip(columns, row)) for row in rows]
 
 
-def write(
+def write(  # noqa: PLR0913 (too-many-arguments)
     query: str,
     table_name: str,
     branch_table_name: str,

@@ -12,7 +12,7 @@ from ds_platform_utils.snowflake.write_audit_publish import get_query_from_strin
 def publish_pandas(
     table_name: str,
     df: pd.DataFrame,
-    conn: SnowflakeConnection | None,
+    conn: SnowflakeConnection,
     is_production: bool = False,  # Should be use if current.is_production instead of passing this param?
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
 ) -> None:
@@ -50,7 +50,7 @@ def publish_pandas(
 
 def read_pandas(
     query: str | Path,
-    conn: SnowflakeConnection | None,
+    conn: SnowflakeConnection,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
