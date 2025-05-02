@@ -69,8 +69,8 @@ def make_pydantic_parser_fn(pydantic_model: type[BaseModel]) -> Callable[[str], 
                         "Config parsing failed. Ensure it is valid JSON, TOML, or YAML."
                         "YAML is preferred because it supports comments."
                     ) from e
-        
-        # instantiate the pydantic model from the dict, 
+
+        # instantiate the pydantic model from the dict,
         # then dump back to a dict (so that default values are applied)
         result: dict = pydantic_model.model_validate(cfg).model_dump()
 

@@ -6,7 +6,7 @@ from metaflow import Snowflake, current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.connection import SnowflakeConnection
 
-from ._write_audit_publish import AuditSQLOperation, SQLOperation, write_audit_publish
+from ds_platform_utils.snowflake.write_audit_publish import AuditSQLOperation, SQLOperation, write_audit_publish
 
 # an integration with this name exists both in the default and prod perimeters
 SNOWFLAKE_INTEGRATION = "snowflake-default"
@@ -140,7 +140,7 @@ def fetch_table_preview(
     """
     with conn.cursor() as cur:
         cur.execute(f"""
-            SELECT * 
+            SELECT *
             FROM {database}.{schema}.{table_name}
             LIMIT {n_rows};
         """)

@@ -1,4 +1,6 @@
 **/.DS_Store
+*.metaflow*
+*metaflow.s3*
 
 example-project
 test-reports

@@ -20,13 +20,20 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     ctx: dict[str, Any] | None = None,
     branch_name: str | None = None,
 ) -> Generator["SQLOperation", None, None]:
-    """Write table with audit checks and optional production promotion."""
+    """Write table with audit checks and optional production promotion.
+
+    :param audits: SQL queries that return a single row of boolean values representing assertions
+        against PATTERN_DB.{schema}.{table_name}. If len(audits) == 0, write-audit-publish is not
+        performed and the query is simply run against the final table.
+    """
     # gather inputs
-    audit_schema = NON_PROD_SCHEMA
     publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
-    audits = audits or []
     query = get_query_from_string_or_fpath(query)
+
+    audits = audits or []
     audits = [get_query_from_string_or_fpath(audit) for audit in audits]
+
+    skip_audit_publish = len(audits) == 0
 
     # validate inputs
     if "{schema}.{table_name}" not in query:
@@ -38,23 +45,69 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
             f"Query:\n{query[:100]}"
         )
 
-    for i, audit_query in enumerate(audits, 1):
+    for i, audit_query in enumerate(audits):
         audit_query = str(audit_query)
         if "{schema}.{table_name}" not in str(audit_query):
             raise ValueError(
                 f"The audit query at index {i} must use the literal string '{{schema}}.{{table_name}}' to "
                 "reference the table being audited, so that the audit() function can dynamically "
                 "substitute values into these to perform the checks.\n\n"
-                f"Audit query:\n{audit_query[:100]}"
+                f"Audit query:\n{audit_query[:100]}..."
             )
 
+    # substitute any values (other than {schema} and {table_name}) into the query and audit queries
     if ctx:
         if "schema" in ctx:
-            raise ValueError("Context must not contain 'schema' key--it is derived behind the scenes.")
+            raise ValueError(f"Context must not contain 'schema' key--it is derived behind the scenes. Got: {ctx=}")
         if "table_name" in ctx:
-            raise ValueError("Context must not contain 'table_name' key--it is passed as the table_name argument.")
+            raise ValueError(
+                f"Context must not contain 'table_name' key--it is passed as the table_name argument. Got: {ctx=}"
+            )
         query = substitute_map_into_string(query, ctx)
         audits = [substitute_map_into_string(audit, ctx) for audit in audits]
+
+    if skip_audit_publish:
+        # If no audits, just write the table directly
+        for op in write(
+            query=query,
+            table_name=table_name,
+            # write() writes to the branch table; in this case, we we want to want to write
+            # directly to the final table, so we set the final table name as the branch table name
+            branch_table_name=table_name,
+            schema=publish_schema,
+            conn=conn,
+            skip_clone_branch=True,  # Skip cloning since we're not auditing
+        ):
+            yield op
+    else:
+        # If audits are provided, run the full write-audit-publish flow
+        for op in _write_audit_publish(
+            table_name=table_name,
+            query=query,
+            audits=audits,
+            conn=conn,
+            is_production=is_production,
+            is_test=is_test,
+            branch_name=branch_name,
+        ):
+            yield op
+
+
+def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
+    table_name: str,
+    query: str,
+    audits: list[str],
+    conn: SnowflakeConnection | None = None,
+    is_production: bool = False,
+    is_test: bool = False,
+    branch_name: str | None = None,
+) -> Generator["SQLOperation", None, None]:
+    """Write table with audit checks and optional production promotion.
+
+    This function assumes all inputs have been validated and formatted correctly.
+    """
+    audit_schema = NON_PROD_SCHEMA
+    publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
 
     # Generate unique branch name
     branch_name = branch_name or str(uuid.uuid4())[:8]
@@ -105,7 +158,7 @@ class SQLOperation:
     query: str
     schema: str
     table_name: str
-    operation_type: Literal["write", "write_clone", "audit", "publish"]
+    operation_type: Literal["write", "clone to branch", "audit", "publish"]
 
 
 @dataclass
@@ -136,6 +189,12 @@ def run_query(
             console.print(syntax)
         except ImportError:
             print(query)
+
+    if conn is None:
+        print(f"Would execute query:\n{query}")
+        if multi:
+            return None
+        return {"mock_result": True}  # Return mock successful audit result
 
     if multi:
         conn.execute_string(query)
@@ -171,7 +230,7 @@ def fetch_table_preview(
 
     with conn.cursor() as cur:
         cur.execute(f"""
-            SELECT * 
+            SELECT *
             FROM {database}.{schema}.{table_name}
             LIMIT {n_rows};
         """)
@@ -181,7 +240,12 @@ def fetch_table_preview(
 
 
 def write(
-    query: str, table_name: str, branch_table_name: str, schema: str, conn: SnowflakeConnection | None = None
+    query: str,
+    table_name: str,
+    branch_table_name: str,
+    schema: str,
+    conn: SnowflakeConnection | None = None,
+    skip_clone_branch: bool = False,
 ) -> Generator[SQLOperation, None, None]:
     """Write table to a temporary branch table, attempting to clone existing table first.
 
@@ -190,20 +254,24 @@ def write(
     :param branch_table_name: Name for the temporary branch table
     :param schema: Schema to write to
     :param conn: Optional Snowflake connection
+    :param skip_clone_branch: If True, skip the cloning step and just run the query. Used when
+        there are no audits to run, so write-audit-publish is skipped, and data is simply written
+        directly to the final table.
     """
-    # First, we need to make sure a branch table exists, incase this query is trying to
-    # INSERT or otherwise modify an existing table, but isn't creating it.
-    clone_query = f"""
-    CREATE TABLE IF NOT EXISTS PATTERN_DB.{schema}.{branch_table_name}
-    CLONE PATTERN_DB.{schema}.{table_name};
-    """
+    if not skip_clone_branch:
+        # First, we need to make sure a branch table exists, incase this query is trying to
+        # INSERT or otherwise modify an existing table, but isn't creating it.
+        clone_query = f"""
+        CREATE TABLE IF NOT EXISTS PATTERN_DB.{schema}.{branch_table_name}
+        CLONE PATTERN_DB.{schema}.{table_name};
+        """
 
-    clone_op = SQLOperation(
-        query=clone_query, schema=schema, table_name=branch_table_name, operation_type="write_clone"
-    )
-    yield clone_op
+        clone_op = SQLOperation(
+            query=clone_query, schema=schema, table_name=branch_table_name, operation_type="clone to branch"
+        )
+        yield clone_op
 
-    run_query(query=clone_query, conn=conn)
+        run_query(query=clone_query, conn=conn)
 
     # Now that we know the branch table exists, we can run the main query
     formatted_query = substitute_map_into_string(query, {"schema": schema, "table_name": branch_table_name})
@@ -266,7 +334,7 @@ def publish(
     CLONE PATTERN_DB.{from_schema}.{branch_table};
 
     -- swap the audited branch table into the final table
-    ALTER TABLE PATTERN_DB.{to_schema}.{table_name} 
+    ALTER TABLE PATTERN_DB.{to_schema}.{table_name}
     SWAP WITH PATTERN_DB.{from_schema}.{branch_table};
     """
 
@@ -358,16 +426,14 @@ if __name__ == "__main__":
         select
             min(age) > 0 as all_ages_positive,
             min(power_level) >= 0 as all_power_levels_valid
-        from PATTERN_DB.{schema}.{table_name}
-        ;
+        from PATTERN_DB.{schema}.{table_name};
         """,
         # Check for uniqueness and null values
         """
         select
             count(*) = count(pokemon_name) as no_null_names,
             count(distinct pokedex_id) = count(pokedex_id) as unique_pokedex_ids
-        from PATTERN_DB.{schema}.{table_name}
-        ;
+        from PATTERN_DB.{schema}.{table_name};
         """,
     ]
 
