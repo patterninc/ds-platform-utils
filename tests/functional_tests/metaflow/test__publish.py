@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from metaflow import FlowSpec, project, step
 
 THIS_DIR = Path(__file__).parent

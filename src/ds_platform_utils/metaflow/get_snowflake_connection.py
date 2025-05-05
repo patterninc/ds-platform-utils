@@ -3,9 +3,8 @@ from typing import Optional
 
 import requests
 import tenacity
-from snowflake.connector import SnowflakeConnection
-
 from metaflow import Snowflake, current
+from snowflake.connector import SnowflakeConnection
 
 ####################
 # --- Metaflow --- #

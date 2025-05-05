@@ -2,6 +2,8 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
+from metaflow import current
+from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.write_audit_publish import (
@@ -12,8 +14,6 @@ from ds_platform_utils._snowflake.write_audit_publish import (
 from ds_platform_utils.metaflow.get_snowflake_connection import (
     get_snowflake_connection,
 )
-from metaflow import current
-from metaflow.cards import Artifact, Markdown, Table
 
 
 def publish(
