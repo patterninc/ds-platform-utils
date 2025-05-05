@@ -2,12 +2,9 @@
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 from metaflow import FlowSpec, project, step
-
-THIS_DIR = Path(__file__).parent
 
 
 @project(name="test_pandas_read_write_flow")
@@ -23,25 +20,8 @@ class TestPandasReadWriteFlow(FlowSpec):
     def test_publish_pandas(self):
         """Test the publish_pandas function."""
         import pandas as pd
-        from snowflake.connector import SnowflakeConnection
 
         from ds_platform_utils.metaflow import publish_pandas
-        from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA
-        from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
-
-        # # Create table query
-        # create_table_query = f"""
-        # CREATE OR REPLACE TABLE PATTERN_DB.{NON_PROD_SCHEMA}.pandas_test_table (
-        #     id INT,
-        #     name STRING,
-        #     score FLOAT
-        # );
-        # """
-        # try:
-        #     conn: SnowflakeConnection = get_snowflake_connection()
-        #     conn.execute_string(create_table_query)
-        # finally:
-        #     conn.close()
 
         # Create a sample DataFrame
         data = {
@@ -55,7 +35,8 @@ class TestPandasReadWriteFlow(FlowSpec):
         publish_pandas(
             table_name="pandas_test_table",
             df=df,
-            auto_create_table=True, # THIS IS NOT WORKING AS EXPECTED
+            auto_create_table=True,
+            overwrite=True,
         )
 
         self.next(self.test_query_pandas)
@@ -66,15 +47,10 @@ class TestPandasReadWriteFlow(FlowSpec):
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         # Query to retrieve the data we just published
-        query = "SELECT * FROM PATTERN_DB.{schema}.pandas_test_table;"
+        query = "SELECT * FROM PATTERN_DB.{schema}.PANDAS_TEST_TABLE;"
 
         # Query the data back
         result_df = query_pandas_from_snowflake(query)
-
-        # Validate the results
-        print("Retrieved DataFrame:")
-        print(result_df.head())
-        print(f"Number of rows: {len(result_df)}")
 
         # Quick validation
         assert len(result_df) == 5, "Expected 5 rows in the result"

@@ -4,6 +4,7 @@ from typing import Any, Dict, Literal, Optional, Union
 import pandas as pd
 import pyarrow
 from metaflow import current
+from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
@@ -22,11 +23,14 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     compression: Literal["snappy", "gzip"] = "gzip",
     parallel: int = 4,
     auto_create_table: bool = False,
+    overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
-    :param table_name: Name of the table to create in Snowflake
+    :param table_name: Name of the table to create in Snowflake. The `write_pandas()` function does not create
+        the table in upper case, when `auto_create_table` is set to True, so we need to do it manually for
+        the sake of standardization.
 
     :param df: DataFrame to store
 
@@ -39,7 +43,11 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
     :param auto_create_table: When true, will automatically create a table with corresponding columns for each column in
-        the passed in DataFrame. The table will not be created if it already exists
+        the passed in DataFrame. The table will not be created if it already exists.
+
+    :param overwrite: When true, and if `auto_create_table` is true, then it drops the table. Otherwise, it
+        truncates the table. In both cases it will replace the existing contents of the table with that of the passed in
+        Pandas DataFrame.
 
     :param use_logical_type: Boolean that specifies whether to use Parquet logical types when reading the
         parquet files for the uploaded pandas dataframe.
@@ -50,20 +58,21 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if df.empty:
         raise ValueError("DataFrame is empty.")
 
-    # Show the DataFrame preview in the Metaflow card
-    current.card.append(f"DataFrame Preview:\n{df.head()}")
+    current.card.append(Markdown(f"### Publishing DataFrame to Snowflake table: `{table_name}`"))
+    current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection()
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
         df=df,
-        table_name=table_name,
+        table_name=table_name.upper(),
         schema=PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA,
         chunk_size=chunk_size,
         compression=compression,
         parallel=parallel,
         auto_create_table=auto_create_table,
+        overwrite=overwrite,
         use_logical_type=use_logical_type,
     )
 
@@ -95,8 +104,8 @@ def query_pandas_from_snowflake(
     if ctx:
         query = substitute_map_into_string(query, ctx)
 
-    # Show the query preview in the Metaflow card
-    current.card.append(f"Query: {query}")
+    current.card.append(Markdown("### Querying Snowflake table"))
+    current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     try:
         conn: SnowflakeConnection = get_snowflake_connection()
@@ -108,8 +117,8 @@ def query_pandas_from_snowflake(
         df = result.to_pandas()
         df.columns = df.columns.str.lower()
 
-        # Show the first 5 rows of the DataFrame in the Metaflow card
-        current.card.append(f"DataFrame Preview:\n{df.head()}")
+        current.card.append(Markdown("### Query Result"))
+        current.card.append(Table.from_dataframe(df.head()))
 
         return df
     finally:
