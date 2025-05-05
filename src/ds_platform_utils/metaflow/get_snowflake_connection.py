@@ -1,5 +1,4 @@
 import os
-from functools import lru_cache
 
 import requests
 import tenacity
@@ -15,8 +14,8 @@ from metaflow import Snowflake, current
 SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 
-@lru_cache
-def get_snowflake_connection_singleton(
+# @lru_cache
+def get_snowflake_connection(
     is_utc: bool = True,
 ) -> SnowflakeConnection:
     """Return a singleton Snowflake cursor.

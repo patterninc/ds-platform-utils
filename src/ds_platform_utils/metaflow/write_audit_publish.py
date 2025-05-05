@@ -2,13 +2,15 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any, Dict, List, Optional, Union
 
+from snowflake.connector.cursor import SnowflakeCursor
+
 from ds_platform_utils._snowflake.write_audit_publish import (
     AuditSQLOperation,
     SQLOperation,
     write_audit_publish,
 )
 from ds_platform_utils.metaflow.get_snowflake_connection import (
-    get_snowflake_connection_singleton,
+    get_snowflake_connection,
 )
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
@@ -22,7 +24,7 @@ def publish(
     warehouse: Optional[str] = None,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    conn = get_snowflake_connection_singleton()
+    conn = get_snowflake_connection()
 
     with conn.cursor() as cur:
         if warehouse is not None:
@@ -79,9 +81,7 @@ def update_card_with_operation_info(
     current.card.refresh()
 
 
-def get_card_content(
-    operation: SQLOperation, last_op_was_write: bool
-) -> list[Union[Markdown, Table]]:
+def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[Union[Markdown, Table]]:
     """Generate Markdown card content for an operation.
 
     :param op: SQL operation to generate card content for
@@ -93,18 +93,12 @@ def get_card_content(
     3. Audit operations: Additionally shows audit results in tabular format
     """
     content: List[Union[Markdown, Table]] = [
-        Markdown(
-            f"## **{operation.operation_type.title()}**: {operation.schema}.{operation.table_name}"
-        ),
+        Markdown(f"## **{operation.operation_type.title()}**: {operation.schema}.{operation.table_name}"),
         Markdown(f"```sql\n{dedent(operation.query)}\n```"),
     ]
 
     # for writes: show table preview if available
-    if (
-        operation.operation_type == "write"
-        and isinstance(operation, AuditSQLOperation)
-        and operation.results
-    ):
+    if operation.operation_type == "write" and isinstance(operation, AuditSQLOperation) and operation.results:
         content.append(Markdown("\nTable Preview:"))
         table_rows = [[col, Artifact(val)] for col, val in operation.results.items()]
         content.append(Table(table_rows))
