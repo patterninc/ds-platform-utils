@@ -12,9 +12,9 @@ NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
     table_name: str,
-    query: str | Path,
-    audits: list[str | Path] | None = None,
-    cursor: SnowflakeCursor | None = None,
+    query: Union[str, Path],
+    audits: Optional[list[Union[str, Path]]] = None,
+    cursor: Optional[SnowflakeCursor] = None,
     is_production: bool = False,
     is_test: bool = False,
     ctx: Optional[dict[str, Any]] = None,
@@ -96,7 +96,7 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
     table_name: str,
     query: str,
     audits: list[str],
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
     is_production: bool = False,
     is_test: bool = False,
     branch_name: Optional[str] = None,
@@ -193,7 +193,7 @@ def _count_sql_statements(query: str) -> int:
     return len([s for s in statements if s])
 
 
-def run_query(query: str, cursor: SnowflakeCursor | None = None) -> None:
+def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
     """Execute one or more SQL statements.
 
     :param query: SQL query or queries to execute. Multiple statements must be separated by semicolons.
@@ -211,7 +211,7 @@ def run_query(query: str, cursor: SnowflakeCursor | None = None) -> None:
     cursor.connection.commit()
 
 
-def run_audit_query(query: str, cursor: SnowflakeCursor | None = None) -> dict[str, Any]:
+def run_audit_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> dict[str, Any]:
     """Execute a single audit query and return results.
 
     :param query: SQL query that returns a single row of boolean values
@@ -236,7 +236,7 @@ def fetch_table_preview(
     database: str,
     schema: str,
     table_name: str,
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
 ) -> list[dict[str, Any]]:
     """Fetch a preview of n rows from a table.
 
@@ -264,7 +264,7 @@ def write(  # noqa: PLR0913 (too-many-arguments)
     table_name: str,
     branch_table_name: str,
     schema: str,
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
     skip_clone_branch: bool = False,
 ) -> Generator[SQLOperation, None, None]:
     """Write table to a temporary branch table, attempting to clone existing table first.
@@ -313,7 +313,7 @@ def audit(
     table_name: str,
     schema: str,
     audits: list[str],
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
 ) -> Generator[SQLOperation, None, None]:
     """Run audit queries and raise error if any fail."""
     failed_audits = []
@@ -348,7 +348,7 @@ def publish(
     branch_name: str,
     from_schema: str,
     to_schema: str,
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
 ) -> Generator[SQLOperation, None, None]:
     """Promote branch table to final table using SWAP.
 
@@ -388,7 +388,7 @@ def cleanup(
     table_name: str,
     branch_name: str,
     schema: str,
-    cursor: SnowflakeCursor | None = None,
+    cursor: Optional[SnowflakeCursor] = None,
 ) -> None:
     """Drop temporary branch table."""
     branch_table = f"{table_name}_{branch_name}"

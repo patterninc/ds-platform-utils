@@ -134,7 +134,7 @@ def fetch_table_preview(
     schema: str,
     table_name: str,
     cursor: "SnowflakeCursor",
-) -> list[Markdown | Table]:
+) -> list[Union[Markdown, Table]]:
     """Fetch a preview of n rows from a table.
 
     :param n_rows: Number of rows to preview

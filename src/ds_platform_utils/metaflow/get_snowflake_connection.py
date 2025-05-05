@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 import requests
 import tenacity
@@ -58,7 +59,7 @@ def get_snowflake_connection(
 )
 def _create_snowflake_connection(
     is_utc: bool,
-    query_tag: str | None = None,
+    query_tag: Optional[str] = None,
 ) -> SnowflakeConnection:
     conn: SnowflakeConnection = Snowflake(integration=SNOWFLAKE_INTEGRATION).cn  # type: ignore[attr-defined]
 

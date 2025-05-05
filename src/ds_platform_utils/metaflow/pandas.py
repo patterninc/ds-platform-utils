@@ -1,17 +1,18 @@
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Any, Dict, Literal, Optional, Union
 
 import pandas as pd
 import pyarrow
+from metaflow import current
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
 from ds_platform_utils._snowflake.write_audit_publish import (
     get_query_from_string_or_fpath,
+    substitute_map_into_string,
 )
-from ds_platform_utils.consts import NON_PROD_SCHEMA, PROD_SCHEMA, SNOWFLAKE_INTEGRATION
+from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
-from metaflow import Snowflake, current
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -20,17 +21,26 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
     parallel: int = 4,
+    auto_create_table: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
     :param table_name: Name of the table to create in Snowflake
+
     :param df: DataFrame to store
+
     :param chunk_size: Number of rows to be inserted once. If not provided, all rows will be dumped once.
         Default to None normally, 100,000 if inside a stored procedure.
+
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
-    :param: parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
+
+    :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
+
+    :param auto_create_table: When true, will automatically create a table with corresponding columns for each column in
+        the passed in DataFrame. The table will not be created if it already exists
+
     :param use_logical_type: Boolean that specifies whether to use Parquet logical types when reading the
         parquet files for the uploaded pandas dataframe.
     """
@@ -40,28 +50,56 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if df.empty:
         raise ValueError("DataFrame is empty.")
 
+    # Show the DataFrame preview in the Metaflow card
+    current.card.append(f"DataFrame Preview:\n{df.head()}")
+
     conn: SnowflakeConnection = get_snowflake_connection()
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
         df=df,
         table_name=table_name,
+        schema=PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA,
         chunk_size=chunk_size,
         compression=compression,
         parallel=parallel,
-        schema=PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA,
+        auto_create_table=auto_create_table,
         use_logical_type=use_logical_type,
     )
 
 
-def query_pandas_from_snowflake(query: Union[str, Path]) -> pd.DataFrame:
+def query_pandas_from_snowflake(
+    query: Union[str, Path],
+    ctx: Optional[Dict[str, Any]] = None,
+) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
+    :param ctx: Context dictionary to substitute into the query string.
     :return: DataFrame containing the results of the query.
+
+    **NOTE:** If the query contains `{schema}` placeholders, they will be replaced with the appropriate schema name.
+    The schema name will be determined based on the current environment:
+    - If in production, it will be set to `PROD_SCHEMA`.
+    - If not in production, it will be set to `NON_PROD_SCHEMA`.
+    - If the query does not contain `{schema}` placeholders, the schema name will not be modified.
+
+    If the `ctx` dictionary is provided, it will be used to substitute values into the query string.
+    The keys in the `ctx` dictionary should match the placeholders in the query string.
     """
     query = get_query_from_string_or_fpath(query)
-    with Snowflake(integration=SNOWFLAKE_INTEGRATION) as conn:
+    if "{schema}" in query:
+        schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
+        query = substitute_map_into_string(query, {"schema": schema})
+
+    if ctx:
+        query = substitute_map_into_string(query, ctx)
+
+    # Show the query preview in the Metaflow card
+    current.card.append(f"Query: {query}")
+
+    try:
+        conn: SnowflakeConnection = get_snowflake_connection()
         # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
         result: pyarrow.Table = conn.cursor().execute(query).fetch_arrow_all(force_return_table=True)
         if not result:
@@ -69,4 +107,10 @@ def query_pandas_from_snowflake(query: Union[str, Path]) -> pd.DataFrame:
 
         df = result.to_pandas()
         df.columns = df.columns.str.lower()
+
+        # Show the first 5 rows of the DataFrame in the Metaflow card
+        current.card.append(f"DataFrame Preview:\n{df.head()}")
+
         return df
+    finally:
+        conn.close()
