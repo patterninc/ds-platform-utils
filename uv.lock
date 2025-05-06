@@ -389,6 +389,7 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "outerbounds" },
+    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "snowflake-connector-python" },
@@ -400,7 +401,6 @@ dev = [
     { name = "pandas" },
     { name = "poethepoet" },
     { name = "pre-commit" },
-    { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "rich" },
@@ -410,6 +410,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "outerbounds" },
+    { name = "pyarrow", specifier = ">=20.0.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml" },
     { name = "snowflake-connector-python", specifier = ">=3" },
@@ -421,7 +422,6 @@ dev = [
     { name = "pandas", specifier = ">=2.2.3" },
     { name = "poethepoet", specifier = ">=0.34.0" },
     { name = "pre-commit", specifier = ">=4.2.0" },
-    { name = "pyarrow", specifier = ">=20.0.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "rich", specifier = ">=14.0.0" },
