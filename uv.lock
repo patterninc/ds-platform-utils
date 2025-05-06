@@ -385,10 +385,11 @@ wheels = [
 
 [[package]]
 name = "ds-platform-utils"
-version = "0.0.0"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "outerbounds" },
+    { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -398,7 +399,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pandas" },
     { name = "poethepoet" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -410,6 +410,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "outerbounds" },
+    { name = "pandas", specifier = ">=2.2.3" },
     { name = "pyarrow", specifier = ">=20.0.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml" },
@@ -419,7 +420,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pandas", specifier = ">=2.2.3" },
     { name = "poethepoet", specifier = ">=0.34.0" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "pytest", specifier = ">=8.3.5" },
