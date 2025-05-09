@@ -72,7 +72,7 @@ max-complexity = 10
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 pythonpath = ["."]
 norecursedirs = [
-    "src/ds_projen/samples/python_tests",
+    "src/ds_platform_utils/samples/python_tests",
     "example-project",
     "tests/artifacts",
 ]

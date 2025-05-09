@@ -106,7 +106,7 @@ jobs:
           source .venv/bin/activate
           uv pip install ./dist/*whl
           uv pip install --group dev
-          COVERAGE_DIR="$(python -c 'import ds_projen; print(ds_projen.__path__[0])')"
+          COVERAGE_DIR="$(python -c 'import ds_platform_utils; print(ds_platform_utils.__path__[0])')"
           poe clean
           poe test --cov="$COVERAGE_DIR" --no-cov
 
