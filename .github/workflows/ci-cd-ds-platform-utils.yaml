@@ -98,6 +98,14 @@ jobs:
           name: wheel-dist
           path: ./dist/
 
+      - name: Configure Outerbounds Auth
+        run: |-
+          uvx outerbounds service-principal-configure \
+            --name ds-platform-utils-ci \
+            --deployment-domain pattern.obp.outerbounds.com \
+            --perimeter default \
+            --github-actions
+
       # Temporarily disabling pytest-coverage in CI to avoid --
       # coverage.exceptions.DataError: Can't combine branch coverage data with statement data
       - name: Install Wheel & Run Tests against Wheel
