@@ -126,7 +126,7 @@ directory = "test-reports/htmlcov"
 output = "test-reports/coverage.json"
 
 [tool.poe.tasks.lint]
-cmd = "uvx --from pre-commit pre-commit run --all-files"
+cmd = "uvx pre-commit run --all-files"
 help = "Run linting, formatting, projen synth, and other static code quality tools"
 
 [tool.poe.tasks.test]

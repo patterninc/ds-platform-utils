@@ -42,7 +42,7 @@ jobs:
           cache-dependency-glob: "${{ github.workspace }}/uv.lock"
 
       - name: Run pre-commit hooks
-        run: SKIP=no-commit-to-branch ./run lint  # using poethepoet needs to be setup before using poe lint
+        run: SKIP=no-commit-to-branch uv run poe lint  # using poethepoet needs to be setup before using poe lint
 
   build-wheel:
     name: Build Wheel
