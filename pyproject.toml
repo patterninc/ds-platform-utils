@@ -1,18 +1,17 @@
 [project]
 name = "ds-platform-utils"
-version = "0.0.2"
+version = "0.0.3"
 description = "Add your description here"
 readme = "README.md"
 authors = []
 # requires-python = ">=3.7"
 dependencies = [
-    "outerbounds",
+    "outerbounds>=0.3.159",
     "pydantic>=2",
     "snowflake-connector-python>=3",
     "PyYAML",
-    "tenacity>=9.1.2",
     "pyarrow>=20.0.0",
-    "pandas>=2.2.3",
+    "pandas",
 ]
 
 [dependency-groups]

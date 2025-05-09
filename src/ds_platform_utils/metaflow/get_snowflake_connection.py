@@ -1,8 +1,6 @@
 import os
 from typing import Optional
 
-import requests
-import tenacity
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
 
@@ -51,11 +49,6 @@ def get_snowflake_connection(
 #####################
 
 
-@tenacity.retry(
-    retry=tenacity.retry_if_exception_type(requests.exceptions.ConnectionError),
-    wait=tenacity.wait_exponential(),
-    stop=tenacity.stop_after_attempt(5),
-)
 def _create_snowflake_connection(
     is_utc: bool,
     query_tag: Optional[str] = None,
