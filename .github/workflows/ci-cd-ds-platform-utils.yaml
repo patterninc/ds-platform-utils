@@ -101,7 +101,7 @@ jobs:
       - name: Configure Outerbounds Auth
         run: |-
           uvx outerbounds service-principal-configure \
-            --name ds-platform-utils-ci \
+            --name ds-platform-utils \
             --deployment-domain pattern.obp.outerbounds.com \
             --perimeter default \
             --github-actions
