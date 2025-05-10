@@ -84,14 +84,6 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "${{ github.workspace }}/uv.lock"
 
-      # - name: Configure Outerbounds
-      #   run: |-
-      #     uvx outerbounds service-principal-configure \
-      #     --name github-user-ds-projen \
-      #     --deployment-domain pattern.obp.outerbounds.com \
-      #     --perimeter default \
-      #     --github-actions
-
       - name: Download Wheel
         uses: actions/download-artifact@v4
         with:
@@ -143,5 +135,5 @@ jobs:
         # https://github.com/gnprice/toml-cli
         run: |
           VERSION=$(uvx --from=toml-cli toml get --toml-path pyproject.toml project.version)
-          git tag "$VERSION" -m "Release version $VERSION"
+          git tag "v${VERSION}" -m "Release version $VERSION"
           git push origin "$VERSION"
