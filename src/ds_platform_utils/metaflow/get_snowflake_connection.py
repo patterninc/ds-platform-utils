@@ -53,7 +53,10 @@ def _create_snowflake_connection(
     is_utc: bool,
     query_tag: Optional[str] = None,
 ) -> SnowflakeConnection:
-    conn: SnowflakeConnection = Snowflake(integration=SNOWFLAKE_INTEGRATION).cn  # type: ignore[attr-defined]
+    conn: SnowflakeConnection = Snowflake(
+        integration=SNOWFLAKE_INTEGRATION,
+        client_session_keep_alive=True,
+    ).cn  # type: ignore[attr-defined]
 
     queries = []
 
@@ -67,7 +70,7 @@ def _create_snowflake_connection(
     with conn.cursor() as cursor:
         sql = "\n".join(queries)
         _debug_print_query(sql)
-        cursor.execute(sql, num_statements=len(queries))
+        cursor.execute(sql, num_statements=0)
 
     return conn
 
