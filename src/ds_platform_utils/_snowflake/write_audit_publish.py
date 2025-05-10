@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator, Literal, Optional, Union
 
-from jinja2 import Template
+import sqlglot
+from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
+from sqlglot import expressions
 
 PROD_SCHEMA = "DATA_SCIENCE"
 NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
@@ -177,21 +179,37 @@ def _debug_print_query(query: str) -> None:
 
 
 def _count_sql_statements(query: str) -> int:
-    """Count the number of SQL statements in a query string.
+    parsed = sqlglot.parse(query)
+    # "session statements" like USE and SET do not count toward the number of statements
+    # so they must be ignored. The same is true for commented out SQL statements.
+    # thus we need a library like sqlglot to lexically parse the SQL statement in order
+    # to get an accurate count of the number of statements.
+    return sum(1 for expr in parsed if not isinstance(expr, (expressions.Set,))) + 1
 
-    :param query: SQL query string, potentially containing multiple statements
-    :return: Number of statements found
 
-    Statements are expected to be separated by semicolons, but the last statement
-    may not have a trailing semicolon.
-    """
-    # Add trailing semicolon if missing to ensure last statement is counted
-    if not query.strip().endswith(";"):
-        query = query.strip() + ";"
+# def _count_sql_statements(query: str) -> int:
+#     """Count the number of SQL statements in a query string.
 
-    # Split on semicolons and filter out empty/whitespace-only statements
-    statements = [s.strip() for s in query.split(";")]
-    return len([s for s in statements if s])
+#     :param query: SQL query string, potentially containing multiple statements
+#     :return: Number of statements found
+
+#     Statements are expected to be separated by semicolons, but the last statement
+#     may not have a trailing semicolon.
+#     """
+#     # Add trailing semicolon if missing to ensure last statement is counted
+#     if not query.strip().endswith(";"):
+#         query = query.strip() + ";"
+
+#     print("WRITING QUERY")
+#     uuid_str = str(uuid.uuid4())[:8]
+#     path = Path("/Users/ericriddoch/repos/ds-platform-utils/src/sql") / (uuid_str + ".sql")
+#     path.parent.mkdir(parents=True, exist_ok=True)
+#     path.write_text(query)
+
+#     # Split on semicolons and filter out empty/whitespace-only statements
+#     statements = [s.strip() for s in query.split(";")]
+#     return len([s for s in statements if s])
+#     # return query.count(";")
 
 
 def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
@@ -404,7 +422,7 @@ def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
     :param string: The template string containing placeholders
     :param values: A dictionary of values to substitute into the template
     """
-    template = Template(string)
+    template = Template(string, undefined=DebugUndefined)
     return template.render(values)
 
 
