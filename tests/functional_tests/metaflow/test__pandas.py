@@ -47,7 +47,7 @@ class TestPandasReadWriteFlow(FlowSpec):
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         # Query to retrieve the data we just published
-        query = "SELECT * FROM PATTERN_DB.{schema}.PANDAS_TEST_TABLE;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;"
 
         # Query the data back
         result_df = query_pandas_from_snowflake(query)

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator, Literal, Optional, Union
 
+from jinja2 import Template
 from snowflake.connector.cursor import SnowflakeCursor
 
 PROD_SCHEMA = "DATA_SCIENCE"
@@ -24,7 +25,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
 
     :param cursor: Snowflake cursor for executing queries
     :param audits: SQL queries that return a single row of boolean values representing assertions
-        against PATTERN_DB.{schema}.{table_name}. If len(audits) == 0, write-audit-publish is not
+        against PATTERN_DB.{{schema}}.{{table_name}}. If len(audits) == 0, write-audit-publish is not
         performed and the query is simply run against the final table.
     """
     # gather inputs
@@ -37,9 +38,9 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     skip_audit_publish = len(audits) == 0
 
     # validate inputs
-    if "{schema}.{table_name}" not in query:
+    if "{{schema}}.{{table_name}}" not in query:
         raise ValueError(
-            "You must use the literal string '{schema}.{table_name}' in your query to "
+            "You must use the literal string '{{schema}}.{{table_name}}' in your query to "
             "select the table you are writing to, so that the publish() function "
             "can dynamically substitute values into these to perform the write-audit-publish"
             "pattern.\n\n"
@@ -48,7 +49,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
 
     for i, audit_query in enumerate(audits):
         audit_query = str(audit_query)
-        if "{schema}.{table_name}" not in str(audit_query):
+        if "{{schema}}.{{table_name}}" not in str(audit_query):
             raise ValueError(
                 f"The audit query at index {i} must use the literal string '{{schema}}.{{table_name}}' to "
                 "reference the table being audited, so that the audit() function can dynamically "
@@ -398,13 +399,13 @@ def cleanup(
 
 
 def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
-    """Format a string using a dictionary, ignoring keys that are not provided."""
+    """Format a string using a dictionary with Jinja2 templating.
 
-    class SafeDict(dict):
-        def __missing__(self, key):
-            return f"{{{key}}}"
-
-    return string.format_map(SafeDict(values))
+    :param string: The template string containing placeholders
+    :param values: A dictionary of values to substitute into the template
+    """
+    template = Template(string)
+    return template.render(values)
 
 
 def get_query_from_string_or_fpath(query_str_or_fpath: Union[str, Path]) -> str:

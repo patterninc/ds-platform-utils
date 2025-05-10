@@ -1,6 +1,6 @@
 [project]
 name = "ds-platform-utils"
-version = "0.0.4"
+version = "0.0.5"
 description = "Add your description here"
 readme = "README.md"
 authors = []
@@ -12,6 +12,7 @@ dependencies = [
     "PyYAML",
     "pyarrow>=20.0.0",
     "pandas",
+    "jinja2",
 ]
 
 [dependency-groups]

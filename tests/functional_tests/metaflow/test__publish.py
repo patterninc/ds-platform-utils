@@ -19,7 +19,7 @@ SELECT
     SUM(CASE WHEN age < 0 OR age != CAST(age AS INT) THEN 1 ELSE 0 END) = 0 AS age_nonnegative_integer,
     -- assert all columns are non-null
     SUM(CASE WHEN id IS NULL OR name IS NULL OR age IS NULL THEN 1 ELSE 0 END) = 0 AS no_nulls
-FROM PATTERN_DB.{schema}.{table_name}
+FROM PATTERN_DB.{{schema}}.{{table_name}}
 """
 
 
@@ -38,14 +38,14 @@ class TestPublishFlow(FlowSpec):
 
         query = """
         -- Create a test table
-        CREATE OR REPLACE TABLE PATTERN_DB.{schema}.{table_name} (
+        CREATE OR REPLACE TABLE PATTERN_DB.{{schema}}.{{table_name}} (
             id INT,
             name STRING,
             age INT
         );
 
         -- Insert some data
-        INSERT INTO PATTERN_DB.{schema}.{table_name} (id, name, age)
+        INSERT INTO PATTERN_DB.{{schema}}.{{table_name}} (id, name, age)
         VALUES
             (1, 'Mario', 27),
             (2, 'Luigi', 30),
@@ -62,7 +62,7 @@ class TestPublishFlow(FlowSpec):
 
         query = """
         -- Insert additional video game characters
-        INSERT INTO PATTERN_DB.{schema}.{table_name} (id, name, age)
+        INSERT INTO PATTERN_DB.{{schema}}.{{table_name}} (id, name, age)
         VALUES
             (6, 'Link', 20),
             (7, 'Kirby', 40),
@@ -75,7 +75,7 @@ class TestPublishFlow(FlowSpec):
             query=query,
             audits=[
                 # assert that there are 8 rows. The initial 5, plus the recent 3.
-                "SELECT COUNT(*) = 8 FROM PATTERN_DB.{schema}.{table_name}"
+                "SELECT COUNT(*) = 8 FROM PATTERN_DB.{{schema}}.{{table_name}}"
             ],
         )
 
@@ -91,7 +91,7 @@ class TestPublishFlow(FlowSpec):
             publish(
                 table_name="sample_table",
                 query=query,
-                audits=["SELECT COUNT(*) = 0 FROM PATTERN_DB.{schema}.{table_name}"],
+                audits=["SELECT COUNT(*) = 0 FROM PATTERN_DB.{{schema}}.{{table_name}}"],
             )
             raise Exception("The audit should have raised a snowflake programming error, but did not")
         except AssertionError as e:

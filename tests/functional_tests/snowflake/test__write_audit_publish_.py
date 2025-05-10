@@ -1,6 +1,7 @@
 import pytest
 
 from ds_platform_utils._snowflake.write_audit_publish import (
+    substitute_map_into_string,
     write_audit_publish,
 )
 
@@ -9,11 +10,11 @@ def test_write_audit_publish_basic():
     """Test basic write-audit-publish flow with audits."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
     audits = [
-        "SELECT COUNT(*) > 0 as has_rows FROM PATTERN_DB.{schema}.{table_name}",
+        "SELECT COUNT(*) > 0 as has_rows FROM PATTERN_DB.{{schema}}.{{table_name}}",
     ]
 
     # Collect all operations
@@ -41,7 +42,7 @@ def test_write_audit_publish_no_audits():
     """Test that with no audits, we just get a single write operation."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
 
@@ -51,19 +52,22 @@ def test_write_audit_publish_no_audits():
     assert operations[0].operation_type == "write"
     assert operations[0].schema == "DATA_SCIENCE_STAGE"
 
-    # when write-audit-publish is skipped, the query should execute as is--with schema and table_name substituted
-    assert operations[0].query == query.format(schema="DATA_SCIENCE_STAGE", table_name=table_name).strip()
+    # Use the substitute_map_into_string function to render the query for comparison
+    expected_query = substitute_map_into_string(
+        query, {"schema": "DATA_SCIENCE_STAGE", "table_name": table_name}
+    ).strip()
+    assert operations[0].query == expected_query
 
 
 def test_write_audit_publish_production():
     """Test write-audit-publish to production schema."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
     audits = [
-        "SELECT COUNT(*) > 0 as has_rows FROM PATTERN_DB.{schema}.{table_name}",
+        "SELECT COUNT(*) > 0 as has_rows FROM PATTERN_DB.{{schema}}.{{table_name}}",
     ]
 
     operations = list(
@@ -83,7 +87,7 @@ def test_write_audit_publish_production():
 def test__write_audit_publish__invalid_query():
     """Test that invalid queries raise appropriate errors."""
     table_name = "test_table"
-    query = "SELECT * FROM source_table"  # Missing {schema}.{table_name}
+    query = "SELECT * FROM source_table"  # Missing {{schema}}.{{table_name}}
 
     with pytest.raises(ValueError, match="must use the literal string"):
         list(write_audit_publish(table_name=table_name, query=query, audits=None, cursor=None))
@@ -93,11 +97,11 @@ def test__write_audit_publish__invalid_audit():
     """Test that invalid audit queries raise appropriate errors."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
     audits = [
-        "SELECT COUNT(*) FROM wrong_table"  # Missing {schema}.{table_name}
+        "SELECT COUNT(*) FROM wrong_table"  # Missing {{schema}}.{{table_name}}
     ]
 
     with pytest.raises(ValueError, match="must use the literal string"):
@@ -108,7 +112,7 @@ def test__write_audit_publish__invalid_ctx_schema():
     """Test that context containing 'schema' raises error."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
     invalid_ctx = {"schema": "INVALID_SCHEMA"}
@@ -121,7 +125,7 @@ def test__write_audit_publish__invalid_ctx_table_name():
     """Test that context containing 'table_name' raises error."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table;
     """
     invalid_ctx = {"table_name": "INVALID_TABLE"}
@@ -134,17 +138,17 @@ def test_write_audit_publish_with_ctx():
     """Test write-audit-publish with context substitution."""
     table_name = "test_table"
     query = """
-    CREATE TABLE PATTERN_DB.{schema}.{table_name} AS
+    CREATE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
     SELECT * FROM source_table
-    WHERE date = '{date}' AND region = '{region}';
+    WHERE date = '{{date}}' AND region = '{{region}}';
     """
     audits = [
         """
         SELECT
             COUNT(*) > 0 as has_rows,
-            region = '{region}' as correct_region
-        FROM PATTERN_DB.{schema}.{table_name}
-        WHERE date = '{date}'
+            region = '{{region}}' as correct_region
+        FROM PATTERN_DB.{{schema}}.{{table_name}}
+        WHERE date = '{{date}}'
         """
     ]
     ctx = {"date": "2024-01-01", "region": "US"}
