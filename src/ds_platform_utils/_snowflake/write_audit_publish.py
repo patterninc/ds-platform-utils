@@ -4,11 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator, Literal, Optional, Union
 
-from jinja2 import Template
+from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
 
-PROD_SCHEMA = "DATA_SCIENCE"
-NON_PROD_SCHEMA = "DATA_SCIENCE_STAGE"
+from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -38,9 +37,9 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
     skip_audit_publish = len(audits) == 0
 
     # validate inputs
-    if "{{schema}}.{{table_name}}" not in query:
+    if not query_contains_parameterized_schema_and_table_name(query):
         raise ValueError(
-            "You must use the literal string '{{schema}}.{{table_name}}' in your query to "
+            "You must use the literal string '{{ schema }}.{{ table_name }}' or '{{schema}}.{{table_name}}' in your query to "
             "select the table you are writing to, so that the publish() function "
             "can dynamically substitute values into these to perform the write-audit-publish"
             "pattern.\n\n"
@@ -49,9 +48,9 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
 
     for i, audit_query in enumerate(audits):
         audit_query = str(audit_query)
-        if "{{schema}}.{{table_name}}" not in str(audit_query):
+        if not query_contains_parameterized_schema_and_table_name(audit_query):
             raise ValueError(
-                f"The audit query at index {i} must use the literal string '{{schema}}.{{table_name}}' to "
+                f"The audit query at index {i} must use the literal string '{{ schema }}.{{ table_name }}' or '{{schema}}.{{table_name}}' to "
                 "reference the table being audited, so that the audit() function can dynamically "
                 "substitute values into these to perform the checks.\n\n"
                 f"Audit query:\n{audit_query[:100]}..."
@@ -91,6 +90,19 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
             branch_name=branch_name,
         ):
             yield op
+
+
+def query_contains_parameterized_schema_and_table_name(query: str) -> bool:
+    """Check if the query contains the parameterized schema and table name.
+
+    :param query: SQL query to check
+    :return: True if the query contains '{{schema}}.{{table_name}}', False otherwise
+    """
+    if "{{schema}}.{{table_name}}" in query:
+        return True
+    if "{{ schema }}.{{ table_name }}" in query:
+        return True
+    return False
 
 
 def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -176,24 +188,6 @@ def _debug_print_query(query: str) -> None:
         print("=====================\n")
 
 
-def _count_sql_statements(query: str) -> int:
-    """Count the number of SQL statements in a query string.
-
-    :param query: SQL query string, potentially containing multiple statements
-    :return: Number of statements found
-
-    Statements are expected to be separated by semicolons, but the last statement
-    may not have a trailing semicolon.
-    """
-    # Add trailing semicolon if missing to ensure last statement is counted
-    if not query.strip().endswith(";"):
-        query = query.strip() + ";"
-
-    # Split on semicolons and filter out empty/whitespace-only statements
-    statements = [s.strip() for s in query.split(";")]
-    return len([s for s in statements if s])
-
-
 def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
     """Execute one or more SQL statements.
 
@@ -207,8 +201,7 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
         return
 
     # Count statements so we can tell Snowflake exactly how many to expect
-    num_statements = _count_sql_statements(query)
-    cursor.execute(query, num_statements=num_statements)
+    cursor.execute(query, num_statements=0)  # 0 means any number of statements
     cursor.connection.commit()
 
 
@@ -404,7 +397,7 @@ def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
     :param string: The template string containing placeholders
     :param values: A dictionary of values to substitute into the template
     """
-    template = Template(string)
+    template = Template(string, undefined=DebugUndefined)
     return template.render(values)
 
 

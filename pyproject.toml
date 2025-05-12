@@ -13,6 +13,7 @@ dependencies = [
     "pyarrow>=20.0.0",
     "pandas",
     "jinja2",
+    "sqlglot>=26.17.1",
 ]
 
 [dependency-groups]
