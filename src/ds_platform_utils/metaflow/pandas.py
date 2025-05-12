@@ -97,7 +97,7 @@ def query_pandas_from_snowflake(
     The keys in the `ctx` dictionary should match the placeholders in the query string.
     """
     query = get_query_from_string_or_fpath(query)
-    if "{schema}" in query:
+    if "{{schema}}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
         query = substitute_map_into_string(query, {"schema": schema})
 
