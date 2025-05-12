@@ -1,19 +1,19 @@
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
-from ds_platform_utils._snowflake.write_audit_publish import (
-    AuditSQLOperation,
-    SQLOperation,
-    write_audit_publish,
-)
-from ds_platform_utils.metaflow.get_snowflake_connection import (
-    get_snowflake_connection,
-)
+from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
+
+if TYPE_CHECKING:
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        # AuditSQLOperation,
+        SQLOperation,
+        # write_audit_publish,
+    )
 
 
 def publish(
@@ -23,6 +23,8 @@ def publish(
     ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[str] = None,
 ) -> None:
+    from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
+
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
     conn = get_snowflake_connection()
 
@@ -49,7 +51,7 @@ def publish(
 
 
 def update_card_with_operation_info(
-    operation: SQLOperation,
+    operation: "SQLOperation",
     last_op_was_write: bool,
     cursor: "SnowflakeCursor",
 ) -> None:
@@ -81,7 +83,9 @@ def update_card_with_operation_info(
     current.card.refresh()
 
 
-def get_card_content(operation: SQLOperation, last_op_was_write: bool) -> list[Union[Markdown, Table]]:
+def get_card_content(operation: "SQLOperation", last_op_was_write: bool) -> list[Union[Markdown, Table]]:
+    from ds_platform_utils._snowflake.write_audit_publish import AuditSQLOperation
+
     """Generate Markdown card content for an operation.
 
     :param op: SQL operation to generate card content for

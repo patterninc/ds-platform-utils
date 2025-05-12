@@ -8,10 +8,11 @@ from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
-from ds_platform_utils._snowflake.write_audit_publish import (
-    get_query_from_string_or_fpath,
-    substitute_map_into_string,
-)
+# if TYPE_CHECKING:
+# from ds_platform_utils._snowflake.write_audit_publish import (
+#     get_query_from_string_or_fpath,
+#     substitute_map_into_string,
+# )
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
@@ -81,6 +82,11 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     ctx: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        get_query_from_string_or_fpath,
+        substitute_map_into_string,
+    )
+
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.

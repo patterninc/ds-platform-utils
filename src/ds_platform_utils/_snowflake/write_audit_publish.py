@@ -421,7 +421,7 @@ if __name__ == "__main__":
     # Main query creates the table with pokemon statistics, using intermediate temp tables
     query = """
     -- First temp table: extract raw data and filter
-    create or replace temp table PATTERN_DB.{schema}._TEMP_POKEMON_RAW as
+    create or replace temp table PATTERN_DB.{{schema}}._TEMP_POKEMON_RAW as
     select
         pokemon_name,
         pokedex_id,
@@ -433,7 +433,7 @@ if __name__ == "__main__":
     where age > 0;
 
     -- Second temp table: add derived calculations
-    create or replace temp table PATTERN_DB.{schema}._TEMP_POKEMON_ENRICHED as
+    create or replace temp table PATTERN_DB.{{schema}}._TEMP_POKEMON_ENRICHED as
     select
         pokemon_name,
         pokedex_id,
@@ -442,11 +442,11 @@ if __name__ == "__main__":
         power_level * 1.5 as boosted_power_level,
         type,
         region
-    from PATTERN_DB.{schema}._TEMP_POKEMON_RAW
+    from PATTERN_DB.{{schema}}._TEMP_POKEMON_RAW
     where type is not null;
 
     -- Final table: create the published dataset
-    create table PATTERN_DB.{schema}.{table_name} as
+    create table PATTERN_DB.{{schema}}.{{table_name}} as
     select
         pokemon_name,
         pokedex_id,
@@ -454,7 +454,7 @@ if __name__ == "__main__":
         power_level,
         boosted_power_level,
         type
-    from PATTERN_DB.{schema}._TEMP_POKEMON_ENRICHED
+    from PATTERN_DB.{{schema}}._TEMP_POKEMON_ENRICHED
     where region != 'UNKNOWN';
     """
 
@@ -465,14 +465,14 @@ if __name__ == "__main__":
         select
             min(age) > 0 as all_ages_positive,
             min(power_level) >= 0 as all_power_levels_valid
-        from PATTERN_DB.{schema}.{table_name};
+        from PATTERN_DB.{{schema}}.{{table_name}};
         """,
         # Check for uniqueness and null values
         """
         select
             count(*) = count(pokemon_name) as no_null_names,
             count(distinct pokedex_id) = count(pokedex_id) as unique_pokedex_ids
-        from PATTERN_DB.{schema}.{table_name};
+        from PATTERN_DB.{{schema}}.{{table_name}};
         """,
     ]
 
