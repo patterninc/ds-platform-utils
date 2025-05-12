@@ -10,10 +10,9 @@ dependencies = [
     "pydantic>=2",
     "snowflake-connector-python>=3",
     "PyYAML",
-    "pyarrow>=20.0.0",
+    "pyarrow",
     "pandas",
     "jinja2",
-    "sqlglot>=26.17.1",
 ]
 
 [dependency-groups]
