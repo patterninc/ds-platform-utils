@@ -91,11 +91,6 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     ctx: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
-    from ds_platform_utils._snowflake.write_audit_publish import (
-        get_query_from_string_or_fpath,
-        substitute_map_into_string,
-    )
-
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
@@ -111,6 +106,11 @@ def query_pandas_from_snowflake(
     If the `ctx` dictionary is provided, it will be used to substitute values into the query string.
     The keys in the `ctx` dictionary should match the placeholders in the query string.
     """
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        get_query_from_string_or_fpath,
+        substitute_map_into_string,
+    )
+
     query = get_query_from_string_or_fpath(query)
     if "{{schema}}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
@@ -126,8 +126,8 @@ def query_pandas_from_snowflake(
         conn: SnowflakeConnection = get_snowflake_connection()
         # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
         result: pyarrow.Table = conn.cursor().execute(query).fetch_arrow_all(force_return_table=True)
-        if not result:
-            raise ValueError("Query returned no results")
+        # if not result:
+        #     raise ValueError("Query returned no results")
 
         df = result.to_pandas()
         df.columns = df.columns.str.lower()
