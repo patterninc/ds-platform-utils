@@ -1,8 +1,10 @@
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
 
 import pandas as pd
 import pyarrow
+import pytz
 from metaflow import current
 from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
@@ -20,6 +22,7 @@ from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_co
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
     df: pd.DataFrame,
+    add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
     parallel: int = 4,
@@ -34,6 +37,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         the sake of standardization.
 
     :param df: DataFrame to store
+
+    :param add_created_date: When true, will add a column called `created_date` to the DataFrame with the current
+        timestamp in UTC.
 
     :param chunk_size: Number of rows to be inserted once. If not provided, all rows will be dumped once.
         Default to None normally, 100,000 if inside a stored procedure.
@@ -58,6 +64,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     if df.empty:
         raise ValueError("DataFrame is empty.")
+
+    if add_created_date:
+        df["created_date"] = datetime.now().astimezone(pytz.utc)
 
     current.card.append(Markdown(f"### Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
