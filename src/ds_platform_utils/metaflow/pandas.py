@@ -89,11 +89,13 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
 def query_pandas_from_snowflake(
     query: Union[str, Path],
+    warehouse: Optional[str] = None,
     ctx: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
+    :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
     :param ctx: Context dictionary to substitute into the query string.
     :return: DataFrame containing the results of the query.
 
@@ -119,22 +121,21 @@ def query_pandas_from_snowflake(
     if ctx:
         query = substitute_map_into_string(query, ctx)
 
-    current.card.append(Markdown("### Querying Snowflake table"))
+    current.card.append(Markdown("### Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
-    try:
-        conn: SnowflakeConnection = get_snowflake_connection()
+    conn: SnowflakeConnection = get_snowflake_connection()
+    with conn.cursor() as cur:
+        if warehouse is not None:
+            cur.execute(f"USE WAREHOUSE {warehouse};")
+    
         # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
-        result: pyarrow.Table = conn.cursor().execute(query).fetch_arrow_all(force_return_table=True)
-        # if not result:
-        #     raise ValueError("Query returned no results")
+        result: pyarrow.Table = cur.execute(query).fetch_arrow_all(force_return_table=True)
 
         df = result.to_pandas()
         df.columns = df.columns.str.lower()
 
         current.card.append(Markdown("### Query Result"))
         current.card.append(Table.from_dataframe(df.head()))
-
         return df
-    finally:
-        conn.close()
+
