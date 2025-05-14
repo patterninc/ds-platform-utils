@@ -388,7 +388,7 @@ wheels = [
 
 [[package]]
 name = "ds-platform-utils"
-version = "0.0.9"
+version = "0.0.10"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },

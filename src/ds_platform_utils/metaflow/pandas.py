@@ -16,7 +16,7 @@ from snowflake.connector.pandas_tools import write_pandas
 #     substitute_map_into_string,
 # )
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
-from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
+from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -121,6 +121,9 @@ def query_pandas_from_snowflake(
     if ctx:
         query = substitute_map_into_string(query, ctx)
 
+    # print query if DEBUG_QUERY env var is set
+    _debug_print_query(query)
+
     current.card.append(Markdown("### Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
@@ -128,7 +131,7 @@ def query_pandas_from_snowflake(
     with conn.cursor() as cur:
         if warehouse is not None:
             cur.execute(f"USE WAREHOUSE {warehouse};")
-    
+
         # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
         result: pyarrow.Table = cur.execute(query).fetch_arrow_all(force_return_table=True)
 
@@ -138,4 +141,3 @@ def query_pandas_from_snowflake(
         current.card.append(Markdown("### Query Result"))
         current.card.append(Table.from_dataframe(df.head()))
         return df
-
