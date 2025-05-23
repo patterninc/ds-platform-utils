@@ -37,13 +37,8 @@
     "python.analysis.indexing": true,
     "python.languageServer": "Pylance",
     "python.analysis.completeFunctionParens": true,
-    // "[sql]": {
-    //     "editor.codeActionsOnSave": {
-    //         "source.fixAll": "explicit"
-    //     },
-    //     "editor.formatOnSave": true,
-    //     "editor.defaultFormatter": "dorzey.vscode-sqlfluff"
-    // },
-    // "sqlfluff.linter.run": "onSave",
-    // "sqlfluff.config": "${workspaceFolder}/pyproject.toml"
+    // Python Envy: venv name setting, default is .venv
+    "pythonEnvy.venvName": ".venv",
+    // disable the info visibility of the interpreter. E.g.: Python Envy: interpreter set to: /<path-to-venv>/.venv/bin/python
+    "python.interpreter.infoVisibility": "never",
 }

@@ -17,6 +17,7 @@ from snowflake.connector.pandas_tools import write_pandas
 # )
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
+from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -68,7 +69,11 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if add_created_date:
         df["created_date"] = datetime.now().astimezone(pytz.utc)
 
-    current.card.append(Markdown(f"### Publishing DataFrame to Snowflake table: `{table_name}`"))
+    table_name = table_name.upper()
+    schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
+
+    # Preview the DataFrame in the Metaflow card
+    current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection()
@@ -76,8 +81,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     write_pandas(
         conn=conn,
         df=df,
-        table_name=table_name.upper(),
-        schema=PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA,
+        table_name=table_name,
+        schema=schema,
         chunk_size=chunk_size,
         compression=compression,
         parallel=parallel,
@@ -85,6 +90,14 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         overwrite=overwrite,
         use_logical_type=use_logical_type,
     )
+
+    # Add a link to the table in Snowflake to the card
+    table_url = _make_snowflake_table_url(
+        database="PATTERN_DB",
+        schema=schema,
+        table=table_name,
+    )
+    current.card.append(Markdown(f"[View table in Snowflake]({table_url})"))
 
 
 def query_pandas_from_snowflake(
@@ -124,7 +137,7 @@ def query_pandas_from_snowflake(
     # print query if DEBUG_QUERY env var is set
     _debug_print_query(query)
 
-    current.card.append(Markdown("### Querying Snowflake Table"))
+    current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     conn: SnowflakeConnection = get_snowflake_connection()
