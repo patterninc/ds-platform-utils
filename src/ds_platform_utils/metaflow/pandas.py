@@ -27,6 +27,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
     parallel: int = 4,
+    quote_identifiers: bool = True,
     auto_create_table: bool = False,
     overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
@@ -49,6 +50,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
 
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
+
+    :param quote_identifiers: By default, identifiers, specifically database, schema, table and column names
+        (from df.columns) will be quoted. If set to False, identifiers are passed on to Snowflake without quoting.
+        I.e. identifiers will be coerced to uppercase by Snowflake. (Default value = True)
 
     :param auto_create_table: When true, will automatically create a table with corresponding columns for each column in
         the passed in DataFrame. The table will not be created if it already exists.
@@ -86,6 +91,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         chunk_size=chunk_size,
         compression=compression,
         parallel=parallel,
+        quote_identifiers=quote_identifiers,
         auto_create_table=auto_create_table,
         overwrite=overwrite,
         use_logical_type=use_logical_type,
