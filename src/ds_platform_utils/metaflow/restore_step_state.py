@@ -34,15 +34,15 @@ def restore_step_state(
         - else use the run_id provided
 
     Behavior:
-    - export @secrets as env vars
-    - return an object with the following properties
+    - export @secrets as env vars [PENDING ⏳]
+    - return an object with the following properties [DONE ✅]
         - anything on self.x in the flow, which would be on Flow("name").run.data will be
-          available on self.x
-        - Other attributes of self.
-          - tags
-          - identity, e.g. user:vinay.shende@pattern.com
-          - run and flow and step ids
-          - whatever else we can grab (eventually list out things)
+          available on self.x [DONE ✅]
+        - Other attributes of self. [DONE ✅]
+          - tags and system tags [DONE ✅, through self.tags, self.system_tags]
+          - identity, e.g. user:vinay.shende@pattern.com [PENDING ⏳, don't know how to get this yet]
+          - run and flow and step ids [DONE ✅]
+          - whatever else we can grab (eventually list out things) [DONE ✅]
     - from metaflow import current
         - monkeypatched/magic mocked with
             - .run_id
@@ -92,4 +92,4 @@ class MyFlow(FlowSpec):
 self = restore_step_state(MyFlow, flow_run_id="1685226790169915", step_to_run="start")
 
 # ✅ You will now get autocompletion for state.df
-print(self.df.head())
+print(self.df)
