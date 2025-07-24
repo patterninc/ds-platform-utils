@@ -42,11 +42,12 @@ def publish(
             ctx=ctx,
             branch_name=current.run_id,
         ):
-            update_card_with_operation_info(
-                operation=operation,
-                last_op_was_write=last_op_was_write,
-                cursor=cur,
-            )
+            if current.card:
+                update_card_with_operation_info(
+                    operation=operation,
+                    last_op_was_write=last_op_was_write,
+                    cursor=cur,
+                )
             last_op_was_write = operation.operation_type == "write"
 
 
