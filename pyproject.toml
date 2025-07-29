@@ -1,9 +1,12 @@
 [project]
 name = "ds-platform-utils"
-version = "0.0.13"
-description = "Add your description here"
+version = "0.0.14"
+description = "Utility library for Pattern Data Science."
 readme = "README.md"
-authors = []
+authors = [
+    { name = "Amit Vikram Raj", email = "amit.raj@pattern.com" },
+    { name = "Eric Riddoch", email = "eric.riddoch@pattern.com" }
+]
 # requires-python = ">=3.7"
 dependencies = [
     "outerbounds>=0.3.159",
@@ -63,6 +66,7 @@ ignore = [
     "PLR2004",
     # `with` statement variable `tmp_dir` overwritten by assignment target, eg: tests/unit_tests/components/metaflow_project/test__metaflow_project_.py:17:9
     "PLW2901",
+    "PLC0415",  # `import` should be at the top-level of a file
 ]
 
 # https://docs.astral.sh/ruff/rules/#mccabe-c90
