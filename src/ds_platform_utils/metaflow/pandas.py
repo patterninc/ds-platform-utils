@@ -26,6 +26,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
+    warehouse: Optional[str] = None,
     parallel: int = 4,
     quote_identifiers: bool = True,
     auto_create_table: bool = False,
@@ -78,10 +79,18 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
 
     # Preview the DataFrame in the Metaflow card
+    if warehouse is not None:
+        current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection()
+    
+    # set warehouse
+    if warehouse is not None:
+        with conn.cursor() as cur:
+            cur.execute(f"USE WAREHOUSE {warehouse};")
+            
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
@@ -143,6 +152,8 @@ def query_pandas_from_snowflake(
     # print query if DEBUG_QUERY env var is set
     _debug_print_query(query)
 
+    if warehouse is not None:
+        current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 

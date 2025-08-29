@@ -42,6 +42,33 @@ class TestPandasReadWriteFlow(FlowSpec):
         self.next(self.test_query_pandas)
 
     @step
+    def test_publish_pandas_with_warehouse(self):
+        """Test the publish pandas on having parameters: warehouse"""
+        
+        import pandas as pd
+
+        from ds_platform_utils.metaflow import publish_pandas
+
+        # Create a sample DataFrame
+        data = {
+            "id": [1, 2, 3, 4, 5],
+            "name": ["Mario", "Luigi", "Peach", "Bowser", "Toad"],
+            "score": [90.5, 85.2, 88.7, 92.1, 78.9],
+        }
+        df = pd.DataFrame(data)
+
+        # Publish the DataFrame to Snowflake with a specific warehouse
+        publish_pandas(
+            table_name="pandas_test_table",
+            df=df,
+            auto_create_table=True,
+            overwrite=True,
+            warehouse="OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+        )
+
+        self.next(self.test_query_pandas)
+
+    @step
     def test_query_pandas(self):
         """Test the query_pandas_from_snowflake function."""
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
@@ -97,3 +124,4 @@ def execute_with_output(cmd):
     return_code = process.wait()
     if return_code:
         raise subprocess.CalledProcessError(return_code, cmd)
+

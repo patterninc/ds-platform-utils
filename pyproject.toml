@@ -1,6 +1,6 @@
 [project]
 name = "ds-platform-utils"
-version = "0.0.14"
+version = "0.0.15"
 description = "Utility library for Pattern Data Science."
 readme = "README.md"
 authors = [
