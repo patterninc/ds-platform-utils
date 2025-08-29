@@ -19,6 +19,12 @@ from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
 
+TWarehouse = Literal[
+    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+]
+
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
@@ -26,6 +32,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
+    warehouse: Optional[TWarehouse] = None,
     parallel: int = 4,
     quote_identifiers: bool = True,
     auto_create_table: bool = False,
@@ -48,6 +55,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
+
+    :param warehouse: The Snowflake warehouse to use for the operation. If not provided, it defaults to the OUTERBOUNDS_DATA_SCIENCE_XS_WH warehouse.
 
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
@@ -78,10 +87,18 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
 
     # Preview the DataFrame in the Metaflow card
+    if warehouse is not None:
+        current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection()
+
+    # set warehouse
+    if warehouse is not None:
+        with conn.cursor() as cur:
+            cur.execute(f"USE WAREHOUSE {warehouse};")
+
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
@@ -108,7 +125,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
 def query_pandas_from_snowflake(
     query: Union[str, Path],
-    warehouse: Optional[str] = None,
+    warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
@@ -143,6 +160,8 @@ def query_pandas_from_snowflake(
     # print query if DEBUG_QUERY env var is set
     _debug_print_query(query)
 
+    if warehouse is not None:
+        current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
