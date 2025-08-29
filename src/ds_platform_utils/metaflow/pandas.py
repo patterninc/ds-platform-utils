@@ -19,6 +19,12 @@ from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
 
+TWarehouse = Literal[
+    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+]
+
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
@@ -26,7 +32,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "gzip",
-    warehouse: Optional[str] = None,
+    warehouse: Optional[TWarehouse] = None,
     parallel: int = 4,
     quote_identifiers: bool = True,
     auto_create_table: bool = False,
@@ -119,7 +125,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
 def query_pandas_from_snowflake(
     query: Union[str, Path],
-    warehouse: Optional[str] = None,
+    warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.

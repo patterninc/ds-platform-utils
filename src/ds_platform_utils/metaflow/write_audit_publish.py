@@ -15,13 +15,21 @@ if TYPE_CHECKING:
         # write_audit_publish,
     )
 
+from typing import Literal
+
+TWarehouse = Literal[
+    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+]
+
 
 def publish(
     table_name: str,
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
     ctx: Optional[Dict[str, Any]] = None,
-    warehouse: Optional[str] = None,
+    warehouse: Optional[TWarehouse] = None,
 ) -> None:
     from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
