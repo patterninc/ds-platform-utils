@@ -39,7 +39,7 @@ class TestPandasReadWriteFlow(FlowSpec):
             overwrite=True,
         )
 
-        self.next(self.test_query_pandas)
+        self.next(self.test_publish_pandas_with_warehouse)
 
     @step
     def test_publish_pandas_with_warehouse(self):

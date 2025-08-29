@@ -50,6 +50,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
 
+    :param warehouse: The Snowflake warehouse to use for the operation. If not provided, it defaults to the OUTERBOUNDS_DATA_SCIENCE_XS_WH warehouse.
+
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
     :param quote_identifiers: By default, identifiers, specifically database, schema, table and column names
