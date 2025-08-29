@@ -43,8 +43,7 @@ class TestPandasReadWriteFlow(FlowSpec):
 
     @step
     def test_publish_pandas_with_warehouse(self):
-        """Test the publish pandas on having parameters: warehouse"""
-        
+        """Test the publish pandas on having parameters: warehouse."""
         import pandas as pd
 
         from ds_platform_utils.metaflow import publish_pandas
@@ -124,4 +123,3 @@ def execute_with_output(cmd):
     return_code = process.wait()
     if return_code:
         raise subprocess.CalledProcessError(return_code, cmd)
-

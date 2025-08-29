@@ -87,12 +87,12 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection()
-    
+
     # set warehouse
     if warehouse is not None:
         with conn.cursor() as cur:
             cur.execute(f"USE WAREHOUSE {warehouse};")
-            
+
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
