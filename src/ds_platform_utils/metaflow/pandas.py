@@ -74,6 +74,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param use_logical_type: Boolean that specifies whether to use Parquet logical types when reading the
         parquet files for the uploaded pandas dataframe.
+
+    :param is_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")

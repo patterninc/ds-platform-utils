@@ -60,8 +60,8 @@ def _create_snowflake_connection(
 
     queries = []
 
-    timezone_setting = "UTC" if is_utc else "DEFAULT"
-    queries.append(f"ALTER SESSION SET TIMEZONE = '{timezone_setting}';")
+    if is_utc:
+        queries.append("ALTER SESSION SET TIMEZONE = 'UTC';")
 
     if query_tag:
         queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
