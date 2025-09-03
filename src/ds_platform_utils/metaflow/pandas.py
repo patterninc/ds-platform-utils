@@ -38,6 +38,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     auto_create_table: bool = False,
     overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
+    is_utc: bool = True,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -92,7 +93,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
-    conn: SnowflakeConnection = get_snowflake_connection()
+    conn: SnowflakeConnection = get_snowflake_connection(is_utc)
 
     # set warehouse
     if warehouse is not None:
@@ -127,7 +128,7 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
-    is_utc: bool = True,
+    is_utc: bool = False,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
