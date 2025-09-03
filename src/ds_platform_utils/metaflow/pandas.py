@@ -127,6 +127,7 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
+    is_utc: bool = True,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
@@ -165,7 +166,7 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
-    conn: SnowflakeConnection = get_snowflake_connection()
+    conn: SnowflakeConnection = get_snowflake_connection(is_utc)
     with conn.cursor() as cur:
         if warehouse is not None:
             cur.execute(f"USE WAREHOUSE {warehouse};")
