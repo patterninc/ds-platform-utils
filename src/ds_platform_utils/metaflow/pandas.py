@@ -137,7 +137,7 @@ def query_pandas_from_snowflake(
     :param query: SQL query string or path to a .sql file.
     :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
     :param ctx: Context dictionary to substitute into the query string.
-    :param is_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
+    :param is_utc: Whether to set the Snowflake session to use UTC time zone. Default is False.
     :return: DataFrame containing the results of the query.
 
     **NOTE:** If the query contains `{schema}` placeholders, they will be replaced with the appropriate schema name.
