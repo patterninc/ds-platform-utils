@@ -19,9 +19,11 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
     @step
     def test_publish_pandas_with_use_utc(self):
         """Test publishing a DataFrame with a UTC datetime column."""
-        import pandas as pd
         from datetime import datetime, timedelta
+
+        import pandas as pd
         import pytz
+
         from ds_platform_utils.metaflow import publish_pandas
 
         now_utc = datetime.now(pytz.UTC)
@@ -34,7 +36,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         df = pd.DataFrame(data)
 
         # Check before publish that created_at is UTC
-        assert str(df['created_at'].dt.tz) == "UTC", "created_at should be UTC before publishing"
+        assert str(df["created_at"].dt.tz) == "UTC", "created_at should be UTC before publishing"
 
         # Publish the table to Snowflake (UTC=True is default)
         publish_pandas(
@@ -44,7 +46,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
             overwrite=True,
         )
         self.next(self.test_publish_with_use_utc)
-    
+
     @step
     def test_publish_with_use_utc(self):
         """Test the publish function with UTC settings."""
@@ -61,28 +63,30 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
     def test_query_pandas_with_use_utc(self):
         """Test the querying of the UTC data."""
         import pandas as pd
-        import datetime
+
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;"
         df = query_pandas_from_snowflake(query, use_utc=False)
-        
+
         print(df[1])
 
-        dt_col = df['created_at']
+        dt_col = df["created_at"]
 
         assert pd.api.types.is_datetime64_any_dtype(dt_col), "created_at is not a datetime column"
         assert dt_col.dt.tz is not None, "created_at column is not timezone-aware"
         assert str(dt_col.dt.tz) == "datetime.timezone.utc", f"created_at column is not UTC (was {dt_col.dt.tz})"
 
         self.next(self.test_publish_pandas_with_use_utc_false)
-    
+
     @step
     def test_publish_pandas_with_use_utc_false(self):
         """Publish pandas DataFrame with use_utc=False and IST or MST timezone."""
-        import pandas as pd
         from datetime import datetime, timedelta
+
+        import pandas as pd
         import pytz
+
         from ds_platform_utils.metaflow import publish_pandas
 
         # Choose IST or MST timezone
@@ -98,14 +102,10 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
             "created_at": [now_tz + timedelta(hours=i) for i in range(5)],
         }
         df = pd.DataFrame(data)
-        assert str(df['created_at'].dt.tz) == str(tz), f"created_at should be {tz} before publishing"
+        assert str(df["created_at"].dt.tz) == str(tz), f"created_at should be {tz} before publishing"
         # Use use_utc=False this time
         publish_pandas(
-            table_name="PANDAS_TEST_TABLE_NOUTC",
-            df=df,
-            auto_create_table=True,
-            overwrite=True,
-            use_utc=False
+            table_name="PANDAS_TEST_TABLE_NOUTC", df=df, auto_create_table=True, overwrite=True, use_utc=False
         )
         self.next(self.test_publish_with_use_utc_false)
 
@@ -113,27 +113,27 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
     def test_publish_with_use_utc_false(self):
         """Test the publish function with UTC settings."""
         from ds_platform_utils.metaflow import publish
-        import datetime
 
         # Publish the same table which was published via publish_pandas in previous step
         publish(
             table_name="PANDAS_TEST_TABLE_NOUTC",
             query="SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};",
-            use_utc=False
+            use_utc=False,
         )
         self.next(self.test_query_pandas_with_use_utc_false)
-    
-    @step 
+
+    @step
     def test_query_pandas_with_use_utc_false(self):
         """Test the querying of the non-UTC data."""
         import pandas as pd
+
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_NOUTC;"
         df = query_pandas_from_snowflake(query, use_utc=False)
 
-        dt_col = df['created_at'] 
-        
+        dt_col = df["created_at"]
+
         assert pd.api.types.is_datetime64_any_dtype(dt_col), "created_at is not a datetime column"
         assert dt_col.dt.tz is not None, "created_at column is not timezone-aware"
         assert str(dt_col.dt.tz) != "datetime.timezone.utc", f"created_at column is UTC (was {dt_col.dt.tz})"
