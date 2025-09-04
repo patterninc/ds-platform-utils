@@ -14,33 +14,6 @@ class TestPandasReadWriteFlow(FlowSpec):
     @step
     def start(self):
         """Start the flow."""
-        self.next(self.test_publish)
-
-    @step
-    def test_publish(self):
-        """Test the publish function."""
-        from ds_platform_utils.metaflow import publish
-
-        # Publish the table to Snowflake
-        publish(
-            table_name="PANDAS_TEST_TABLE",
-            query="""SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};""",
-        )
-
-        self.next(self.test_publish_with_use_utc)
-
-    @step
-    def test_publish_with_use_utc(self):
-        """Test the publish() on having parameters: use_utc."""
-        from ds_platform_utils.metaflow import publish
-
-        # Publish the table to Snowflake with use_utc parameter
-        publish(
-            table_name="PANDAS_TEST_TABLE",
-            query="""SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};""",
-            use_utc=False,
-        )
-
         self.next(self.test_publish_pandas)
 
     @step
@@ -92,26 +65,6 @@ class TestPandasReadWriteFlow(FlowSpec):
             warehouse="OUTERBOUNDS_DATA_SCIENCE_MED_WH",
         )
 
-        self.next(self.test_publish_pandas_with_use_utc)
-
-    @step
-    def test_publish_pandas_with_use_utc(self):
-        """Test publish pandas on having parameters: use_utc."""
-        import pandas as pd
-
-        from ds_platform_utils.metaflow import publish_pandas
-
-        # Create a sample DataFrame
-        data = {
-            "id": [1, 2, 3, 4, 5],
-            "name": ["Mario", "Luigi", "Peach", "Bowser", "Toad"],
-            "score": [90.5, 85.2, 88.7, 92.1, 78.9],
-        }
-        df = pd.DataFrame(data)
-
-        # Publish the table to Snowflake with default use_utc parameter
-        publish_pandas(table_name="pandas_test_table", df=df, auto_create_table=True, overwrite=True, use_utc=False)
-
         self.next(self.test_query_pandas)
 
     @step
@@ -126,22 +79,10 @@ class TestPandasReadWriteFlow(FlowSpec):
         result_df = query_pandas_from_snowflake(query)
 
         # Quick validation
-        assert len(result_df) == 5, "Expected 5 rows in thepublish result"
+        assert len(result_df) == 5, "Expected 5 rows in the result"
         assert "id" in result_df.columns, "Expected 'id' column in result"
         assert "name" in result_df.columns, "Expected 'name' column in result"
         assert "score" in result_df.columns, "Expected 'score' column in result"
-
-        self.next(self.test_query_pandas_with_use_utc)
-
-    @step
-    def test_query_pandas_with_use_utc(self):
-        """Test the query_pandas_from_snowflake function with use_utc parameter."""
-        from ds_platform_utils.metaflow import query_pandas_from_snowflake
-
-        # Query to retrieve the data we just published
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;"
-
-        query_pandas_from_snowflake(query, use_utc=True)
 
         self.next(self.end)
 

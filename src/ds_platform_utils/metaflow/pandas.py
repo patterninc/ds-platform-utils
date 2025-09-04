@@ -130,14 +130,14 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
-    use_utc: bool = False,
+    use_utc: bool = True,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
     :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
     :param ctx: Context dictionary to substitute into the query string.
-    :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is False.
+    :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     :return: DataFrame containing the results of the query.
 
     **NOTE:** If the query contains `{schema}` placeholders, they will be replaced with the appropriate schema name.
