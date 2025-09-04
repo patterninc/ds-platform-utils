@@ -69,7 +69,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_UTC;"
         df = query_pandas_from_snowflake(query, use_utc=False)
 
-        print(df[1])
+        print(df)
 
         dt_col = df["created_at"]
 
@@ -134,6 +134,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_NOUTC;"
         df = query_pandas_from_snowflake(query, use_utc=False)
 
+        print(df)
         dt_col = df["created_at"]
 
         assert pd.api.types.is_datetime64_any_dtype(dt_col), "created_at is not a datetime column"
