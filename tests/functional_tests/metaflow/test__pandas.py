@@ -110,13 +110,7 @@ class TestPandasReadWriteFlow(FlowSpec):
         df = pd.DataFrame(data)
 
         # Publish the table to Snowflake with default use_utc parameter
-        publish_pandas(
-            table_name="pandas_test_table",
-            df=df,
-            auto_create_table=True,
-            overwrite=True,
-            use_utc=False
-        )
+        publish_pandas(table_name="pandas_test_table", df=df, auto_create_table=True, overwrite=True, use_utc=False)
 
         self.next(self.test_query_pandas)
 
