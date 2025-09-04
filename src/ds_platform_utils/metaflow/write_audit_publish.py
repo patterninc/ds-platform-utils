@@ -24,17 +24,18 @@ TWarehouse = Literal[
 ]
 
 
-def publish(
+def publish(  # noqa: PLR0913
     table_name: str,
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
     ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[TWarehouse] = None,
+    use_utc: bool = True,
 ) -> None:
+    """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
     from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
-    """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    conn = get_snowflake_connection()
+    conn = get_snowflake_connection(use_utc=use_utc)
 
     with conn.cursor() as cur:
         if warehouse is not None:

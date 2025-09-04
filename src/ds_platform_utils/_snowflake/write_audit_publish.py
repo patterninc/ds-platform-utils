@@ -42,7 +42,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
             "You must use the literal string '{{ schema }}.{{ table_name }}' or '{{schema}}.{{table_name}}' in your query to "
             "select the table you are writing to, so that the publish() function "
             "can dynamically substitute values into these to perform the write-audit-publish"
-            "pattern.\n\n"
+            " pattern.\n\n"
             f"Query:\n{query[:100]}"
         )
 

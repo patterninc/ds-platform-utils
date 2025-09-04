@@ -38,6 +38,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     auto_create_table: bool = False,
     overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
+    use_utc: bool = True,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -73,6 +74,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param use_logical_type: Boolean that specifies whether to use Parquet logical types when reading the
         parquet files for the uploaded pandas dataframe.
+
+    :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -92,7 +95,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
-    conn: SnowflakeConnection = get_snowflake_connection()
+    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
 
     # set warehouse
     if warehouse is not None:
@@ -127,12 +130,14 @@ def query_pandas_from_snowflake(
     query: Union[str, Path],
     warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
+    use_utc: bool = True,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
     :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
     :param ctx: Context dictionary to substitute into the query string.
+    :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     :return: DataFrame containing the results of the query.
 
     **NOTE:** If the query contains `{schema}` placeholders, they will be replaced with the appropriate schema name.
@@ -165,7 +170,7 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
-    conn: SnowflakeConnection = get_snowflake_connection()
+    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     with conn.cursor() as cur:
         if warehouse is not None:
             cur.execute(f"USE WAREHOUSE {warehouse};")

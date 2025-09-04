@@ -14,7 +14,7 @@ SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 # @lru_cache
 def get_snowflake_connection(
-    is_utc: bool = True,
+    use_utc: bool = True,
 ) -> SnowflakeConnection:
     """Return a singleton Snowflake cursor.
 
@@ -41,7 +41,7 @@ def get_snowflake_connection(
     In metaflow, each step is a separate Python process, so the connection will automatically be
     closed at the end of any steps that use this singleton.
     """
-    return _create_snowflake_connection(is_utc=is_utc, query_tag=current.project_name)
+    return _create_snowflake_connection(use_utc=use_utc, query_tag=current.project_name)
 
 
 #####################
@@ -50,7 +50,7 @@ def get_snowflake_connection(
 
 
 def _create_snowflake_connection(
-    is_utc: bool,
+    use_utc: bool,
     query_tag: Optional[str] = None,
 ) -> SnowflakeConnection:
     conn: SnowflakeConnection = Snowflake(
@@ -60,8 +60,8 @@ def _create_snowflake_connection(
 
     queries = []
 
-    timezone_setting = "UTC" if is_utc else "DEFAULT"
-    queries.append(f"ALTER SESSION SET TIMEZONE = '{timezone_setting}';")
+    if use_utc:
+        queries.append("ALTER SESSION SET TIMEZONE = 'UTC';")
 
     if query_tag:
         queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
