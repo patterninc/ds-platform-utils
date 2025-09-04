@@ -36,7 +36,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         df = pd.DataFrame(data)
 
         # Check before publish that created_at is UTC
-        assert df["created_at"].dt.tz is datetime.timezone.utc, "created_at should be UTC before publishing"
+        assert str(df["created_at"].dt.tz) == "UTC", "created_at should be UTC before publishing"
 
         # Publish the table to Snowflake (UTC=True is default)
         publish_pandas(
@@ -66,7 +66,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_UTC;"
         df = query_pandas_from_snowflake(query, use_utc=False)
 
         print(df[1])
@@ -75,7 +75,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         assert pd.api.types.is_datetime64_any_dtype(dt_col), "created_at is not a datetime column"
         assert dt_col.dt.tz is not None, "created_at column is not timezone-aware"
-        assert str(dt_col.dt.tz) == "datetime.timezone.utc", f"created_at column is not UTC (was {dt_col.dt.tz})"
+        assert str(dt_col.dt.tz) == "UTC", f"created_at column is not UTC (was {dt_col.dt.tz})"
 
         self.next(self.test_publish_pandas_with_use_utc_false)
 
@@ -103,7 +103,8 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         }
         df = pd.DataFrame(data)
 
-        assert df["created_at"].dt.tz is datetime.timezone.utc, "created_at should be UTC before publishing"
+        assert str(df["created_at"].dt.tz) != "UTC", "created_at should not be UTC before publishing"
+
         # Use use_utc=False this time
         publish_pandas(
             table_name="PANDAS_TEST_TABLE_NOUTC", df=df, auto_create_table=True, overwrite=True, use_utc=False
@@ -137,7 +138,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         assert pd.api.types.is_datetime64_any_dtype(dt_col), "created_at is not a datetime column"
         assert dt_col.dt.tz is not None, "created_at column is not timezone-aware"
-        assert str(dt_col.dt.tz) != "datetime.timezone.utc", f"created_at column is UTC (was {dt_col.dt.tz})"
+        assert str(dt_col.dt.tz) != "UTC", f"created_at column is UTC (was {dt_col.dt.tz})"
 
         self.next(self.end)
 
