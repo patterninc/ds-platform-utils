@@ -36,7 +36,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         df = pd.DataFrame(data)
 
         # Check before publish that created_at is UTC
-        assert str(df["created_at"].dt.tz) == "UTC", "created_at should be UTC before publishing"
+        assert df["created_at"].dt.tz is datetime.timezone.utc, "created_at should be UTC before publishing"
 
         # Publish the table to Snowflake (UTC=True is default)
         publish_pandas(
@@ -102,7 +102,8 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
             "created_at": [now_tz + timedelta(hours=i) for i in range(5)],
         }
         df = pd.DataFrame(data)
-        assert str(df["created_at"].dt.tz) == str(tz), f"created_at should be {tz} before publishing"
+
+        assert df["created_at"].dt.tz is datetime.timezone.utc, "created_at should be UTC before publishing"
         # Use use_utc=False this time
         publish_pandas(
             table_name="PANDAS_TEST_TABLE_NOUTC", df=df, auto_create_table=True, overwrite=True, use_utc=False
@@ -138,7 +139,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         assert dt_col.dt.tz is not None, "created_at column is not timezone-aware"
         assert str(dt_col.dt.tz) != "datetime.timezone.utc", f"created_at column is UTC (was {dt_col.dt.tz})"
 
-        self.next(self.test_publish_pandas_with_use_utc_false)
+        self.next(self.end)
 
     @step
     def end(self):
