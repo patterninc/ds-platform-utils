@@ -67,7 +67,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_UTC;"
-        df = query_pandas_from_snowflake(query, use_utc=False)
+        df = query_pandas_from_snowflake(query)
 
         print(df)
 
