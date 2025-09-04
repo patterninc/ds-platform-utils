@@ -23,8 +23,8 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the table to Snowflake
         publish(
-            table_name="pandas_test_table",
-            query="""SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;""",
+            table_name="PANDAS_TEST_TABLE",
+            query="""SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};""",
         )
 
         self.next(self.test_publish_with_use_utc)
@@ -36,8 +36,8 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the table to Snowflake with use_utc parameter
         publish(
-            table_name="pandas_test_table",
-            query="""SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;""",
+            table_name="PANDAS_TEST_TABLE",
+            query="""SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};""",
             use_utc=False,
         )
 
@@ -110,7 +110,13 @@ class TestPandasReadWriteFlow(FlowSpec):
         df = pd.DataFrame(data)
 
         # Publish the table to Snowflake with default use_utc parameter
-        publish_pandas(table_name="pandas_test_table", df=df, auto_create_table=True, overwrite=True, use_utc=False)
+        publish_pandas(
+            table_name="pandas_test_table",
+            df=df,
+            auto_create_table=True,
+            overwrite=True,
+            use_utc=False
+        )
 
         self.next(self.test_query_pandas)
 
