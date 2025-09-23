@@ -62,17 +62,17 @@ def select_dev_query_tags() -> Dict[str, str]:
 
     if not fetched_tags:
         warnings.warn(
-            dedent("""\
+            dedent("""
         Warning: ds-platform-utils attempted to add query tags to a Snowflake query
         for cost tracking in select.dev, but no tags were found on this Metaflow flow.
         Please add them with --tag, for example:
 
-          uv run <flow_name>_flow.py \
-            --environment=fast-bakery \
-            --package-suffixes='.csv,.sql,.json,.toml,.yaml,.yml,.txt' \
-            --with card \
-            argo-workflows create \
-            --tag "ds.domain:demand-forecast" \
+          uv run <flow_name>_flow.py \\
+            --environment=fast-bakery \\
+            --package-suffixes='.csv,.sql,.json,.toml,.yaml,.yml,.txt' \\
+            --with card \\
+            argo-workflows create \\
+            --tag "ds.domain:demand-forecast" \\
             --tag "ds.project:cumulative_forecast"
 
         Note: in the monorepo, these tags are applied automatically in CI and when using
