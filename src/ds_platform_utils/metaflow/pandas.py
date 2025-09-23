@@ -106,8 +106,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
             # set query tag for cost tracking in select.dev
             tags = get_tags()
-            query_tag_str = f"\n\n/* {json.dumps(tags)} */"
-            cur.execute(f"ALTER SESSION SET QUERY_TAG = {query_tag_str};")
+            query_tag_str = json.dumps(tags)
+            cur.execute(f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
 
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
