@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
-
+import warnings
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 if TYPE_CHECKING:
@@ -25,10 +25,58 @@ TWarehouse = Literal[
 ]
 
 
-def get_tags() -> Dict[str, str]:
-    """Get tags for the current Metaflow flow run."""
+def select_dev_query_tags() -> Dict[str, str]:
+    """Return tags for the current Metaflow flow run.
+
+        These tags are used for cost tracking in select.dev.
+        See the select.dev docs on custom workload tags:
+        https://select.dev/docs/reference/integrations/custom-workloads#example-query-tag
+
+        What the main tags mean and why we set them this way:
+
+            "app": a broad category that groups queries by domain. We set app to the value of ds.domain 
+               that we get from current tags of the flow, so queries are attributed to the right domain (for example, "Operations").
+        
+            "workload_id": identifies the specific project or sub-unit inside that domain. 
+            We set workload_id to the value of ds.project that we get from current tags of 
+            the flow so select.dev can attribute costs to the exact project (for example, "out-of-stock").
+        
+        For more granular attribution we have other tags:
+        
+            "pipeline": the flow name
+
+            "step_name": the step within the flow
+            
+            "run_id": the unique id of the flow run
+
+            "user": the username of the user who triggered the flow run (or argo-work
+
+            "namespace": the namespace of the flow run
+
+            "team": the team name, hardcoded as "data-science" for all flows
+
+        **Note: all other tags are arbitrary. Add any extra key/value pairs that help you trace and group queries for cost reporting.**
+    """
     fetched_tags = current.tags or set()
 
+    if not fetched_tags:
+        warnings.warn(dedent("""\
+        Warning: ds-platform-utils attempted to add query tags to a Snowflake query 
+        for cost tracking in select.dev, but no tags were found on this Metaflow flow. 
+        Please add them with --tag, for example:
+
+          uv run <flow_name>_flow.py \
+            --environment=fast-bakery \
+            --package-suffixes='.csv,.sql,.json,.toml,.yaml,.yml,.txt' \
+            --with card \
+            argo-workflows create \
+            --tag "ds.domain:demand-forecast" \
+            --tag "ds.project:cumulative_forecast"
+
+        Note: in the monorepo, these tags are applied automatically in CI and when using 
+        the standard poe commands for running flows.
+    """))
+        
     def extract(prefix: str, default: str = "unknown") -> str:
         for tag in fetched_tags:
             if tag.startswith(prefix + ":"):
@@ -49,7 +97,7 @@ def get_tags() -> Dict[str, str]:
         "step_name": current.step_name,  # name of the current step
         "run_id": current.run_id,  # run_id: unique id of the current run
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
-        "business_unit": extract("ds.domain"),  # business unit (domain) of the flow, same as app
+        "domain": extract("ds.domain"),  # business unit (domain) of the flow, same as app
         "namespace": current.namespace,  # namespace of the flow
         "team": "data-science",  # team name, hardcoded as data-science
     }
@@ -72,7 +120,7 @@ def publish(  # noqa: PLR0913
     conn = get_snowflake_connection(use_utc=use_utc)
 
     # adding query tags comment in query for cost tracking in select.dev
-    tags = get_tags()
+    tags = select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
     query = query + query_comment_str

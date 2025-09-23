@@ -19,6 +19,8 @@ from snowflake.connector.pandas_tools import write_pandas
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
+from ds_platform_utils.metaflow.write_audit_publish import select_dev_query_tags
+
 
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
@@ -78,8 +80,6 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     """
-    from ds_platform_utils.metaflow.write_audit_publish import get_tags
-
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
 
@@ -105,7 +105,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             cur.execute(f"USE WAREHOUSE {warehouse};")
 
             # set query tag for cost tracking in select.dev
-            tags = get_tags()
+            # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly, 
+            # so we set a session query tag instead.
+            tags = select_dev_query_tags()
             query_tag_str = json.dumps(tags)
             cur.execute(f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
 
@@ -160,10 +162,9 @@ def query_pandas_from_snowflake(
         get_query_from_string_or_fpath,
         substitute_map_into_string,
     )
-    from ds_platform_utils.metaflow.write_audit_publish import get_tags
 
     # adding query tags comment in query for cost tracking in select.dev
-    tags = get_tags()
+    tags = select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
     query = query + query_comment_str
