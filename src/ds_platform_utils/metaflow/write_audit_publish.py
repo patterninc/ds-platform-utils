@@ -27,34 +27,32 @@ TWarehouse = Literal[
 
 def get_tags() -> Dict[str, str]:
     """Get tags for the current Metaflow flow run."""
-    fetched_tags = current.tags
-    if fetched_tags:
-        tags = {
-            "app": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][0]}",  # first tag after 'app:', is the domain of the flow, fetched form current tags of the flow
-            "workload_id": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][1]}",  # second tag after 'workload_id:', is the project of the flow which it belongs to
-            "pipeline": f"{current.flow_name}",  # name of the flow
-            "project": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][1]}",  # project of the flow which it belongs to, same as workload_id
-            "step_name": f"{current.step_name}",  # name of the current step
-            "run_id": f"{current.run_id}",  # run_id: unique id of the current run
-            "user": f"{current.username}",  # username of user who triggered the run (argo-workflows if its a deployed flow)
-            "business_unit": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][0]}",  # business unit (domain) of the flow, same as app
-            "namespace": f"{current.namespace}",  # namespace of the flow
-            "team": "data-science",  # team name, hardcoded as data-science
-        }
-    else:
-        tags = {  # most of these will be unknown if no tags are set on the flow (most likely for the flow runs triggered manually locally)
-            "app": "unknown",
-            "workload_id": "unknown",
-            "pipeline": f"{current.flow_name}",
-            "project": "unknown",
-            "step_name": f"{current.step_name}",
-            "run_id": f"{current.run_id}",
-            "user": f"{current.username}",
-            "business_unit": "unknown",
-            "namespace": f"{current.namespace}",
-            "team": "data-science",
-        }
-    return tags
+    fetched_tags = current.tags or set()
+
+    def extract(prefix: str, default: str = "unknown") -> str:
+        for tag in fetched_tags:
+            if tag.startswith(prefix + ":"):
+                return tag.split(":", 1)[1]
+        return default
+
+    # most of these will be unknown if no tags are set on the flow
+    # (most likely for the flow runs which are triggered manually locally)
+    return {
+        "app": extract(
+            "ds.domain"
+        ),  # first tag after 'app:', is the domain of the flow, fetched from current tags of the flow
+        "workload_id": extract(
+            "ds.project"
+        ),  # second tag after 'workload_id:', is the project of the flow which it belongs to
+        "pipeline": current.flow_name,  # name of the flow
+        "project": extract("ds.project"),  # project of the flow which it belongs to, same as workload_id
+        "step_name": current.step_name,  # name of the current step
+        "run_id": current.run_id,  # run_id: unique id of the current run
+        "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
+        "business_unit": extract("ds.domain"),  # business unit (domain) of the flow, same as app
+        "namespace": current.namespace,  # namespace of the flow
+        "team": "data-science",  # team name, hardcoded as data-science
+    }
 
 
 def publish(  # noqa: PLR0913
