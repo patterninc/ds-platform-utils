@@ -1,7 +1,8 @@
+import json
 from pathlib import Path
 from textwrap import dedent
-import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
@@ -41,8 +42,8 @@ def get_tags() -> Dict[str, str]:
             "team": "data-science",  # team name, hardcoded as data-science
         }
     else:
-        tags = { # most of these will be unknown if no tags are set on the flow (most likely for the flow runs triggered manually locally)
-            "app": "unknown", 
+        tags = {  # most of these will be unknown if no tags are set on the flow (most likely for the flow runs triggered manually locally)
+            "app": "unknown",
             "workload_id": "unknown",
             "pipeline": f"{current.flow_name}",
             "project": "unknown",
@@ -66,12 +67,12 @@ def publish(  # noqa: PLR0913
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
     from ds_platform_utils._snowflake.write_audit_publish import (
-        write_audit_publish,
         get_query_from_string_or_fpath,
+        write_audit_publish,
     )
 
     conn = get_snowflake_connection(use_utc=use_utc)
-  
+
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"

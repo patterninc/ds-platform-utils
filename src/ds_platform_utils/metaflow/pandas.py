@@ -1,7 +1,8 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
-import json
+
 import pandas as pd
 import pyarrow
 import pytz
@@ -102,7 +103,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if warehouse is not None:
         with conn.cursor() as cur:
             cur.execute(f"USE WAREHOUSE {warehouse};")
-    
+
             # set query tag for cost tracking in select.dev
             tags = get_tags()
             query_tag_str = f"\n\n/* {json.dumps(tags)} */"
@@ -160,13 +161,12 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
     from ds_platform_utils.metaflow.write_audit_publish import get_tags
-    
+
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
     query = query + query_comment_str
-
 
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
