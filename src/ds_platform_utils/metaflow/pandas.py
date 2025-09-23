@@ -18,9 +18,7 @@ from snowflake.connector.pandas_tools import write_pandas
 # )
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
-from ds_platform_utils.metaflow.write_audit_publish import select_dev_query_tags
-
+from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url, select_dev_query_tags
 
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
@@ -105,7 +103,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             cur.execute(f"USE WAREHOUSE {warehouse};")
 
             # set query tag for cost tracking in select.dev
-            # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly, 
+            # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
             # so we set a session query tag instead.
             tags = select_dev_query_tags()
             query_tag_str = json.dumps(tags)
