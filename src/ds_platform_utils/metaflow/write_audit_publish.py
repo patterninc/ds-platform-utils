@@ -1,7 +1,7 @@
 from pathlib import Path
 from textwrap import dedent
+import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
-
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
@@ -24,6 +24,38 @@ TWarehouse = Literal[
 ]
 
 
+def get_tags() -> Dict[str, str]:
+    """Get tags for the current Metaflow flow run."""
+    fetched_tags = current.tags
+    if fetched_tags:
+        tags = {
+            "app": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][0]}",  # first tag after 'app:', is the domain of the flow, fetched form current tags of the flow
+            "workload_id": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][1]}",  # second tag after 'workload_id:', is the project of the flow which it belongs to
+            "pipeline": f"{current.flow_name}",  # name of the flow
+            "project": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][1]}",  # project of the flow which it belongs to, same as workload_id
+            "step_name": f"{current.step_name}",  # name of the current step
+            "run_id": f"{current.run_id}",  # run_id: unique id of the current run
+            "user": f"{current.username}",  # username of user who triggered the run (argo-workflows if its a deployed flow)
+            "business_unit": f"{[item.split(':', 1)[1] if ':' in item else None for item in fetched_tags][0]}",  # business unit (domain) of the flow, same as app
+            "namespace": f"{current.namespace}",  # namespace of the flow
+            "team": "data-science",  # team name, hardcoded as data-science
+        }
+    else:
+        tags = { # most of these will be unknown if no tags are set on the flow (most likely for the flow runs triggered manually locally)
+            "app": "unknown", 
+            "workload_id": "unknown",
+            "pipeline": f"{current.flow_name}",
+            "project": "unknown",
+            "step_name": f"{current.step_name}",
+            "run_id": f"{current.run_id}",
+            "user": f"{current.username}",
+            "business_unit": "unknown",
+            "namespace": f"{current.namespace}",
+            "team": "data-science",
+        }
+    return tags
+
+
 def publish(  # noqa: PLR0913
     table_name: str,
     query: Union[str, Path],
@@ -33,9 +65,18 @@ def publish(  # noqa: PLR0913
     use_utc: bool = True,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        write_audit_publish,
+        get_query_from_string_or_fpath,
+    )
 
     conn = get_snowflake_connection(use_utc=use_utc)
+  
+    # adding query tags comment in query for cost tracking in select.dev
+    tags = get_tags()
+    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
+    query = get_query_from_string_or_fpath(query)
+    query = query + query_comment_str
 
     with conn.cursor() as cur:
         if warehouse is not None:

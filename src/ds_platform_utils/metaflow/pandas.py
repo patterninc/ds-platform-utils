@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
-
+import json
 import pandas as pd
 import pyarrow
 import pytz
@@ -77,6 +77,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     """
+    from ds_platform_utils.metaflow.write_audit_publish import get_tags
+
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
 
@@ -96,11 +98,15 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-
     # set warehouse
     if warehouse is not None:
         with conn.cursor() as cur:
             cur.execute(f"USE WAREHOUSE {warehouse};")
+    
+            # set query tag for cost tracking in select.dev
+            tags = get_tags()
+            query_tag_str = f"\n\n/* {json.dumps(tags)} */"
+            cur.execute(f"ALTER SESSION SET QUERY_TAG = {query_tag_str};")
 
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
@@ -153,8 +159,15 @@ def query_pandas_from_snowflake(
         get_query_from_string_or_fpath,
         substitute_map_into_string,
     )
-
+    from ds_platform_utils.metaflow.write_audit_publish import get_tags
+    
+    # adding query tags comment in query for cost tracking in select.dev
+    tags = get_tags()
+    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
+    query = query + query_comment_str
+
+
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
         query = substitute_map_into_string(query, {"schema": schema})
