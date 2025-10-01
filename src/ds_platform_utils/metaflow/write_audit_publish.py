@@ -26,7 +26,7 @@ TWarehouse = Literal[
 ]
 
 
-def select_dev_query_tags() -> Dict[str, str]:
+def get_select_dev_query_tags() -> Dict[str, str]:
     """Return tags for the current Metaflow flow run.
 
     These tags are used for cost tracking in select.dev.
@@ -124,7 +124,7 @@ def publish(  # noqa: PLR0913
     conn = get_snowflake_connection(use_utc=use_utc)
 
     # adding query tags comment in query for cost tracking in select.dev
-    tags = select_dev_query_tags()
+    tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
     query = query + query_comment_str
