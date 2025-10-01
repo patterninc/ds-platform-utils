@@ -97,8 +97,7 @@ def get_select_dev_query_tags() -> Dict[str, str]:
             "ds.project"
         ),  # second tag after 'workload_id:', is the project of the flow which it belongs to
         "pipeline": current.flow_name,  # name of the flow
-        "project": extract("ds.project"),  # project of the flow which it belongs to, same as workload_id
-        "current_project": current.project_name,  # Project name from the @project decorator—lets us identify the flow’s project without relying on user tags.
+        "project": current.project_name,  # Project name from the @project decorator, lets us identify the flow’s project without relying on user tags (added via --tag).
         "step_name": current.step_name,  # name of the current step
         "run_id": current.run_id,  # run_id: unique id of the current run
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
