@@ -23,7 +23,7 @@ TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",  # OBS PROD Perimeter X-Large Warehouse for ADS domain
     "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
     "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",  # OBS PROD Perimeter Medium Warehouse for all other domains
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH",  # OBS PROD Perimeter X-Large Warehouse for all other domains
     "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",  # OBS DEV Perimeter X-Small Warehouse for ADS domain
     "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",  # OBS DEV Perimeter Medium Warehouse for ADS domain
     "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",  # OBS DEV Perimeter X-Large Warehouse for ADS domain
@@ -121,7 +121,7 @@ def publish(  # noqa: PLR0913
         table_name="PATTERN_DB.DATA_SCIENCE.OBS_MASTER_COST_DATA",
         query="sql/master_obs_cost_data_final.sql",
         audits=["sql/validate_obs_cost_data.sql"],
-        warehouse="ANALYTICS_XL",
+        warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
     )
     ```
 
