@@ -18,9 +18,18 @@ if TYPE_CHECKING:
 from typing import Literal
 
 TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",  # OBS PROD Perimeter Medium Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",  # OBS PROD Perimeter X-Large Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",  # OBS PROD Perimeter Medium Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",  # OBS DEV Perimeter X-Small Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",  # OBS DEV Perimeter Medium Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",  # OBS DEV Perimeter X-Large Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",  # OBS DEV Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",  # OBS DEV Perimeter Medium Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",  # OBS DEV Perimeter X-Large Warehouse for all other domains
 ]
 
 
@@ -32,7 +41,91 @@ def publish(  # noqa: PLR0913
     warehouse: Optional[TWarehouse] = None,
     use_utc: bool = True,
 ) -> None:
-    """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
+    """Publish a Snowflake table using the write-audit-publish (WAP) pattern via Metaflow's Snowflake connection.
+
+    This function executes a SQL `query` to create or update the specified `table_name` within Snowflake.
+    It leverages `write_audit_publish` utility to perform data writes, audit validation,
+    and final publishing as part of the pipeline's output stage.
+
+    Parameters
+    ----------
+    table_name : str
+        Name of the Snowflake table to publish (fully qualified, e.g.,
+        `PATTERN_DB.DATA_SCIENCE.OBS_MASTER_COST_DATA`).
+    query : Union[str, Path]
+        The SQL query (str or path to a .sql file) that generates the table data to be written.
+    audits : Optional[List[Union[str, Path]]], default=None
+        A list of SQL audit scripts or file paths that validate the integrity or
+        quality of the data before publishing. Each script should return zero rows
+        for a successful audit.
+    ctx : Optional[Dict[str, Any]], default=None
+        A context dictionary passed into the SQL execution environment (used for
+        parameter substitution within SQL templates, if applicable).
+    warehouse : Optional[TWarehouse], default=None
+        The Snowflake warehouse to use for executing the query.
+
+        Please select the warehouse carefully based on the **Perimeter** (`DEV` or `PROD`)
+        and **Domain** (`Advertising` or `Shared` for all other domains) where your
+        Metaflow pipeline is running. Choosing the correct warehouse helps avoid
+        query queuing and ensures balanced resource utilization across workloads.
+
+        **Note:**
+            - Selecting the appropriate warehouse ensures efficient query execution,
+            prevents workload congestion, and aligns with the resource allocation strategy
+            designed for Outerbounds pipelines.
+            - Additionally, when specifying the warehouse name in your code editor,
+              **auto-complete suggestions** are available to help you quickly pick the correct
+              perimeter and domain-specific warehouse.
+
+        **Available Warehouses (Perimeter- and Domain-wise):**
+
+        **Advertising Domain PROD Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH` — X-Large Warehouse
+
+        **All Other Domains PROD Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH` — X-Large Warehouse
+
+        **Advertising Domain DEV Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH` — X-Large Warehouse
+
+        **All Other Domains DEV Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH` — X-Large Warehouse
+
+    use_utc : bool, default=True
+        Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
+
+    Returns
+    -------
+    None
+        This function performs database operations but does not return a value.
+        It writes the table, executes audits, and finalizes the publish step.
+
+    Notes
+    -----
+    - Uses Metaflow's runtime context (`current`) to determine environment details.
+    - Integrates with `update_card_with_operation_info` to display operation progress.
+    - Designed for use inside Metaflow steps that publish data to Snowflake.
+
+    Example
+    -------
+    ```python
+    publish(
+        table_name="PATTERN_DB.DATA_SCIENCE.OBS_MASTER_COST_DATA",
+        query="sql/master_obs_cost_data_final.sql",
+        audits=["sql/validate_obs_cost_data.sql"],
+        warehouse="ANALYTICS_XL",
+    )
+    ```
+
+    """
     from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
     conn = get_snowflake_connection(use_utc=use_utc)

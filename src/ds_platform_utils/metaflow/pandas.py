@@ -20,9 +20,18 @@ from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_que
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
 
 TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",  # OBS PROD Perimeter Medium Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",  # OBS PROD Perimeter X-Large Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",  # OBS PROD Perimeter Medium Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",  # OBS PROD Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",  # OBS DEV Perimeter X-Small Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",  # OBS DEV Perimeter Medium Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",  # OBS DEV Perimeter X-Large Warehouse for ADS domain
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",  # OBS DEV Perimeter X-Small Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",  # OBS DEV Perimeter Medium Warehouse for all other domains
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",  # OBS DEV Perimeter X-Large Warehouse for all other domains
 ]
 
 
@@ -57,7 +66,43 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
 
-    :param warehouse: The Snowflake warehouse to use for the operation. If not provided, it defaults to the OUTERBOUNDS_DATA_SCIENCE_XS_WH warehouse.
+    :param warehouse:
+        The Snowflake warehouse to use for executing the query.
+
+        Please select the warehouse carefully based on the **Perimeter** (`DEV` or `PROD`)
+        and **Domain** (`Advertising` or `Shared` for all other domains) where your
+        Metaflow pipeline is running. Choosing the correct warehouse helps avoid
+        query queuing and ensures balanced resource utilization across workloads.
+
+        **Note:**
+            - Selecting the appropriate warehouse ensures efficient query execution,
+            prevents workload congestion, and aligns with the resource allocation strategy
+            designed for Outerbounds pipelines.
+            - Additionally, when specifying the warehouse name in your code editor,
+              **auto-complete suggestions** are available to help you quickly pick the correct
+              perimeter and domain-specific warehouse.
+
+        **Available Warehouses (Perimeter- and Domain-wise):**
+
+        **Advertising Domain PROD Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH` — X-Large Warehouse
+
+        **All Other Domains PROD Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH` — X-Large Warehouse
+
+        **Advertising Domain DEV Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH` — X-Large Warehouse
+
+        **All Other Domains DEV Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH` — X-Large Warehouse
 
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
@@ -135,7 +180,44 @@ def query_pandas_from_snowflake(
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
-    :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
+    :param warehouse:
+        The Snowflake warehouse to use for executing the query.
+
+        Please select the warehouse carefully based on the **Perimeter** (`DEV` or `PROD`)
+        and **Domain** (`Advertising` or `Shared` for all other domains) where your
+        Metaflow pipeline is running. Choosing the correct warehouse helps avoid
+        query queuing and ensures balanced resource utilization across workloads.
+
+        **Note:**
+            - Selecting the appropriate warehouse ensures efficient query execution,
+            prevents workload congestion, and aligns with the resource allocation strategy
+            designed for Outerbounds pipelines.
+            - Additionally, when specifying the warehouse name in your code editor,
+              **auto-complete suggestions** are available to help you quickly pick the correct
+              perimeter and domain-specific warehouse.
+
+        **Available Warehouses (Perimeter- and Domain-wise):**
+
+        **Advertising Domain PROD Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH` — X-Large Warehouse
+
+        **All Other Domains PROD Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH` — X-Large Warehouse
+
+        **Advertising Domain DEV Perimeter**
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH` — X-Large Warehouse
+
+        **All Other Domains DEV Perimeter (Shared)**
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` — X-Small Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH` — Medium Warehouse
+          - `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH` — X-Large Warehouse
+
     :param ctx: Context dictionary to substitute into the query string.
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     :return: DataFrame containing the results of the query.
