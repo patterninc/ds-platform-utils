@@ -43,10 +43,6 @@ def publish(  # noqa: PLR0913, D417
 ) -> None:
     """Publish a Snowflake table using the write-audit-publish (WAP) pattern via Metaflow's Snowflake connection.
 
-    This function executes a SQL `query` to create or update the specified `table_name` within Snowflake.
-    It leverages `write_audit_publish` utility to perform data writes, audit validation,
-    and final publishing of the table.
-
     Parameters
     ----------
     :param table_name: Name of the Snowflake table to publish (fully qualified, e.g., "`OUT_OF_STOCK_ADS`").
@@ -55,7 +51,10 @@ def publish(  # noqa: PLR0913, D417
     quality of the data before publishing. Each script should return zero rows for a successful audit.
     :param ctx: A context dictionary passed into the SQL execution environment (used for
     parameter substitution within SQL templates, if applicable).
-    :param warehouse: The Snowflake warehouse to use for executing the query.
+    :param warehouse: The Snowflake warehouse to use for this operation. If not specified,
+        it defaults to the `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` warehouse,
+        when running in the Outerbounds **Default** perimeter, and to the
+        `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
     :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
 
     Returns
@@ -63,12 +62,6 @@ def publish(  # noqa: PLR0913, D417
     None
         This function performs database operations but does not return a value.
         It writes the table, executes audits, and finalizes the publish step.
-
-    Notes
-    -----
-    - Uses Metaflow's runtime context (`current`) to determine environment details.
-    - Integrates with `update_card_with_operation_info` to display operation info and table preview if applicable.
-    - Designed for use inside Metaflow steps that publish data to Snowflake.
 
     Example
     -------
