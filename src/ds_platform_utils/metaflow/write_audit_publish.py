@@ -58,9 +58,11 @@ def get_select_dev_query_tags() -> Dict[str, str]:
 
     **Note: all other tags are arbitrary. Add any extra key/value pairs that help you trace and group queries for cost reporting.**
     """
-    fetched_tags = current.tags or set()
-
-    if not fetched_tags:
+    fetched_tags = current.tags
+    required_tags_are_present = any(tag.startswith("ds.project") for tag in fetched_tags) and any(
+        tag.startswith("ds.domain") for tag in fetched_tags
+    )  # Checking presence of both required Metaflow user tags in current tags of the flow
+    if not required_tags_are_present:
         warnings.warn(
             dedent("""
         Warning: ds-platform-utils attempted to add query tags to a Snowflake query
@@ -96,8 +98,9 @@ def get_select_dev_query_tags() -> Dict[str, str]:
         "workload_id": extract(
             "ds.project"
         ),  # second tag after 'workload_id:', is the project of the flow which it belongs to
-        "pipeline": current.flow_name,  # name of the flow
-        "project": current.project_name,  # Project name from the @project decorator, lets us identify the flow’s project without relying on user tags (added via --tag).
+        "flow_name": current.flow_name,  # name of the metaflow flow
+        "project": current.project_name,  # Project name from the @project decorator, lets us
+        # identify the flow’s project without relying on user tags (added via --tag).
         "step_name": current.step_name,  # name of the current step
         "run_id": current.run_id,  # run_id: unique id of the current run
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
