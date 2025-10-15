@@ -8,7 +8,6 @@ from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
-from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 if TYPE_CHECKING:
@@ -54,13 +53,13 @@ def get_select_dev_query_tags() -> Dict[str, str]:
 
     For more granular attribution we have other tags:
 
-        "pipeline": the flow name
+        "flow_name": the flow name
 
         "step_name": the step within the flow
 
         "run_id": the unique id of the flow run
 
-        "user": the username of the user who triggered the flow run (or argo-work
+        "user": the username of the user who triggered the flow run (or argo-workflows if it's a deployed flow)
 
         "namespace": the namespace of the flow run
 
@@ -160,7 +159,7 @@ def publish(  # noqa: PLR0913, D417
     ```
 
     """
-    from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
+    from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath, write_audit_publish
 
     conn = get_snowflake_connection(use_utc=use_utc)
 
