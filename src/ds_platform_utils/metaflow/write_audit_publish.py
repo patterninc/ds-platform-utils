@@ -45,7 +45,7 @@ def publish(  # noqa: PLR0913, D417
 
     Parameters
     ----------
-    :param table_name: Name of the Snowflake table to publish (fully qualified, e.g., "`OUT_OF_STOCK_ADS`").
+    :param table_name: Name of the Snowflake table to publish, e.g., `"OUT_OF_STOCK_ADS"`.
     :param query: The SQL query (str or path to a .sql file) that generates the table data to be written.
     :param audits: A list of SQL audit scripts or file paths that validate the integrity or
     quality of the data before publishing. Each script should return zero rows for a successful audit.
