@@ -45,25 +45,19 @@ def publish(  # noqa: PLR0913
 
     This function executes a SQL `query` to create or update the specified `table_name` within Snowflake.
     It leverages `write_audit_publish` utility to perform data writes, audit validation,
-    and final publishing as part of the pipeline's output stage.
+    and final publishing of the table.
 
     Parameters
     ----------
-    table_name : str
-        Name of the Snowflake table to publish (fully qualified, e.g., `OUT_OF_STOCK_ADS`).
-    query : Union[str, Path]
-        The SQL query (str or path to a .sql file) that generates the table data to be written.
-    audits : Optional[List[Union[str, Path]]], default=None
-        A list of SQL audit scripts or file paths that validate the integrity or
+    :param table_name: Name of the Snowflake table to publish (fully qualified, e.g., "`OUT_OF_STOCK_ADS`").
+    :param query: The SQL query (str or path to a .sql file) that generates the table data to be written.
+    :param audits: A list of SQL audit scripts or file paths that validate the integrity or
         quality of the data before publishing. Each script should return zero rows
         for a successful audit.
-    ctx : Optional[Dict[str, Any]], default=None
-        A context dictionary passed into the SQL execution environment (used for
+    :param ctx: A context dictionary passed into the SQL execution environment (used for
         parameter substitution within SQL templates, if applicable).
-    warehouse : Optional[TWarehouse], default=None
-        The Snowflake warehouse to use for executing the query.
-    use_utc : bool, default=True
-        Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
+    :param warehouse: The Snowflake warehouse to use for executing the query.
+    :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
 
     Returns
     -------
@@ -81,9 +75,9 @@ def publish(  # noqa: PLR0913
     -------
     ```python
     publish(
-        table_name="PATTERN_DB.DATA_SCIENCE.OBS_MASTER_COST_DATA",
-        query="sql/master_obs_cost_data_final.sql",
-        audits=["sql/validate_obs_cost_data.sql"],
+        table_name="OUT_OF_STOCK_ADS",
+        query="sql/create_training_data.sql",
+        audits=["sql/validate_training_data.sql"],
         warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
     )
     ```
