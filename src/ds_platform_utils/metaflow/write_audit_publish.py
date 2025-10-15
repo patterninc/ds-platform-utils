@@ -59,10 +59,7 @@ def get_select_dev_query_tags() -> Dict[str, str]:
     **Note: all other tags are arbitrary. Add any extra key/value pairs that help you trace and group queries for cost reporting.**
     """
     fetched_tags = current.tags
-    required_tags_are_present = any(tag.startswith("ds.project") for tag in fetched_tags) and any(
-        tag.startswith("ds.domain") for tag in fetched_tags
-    )  # Checking presence of both required Metaflow user tags in current tags of the flow
-    if not required_tags_are_present:
+    if not fetched_tags:
         warnings.warn(
             dedent("""
         Warning: ds-platform-utils attempted to add query tags to a Snowflake query
