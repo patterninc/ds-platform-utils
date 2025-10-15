@@ -20,9 +20,18 @@ from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_que
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
 
 TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
 ]
 
 
@@ -57,7 +66,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
 
-    :param warehouse: The Snowflake warehouse to use for the operation. If not provided, it defaults to the OUTERBOUNDS_DATA_SCIENCE_XS_WH warehouse.
+    :param warehouse: The Snowflake warehouse to use for this operation. If not specified,
+        it defaults to the `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` warehouse,
+        when running in the Outerbounds **Default** perimeter, and to the
+        `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
 
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
@@ -135,7 +147,10 @@ def query_pandas_from_snowflake(
     """Returns a pandas dataframe from a Snowflake query.
 
     :param query: SQL query string or path to a .sql file.
-    :param warehouse: Snowflake warehouse to use for the query. If not provided, the default warehouse will be used.
+    :param warehouse: The Snowflake warehouse to use for this operation. If not specified,
+        it defaults to the `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` warehouse,
+        when running in the Outerbounds **Default** perimeter, and to the
+        `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
     :param ctx: Context dictionary to substitute into the query string.
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
     :return: DataFrame containing the results of the query.

@@ -18,13 +18,22 @@ if TYPE_CHECKING:
 from typing import Literal
 
 TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
 ]
 
 
-def publish(  # noqa: PLR0913
+def publish(  # noqa: PLR0913, D417
     table_name: str,
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
@@ -32,7 +41,40 @@ def publish(  # noqa: PLR0913
     warehouse: Optional[TWarehouse] = None,
     use_utc: bool = True,
 ) -> None:
-    """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
+    """Publish a Snowflake table using the write-audit-publish (WAP) pattern via Metaflow's Snowflake connection.
+
+    Parameters
+    ----------
+    :param table_name: Name of the Snowflake table to publish, e.g., `"OUT_OF_STOCK_ADS"`.
+    :param query: The SQL query (str or path to a .sql file) that generates the table data to be written.
+    :param audits: A list of SQL audit scripts or file paths that validate the integrity or
+    quality of the data before publishing. Each script should return zero rows for a successful audit.
+    :param ctx: A context dictionary passed into the SQL execution environment (used for
+    parameter substitution within SQL templates, if applicable).
+    :param warehouse: The Snowflake warehouse to use for this operation. If not specified,
+        it defaults to the `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` warehouse,
+        when running in the Outerbounds **Default** perimeter, and to the
+        `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
+    :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
+
+    Returns
+    -------
+    None
+        This function performs database operations but does not return a value.
+        It writes the table, executes audits, and finalizes the publish step.
+
+    Example
+    -------
+    ```python
+    publish(
+        table_name="OUT_OF_STOCK_ADS",
+        query="sql/create_training_data.sql",
+        audits=["sql/validate_training_data.sql"],
+        warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
+    )
+    ```
+
+    """
     from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
     conn = get_snowflake_connection(use_utc=use_utc)
