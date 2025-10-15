@@ -159,7 +159,10 @@ def publish(  # noqa: PLR0913, D417
     ```
 
     """
-    from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath, write_audit_publish
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        write_audit_publish,
+        get_query_from_string_or_fpath,
+    )
 
     conn = get_snowflake_connection(use_utc=use_utc)
 

@@ -11,10 +11,6 @@ from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
-from ds_platform_utils._snowflake.write_audit_publish import (
-    get_query_from_string_or_fpath,
-    substitute_map_into_string,
-)
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url, get_select_dev_query_tags
@@ -171,6 +167,10 @@ def query_pandas_from_snowflake(
     If the `ctx` dictionary is provided, it will be used to substitute values into the query string.
     The keys in the `ctx` dictionary should match the placeholders in the query string.
     """
+    from ds_platform_utils._snowflake.write_audit_publish import (
+        get_query_from_string_or_fpath,
+        substitute_map_into_string,
+    )
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
