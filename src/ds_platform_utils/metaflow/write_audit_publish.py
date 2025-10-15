@@ -33,7 +33,7 @@ TWarehouse = Literal[
 ]
 
 
-def publish(  # noqa: PLR0913
+def publish(  # noqa: PLR0913, D417
     table_name: str,
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
@@ -52,10 +52,9 @@ def publish(  # noqa: PLR0913
     :param table_name: Name of the Snowflake table to publish (fully qualified, e.g., "`OUT_OF_STOCK_ADS`").
     :param query: The SQL query (str or path to a .sql file) that generates the table data to be written.
     :param audits: A list of SQL audit scripts or file paths that validate the integrity or
-        quality of the data before publishing. Each script should return zero rows
-        for a successful audit.
+    quality of the data before publishing. Each script should return zero rows for a successful audit.
     :param ctx: A context dictionary passed into the SQL execution environment (used for
-        parameter substitution within SQL templates, if applicable).
+    parameter substitution within SQL templates, if applicable).
     :param warehouse: The Snowflake warehouse to use for executing the query.
     :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
 
