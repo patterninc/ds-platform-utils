@@ -20,9 +20,18 @@ if TYPE_CHECKING:
 from typing import Literal
 
 TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
+    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
 ]
 
 
@@ -108,7 +117,7 @@ def get_select_dev_query_tags() -> Dict[str, str]:
     }
 
 
-def publish(  # noqa: PLR0913
+def publish(  # noqa: PLR0913, D417
     table_name: str,
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
@@ -117,10 +126,7 @@ def publish(  # noqa: PLR0913
     use_utc: bool = True,
 ) -> None:
     """Publish a table using write-audit-publish pattern with Metaflow's Snowflake connection."""
-    from ds_platform_utils._snowflake.write_audit_publish import (
-        get_query_from_string_or_fpath,
-        write_audit_publish,
-    )
+    from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
     conn = get_snowflake_connection(use_utc=use_utc)
 
