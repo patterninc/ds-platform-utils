@@ -74,8 +74,8 @@ def get_select_dev_query_tags() -> Dict[str, str]:
             --package-suffixes='.csv,.sql,.json,.toml,.yaml,.yml,.txt' \\
             --with card \\
             argo-workflows create \\
-            --tag "ds.domain:demand-forecast" \\
-            --tag "ds.project:cumulative_forecast"
+            --tag "ds.domain:operations" \\
+            --tag "ds.project:regional-forecast"
 
         Note: in the monorepo, these tags are applied automatically in CI and when using
         the standard poe commands for running flows.
