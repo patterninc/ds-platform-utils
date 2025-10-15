@@ -171,6 +171,7 @@ def query_pandas_from_snowflake(
         get_query_from_string_or_fpath,
         substitute_map_into_string,
     )
+
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
