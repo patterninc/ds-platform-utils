@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
@@ -10,14 +11,9 @@ from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
-# if TYPE_CHECKING:
-# from ds_platform_utils._snowflake.write_audit_publish import (
-#     get_query_from_string_or_fpath,
-#     substitute_map_into_string,
-# )
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url
+from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url, get_select_dev_query_tags
 
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
@@ -114,6 +110,13 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         with conn.cursor() as cur:
             cur.execute(f"USE WAREHOUSE {warehouse};")
 
+            # set query tag for cost tracking in select.dev
+            # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
+            # so we set a session query tag instead.
+            tags = get_select_dev_query_tags()
+            query_tag_str = json.dumps(tags)
+            cur.execute(f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
+
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
         conn=conn,
@@ -169,7 +172,12 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
 
+    # adding query tags comment in query for cost tracking in select.dev
+    tags = get_select_dev_query_tags()
+    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
+    query = query + query_comment_str
+
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
         query = substitute_map_into_string(query, {"schema": schema})
