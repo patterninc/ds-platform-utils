@@ -4,6 +4,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
+import sqlparse
 from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
@@ -123,6 +124,37 @@ def get_select_dev_query_tags() -> Dict[str, str]:
     }
 
 
+def add_comment_to_each_sql_statement(sql_text: str, comment: str) -> str:
+    """Append `comment` (e.g., /* {...} */) to every SQL statement in `sql_text`.
+
+    Purpose:
+        Some SQL files contain multiple statements separated by semicolons.
+        Snowflake only associates query-level metadata (like select.dev cost-tracking tags)
+        with individual statements, not entire batches. This helper ensures that the
+        JSON-style comment containing query tags is added to each statement separately,
+        so every query executed can be properly attributed and tracked.
+
+    The comment is inserted immediately before the terminating semicolon of each statement,
+    preserving whether the original statement had one.
+    """
+    statements = [s.strip() for s in sqlparse.split(sql_text) if s.strip()]
+    if not statements:
+        return sql_text
+
+    annotated = []
+    for stmt in statements:
+        has_semicolon = stmt.rstrip().endswith(";")
+        trimmed = stmt.rstrip()
+        if has_semicolon:
+            trimmed = trimmed[:-1].rstrip()
+            annotated.append(f"{trimmed} {comment};")
+        else:
+            annotated.append(f"{trimmed} {comment}")
+
+    # Separate statements with a blank line for readability
+    return "\n\n".join(annotated) + "\n"
+
+
 def publish(  # noqa: PLR0913, D417
     table_name: str,
     query: Union[str, Path],
@@ -176,7 +208,7 @@ def publish(  # noqa: PLR0913, D417
     tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
-    query = query + query_comment_str
+    query = add_comment_to_each_sql_statement(query, query_comment_str)
 
     with conn.cursor() as cur:
         if warehouse is not None:

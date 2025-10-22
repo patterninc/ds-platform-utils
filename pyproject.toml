@@ -1,6 +1,6 @@
 [project]
 name = "ds-platform-utils"
-version = "0.2.1"
+version = "0.2.2"
 description = "Utility library for Pattern Data Science."
 readme = "README.md"
 authors = [
@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow",
     "pandas",
     "jinja2",
+    "sqlparse>=0.5.3",
 ]
 
 [dependency-groups]

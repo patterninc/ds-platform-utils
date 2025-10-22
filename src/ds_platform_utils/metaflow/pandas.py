@@ -13,7 +13,11 @@ from snowflake.connector.pandas_tools import write_pandas
 
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.write_audit_publish import _make_snowflake_table_url, get_select_dev_query_tags
+from ds_platform_utils.metaflow.write_audit_publish import (
+    _make_snowflake_table_url,
+    add_comment_to_each_sql_statement,
+    get_select_dev_query_tags,
+)
 
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
@@ -176,7 +180,7 @@ def query_pandas_from_snowflake(
     tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
-    query = query + query_comment_str
+    query = add_comment_to_each_sql_statement(query, query_comment_str)
 
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
