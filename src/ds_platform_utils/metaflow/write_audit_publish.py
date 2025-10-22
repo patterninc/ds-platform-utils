@@ -134,18 +134,22 @@ def add_comment_to_each_sql_statement(sql_text: str, comment: str) -> str:
         JSON-style comment containing query tags is added to each statement separately,
         so every query executed can be properly attributed and tracked.
 
-    The comment is inserted immediately before the terminating semicolon of each statement.
+    The comment is inserted immediately before the terminating semicolon of each statement,
+    preserving whether the original statement had one.
     """
-    statements = [s.strip() for s in sqlparse.split(sql_text) if s and s.strip()]
+    statements = [s.strip() for s in sqlparse.split(sql_text) if s.strip()]
     if not statements:
         return sql_text
 
     annotated = []
     for stmt in statements:
+        has_semicolon = stmt.rstrip().endswith(";")
         trimmed = stmt.rstrip()
-        if trimmed.endswith(";"):
+        if has_semicolon:
             trimmed = trimmed[:-1].rstrip()
-        annotated.append(f"{trimmed} {comment};")
+            annotated.append(f"{trimmed} {comment};")
+        else:
+            annotated.append(f"{trimmed} {comment}")
 
     # Separate statements with a blank line for readability
     return "\n\n".join(annotated) + "\n"
