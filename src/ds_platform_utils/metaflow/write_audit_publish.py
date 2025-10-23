@@ -1,4 +1,5 @@
 import json
+import os
 import warnings
 from pathlib import Path
 from textwrap import dedent
@@ -119,7 +120,10 @@ def get_select_dev_query_tags() -> Dict[str, str]:
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
         "domain": extract("ds.domain"),  # business unit (domain) of the flow, same as app
         "namespace": current.namespace,  # namespace of the flow
-        "perimeter": "PROD" if current.is_production else "Default",  # perimeter of the flow
+        "perimeter": str(os.environ.get("OB_CURRENT_PERIMETER") or os.environ.get("OBP_PERIMETER")),
+        "is_production": str(
+            current.is_production
+        ),  # True, if the flow is deployed with the --production flag else false
         "team": "data-science",  # team name, hardcoded as data-science
     }
 
