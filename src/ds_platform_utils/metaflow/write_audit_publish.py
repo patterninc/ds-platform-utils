@@ -341,23 +341,26 @@ def fetch_table_preview(
     #     FROM {database}.{schema}.{table_name}
     #     LIMIT {n_rows};
     # """)
-    cursor = run_sql(
-        cursor.connection,
-        f"""
-        SELECT *
-        FROM {database}.{schema}.{table_name}
-        LIMIT {n_rows};
-        """,
-    )
-    columns = [col[0] for col in cursor.description]
-    rows = cursor.fetchall()
+    if cursor is None:
+        return []
+    else:
+        cursor = run_sql(
+            cursor.connection,
+            f"""
+            SELECT *
+            FROM {database}.{schema}.{table_name}
+            LIMIT {n_rows};
+            """,
+        )
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
 
-    # Create header row plus data rows
-    table_rows = [[Artifact(col) for col in columns]]  # Header row
-    for row in rows:
-        table_rows.append([Artifact(val) for val in row])  # Data rows
+        # Create header row plus data rows
+        table_rows = [[Artifact(col) for col in columns]]  # Header row
+        for row in rows:
+            table_rows.append([Artifact(val) for val in row])  # Data rows
 
-    return [
-        Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
-        Table(table_rows),
-    ]
+        return [
+            Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
+            Table(table_rows),
+        ]
