@@ -8,6 +8,7 @@ from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
+from ds_platform_utils.shared.utils import run_sql
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -201,7 +202,8 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
         return
 
     # Count statements so we can tell Snowflake exactly how many to expect
-    cursor.execute(query, num_statements=0)  # 0 means any number of statements
+    # cursor.execute(query, num_statements=0)  # 0 means any number of statements
+    run_sql(cursor.connection, query)
     cursor.connection.commit()
 
 
@@ -216,7 +218,11 @@ def run_audit_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> dic
     if cursor is None:
         return {"mock_result": True}
 
-    cursor.execute(query)
+    # cursor.execute(query)
+    cursor = run_sql(cursor.connection, query)
+    if cursor is None:
+        return {}
+
     result = cursor.fetchone()
     if not result:
         return {}
@@ -243,11 +249,22 @@ def fetch_table_preview(
     if not cursor:
         return [{"mock_col": "mock_val"}]
 
-    cursor.execute(f"""
+    # cursor.execute(f"""
+    #     SELECT *
+    #     FROM {database}.{schema}.{table_name}
+    #     LIMIT {n_rows};
+    # """)
+    cursor = run_sql(
+        cursor.connection,
+        f"""
         SELECT *
         FROM {database}.{schema}.{table_name}
         LIMIT {n_rows};
-    """)
+        """,
+    )
+    if cursor is None:
+        return []
+
     columns = [col[0] for col in cursor.description]
     rows = cursor.fetchall()
     return [dict(zip(columns, row)) for row in rows]

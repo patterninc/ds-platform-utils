@@ -4,6 +4,8 @@ from typing import Optional
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
 
+from ds_platform_utils.shared.utils import run_sql
+
 ####################
 # --- Metaflow --- #
 ####################
@@ -67,10 +69,17 @@ def _create_snowflake_connection(
         queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
 
     # Execute all queries in single batch
-    with conn.cursor() as cursor:
-        sql = "\n".join(queries)
-        _debug_print_query(sql)
-        cursor.execute(sql, num_statements=0)
+    # with conn.cursor() as cursor:
+    #     sql = "\n".join(queries)
+    #     _debug_print_query(sql)
+    #     cursor.execute(sql, num_statements=0)
+
+    # Merge into single SQL batch
+    sql = "\n".join(queries)
+    _debug_print_query(sql)
+
+    if sql.strip():
+        run_sql(conn, sql)
 
     return conn
 
