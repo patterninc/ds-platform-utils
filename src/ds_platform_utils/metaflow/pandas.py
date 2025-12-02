@@ -212,7 +212,7 @@ def query_pandas_from_snowflake(
             # No statements to execute, return empty DataFrame
             df = pd.DataFrame()
         else:
-            result: pyarrow.Table = cur.fetch_arrow_all(force_return_table=True) 
+            result: pyarrow.Table = cur.fetch_arrow_all(force_return_table=True)
             df = result.to_pandas()
             df.columns = df.columns.str.lower()
 

@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, Mock
 
-import pytest
-
 from src.ds_platform_utils.shared.utils import run_sql
 
 
