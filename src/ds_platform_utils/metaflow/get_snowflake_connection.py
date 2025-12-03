@@ -4,7 +4,7 @@ from typing import Optional
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
 
-from ds_platform_utils._snowflake.utils import _execute_sql
+from ds_platform_utils._snowflake.shared import _execute_sql
 
 ####################
 # --- Metaflow --- #

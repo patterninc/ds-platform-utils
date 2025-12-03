@@ -11,7 +11,7 @@ from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
-from ds_platform_utils._snowflake.utils import _execute_sql
+from ds_platform_utils._snowflake.shared import _execute_sql
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (

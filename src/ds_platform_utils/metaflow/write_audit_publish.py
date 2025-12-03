@@ -10,7 +10,7 @@ from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
-from ds_platform_utils._snowflake.utils import _execute_sql
+from ds_platform_utils._snowflake.shared import _execute_sql
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 if TYPE_CHECKING:

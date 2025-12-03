@@ -9,7 +9,7 @@ import pytest
 import pytz
 from metaflow import FlowSpec, project, step
 
-from ds_platform_utils._snowflake.utils import _execute_sql
+from ds_platform_utils._snowflake.shared import _execute_sql
 from ds_platform_utils.metaflow import (
     publish,
     publish_pandas,
