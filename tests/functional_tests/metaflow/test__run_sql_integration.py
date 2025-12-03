@@ -1,4 +1,4 @@
-"""Functional test for run_sql + publish/publish_pandas/query_pandas_from_snowflake."""
+"""Functional test for _execute_sql + publish/publish_pandas/query_pandas_from_snowflake."""
 
 import subprocess
 import sys
@@ -9,23 +9,23 @@ import pytest
 import pytz
 from metaflow import FlowSpec, project, step
 
+from ds_platform_utils._snowflake.utils import _execute_sql
 from ds_platform_utils.metaflow import (
     publish,
     publish_pandas,
     query_pandas_from_snowflake,
 )
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
-from ds_platform_utils.shared.utils import run_sql
 
 
-@project(name="test_run_sql_integration_flow")
-class TestRunSqlIntegrationFlow(FlowSpec):
-    """Metaflow flow that will test run_sql integration via various paths.
+@project(name="test_execute_sql_integration_flow")
+class TestExecuteSqlIntegrationFlow(FlowSpec):
+    """Metaflow flow that will test _execute_sql integration via various paths.
 
     - publish_pandas()
     - publish()
     - query_pandas_from_snowflake()
-    - run_sql() with various SQL patterns (edge cases)
+    - _execute_sql() with various SQL patterns (edge cases)
     """
 
     @step
@@ -35,7 +35,7 @@ class TestRunSqlIntegrationFlow(FlowSpec):
 
     @step
     def test_publish_pandas_basic(self):
-        """Publish a simple DataFrame without warehouse (no run_sql here, just sanity)."""
+        """Publish a simple DataFrame without warehouse (no _execute_sql here, just sanity)."""
         df = pd.DataFrame(
             {
                 "id": [1, 2, 3],
@@ -56,7 +56,7 @@ class TestRunSqlIntegrationFlow(FlowSpec):
     def test_publish_pandas_with_warehouse(self):
         """Publish using a specific warehouse.
 
-        This hits run_sql via:
+        This hits _execute_sql via:
           - USE WAREHOUSE ...
           - ALTER SESSION SET QUERY_TAG = ...
         """
@@ -81,11 +81,11 @@ class TestRunSqlIntegrationFlow(FlowSpec):
     def test_publish_with_wap(self):
         """Test publish() which uses write_audit_publish under the hood.
 
-        This ensures publish still works when run_sql is used for session setup elsewhere.
+        This ensures publish still works when _execute_sql is used for session setup elsewhere.
         """
         # Very simple WAP query: just recreate the table from itself
         query = """
-        CREATE OR REPLACE TABLE PATTERN_DB.{{schema}}.RUN_SQL_ITG_PUBLISH AS
+        CREATE OR REPLACE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS
         SELECT * FROM PATTERN_DB.{{schema}}.RUN_SQL_ITG_PANDAS_WH;
         """
 
@@ -101,7 +101,7 @@ class TestRunSqlIntegrationFlow(FlowSpec):
     def test_query_pandas_multi_statement(self):
         """Test query_pandas_from_snowflake with a multi-statement SQL.
 
-        We rely on run_sql() internally (execute_string) and ensure we get
+        We rely on _execute_sql() internally (execute_string) and ensure we get
         the result of the *last* statement.
         """
         multi_stmt_query = """
@@ -123,11 +123,11 @@ class TestRunSqlIntegrationFlow(FlowSpec):
         assert "answer" in df.columns
         assert df["answer"].iloc[0] == 42
 
-        self.next(self.test_run_sql_edge_cases)
+        self.next(self.test_execute_sql_edge_cases)
 
     @step
-    def test_run_sql_edge_cases(self):
-        """Directly test run_sql() with different SQL patterns (edge cases).
+    def test_execute_sql_edge_cases(self):
+        """Directly test _execute_sql() with different SQL patterns (edge cases).
 
         - empty string
         - whitespace only
@@ -138,26 +138,26 @@ class TestRunSqlIntegrationFlow(FlowSpec):
         conn = get_snowflake_connection(use_utc=True)
 
         # 1) Empty string → no statements executed → None
-        cursor = run_sql(conn, "")
+        cursor = _execute_sql(conn, "")
         assert cursor is None
 
         # 2) Whitespace only → also effectively nothing
-        cursor = run_sql(conn, "   \n\t  ")
+        cursor = _execute_sql(conn, "   \n\t  ")
         assert cursor is None
 
         # 3) Comments only → Snowflake treats these as "no executable statements"
-        cursor = run_sql(conn, "-- comment only\n/* another comment */")
+        cursor = _execute_sql(conn, "-- comment only\n/* another comment */")
         assert cursor is None
 
         # 4) Single statement (SELECT)
-        cursor = run_sql(conn, "SELECT 1 AS x;")
+        cursor = _execute_sql(conn, "SELECT 1 AS x;")
         assert cursor is not None
         rows = cursor.fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 1  # x == 1
 
         # 5) Multi-statement: ensure we get cursor for *last* stmt
-        cursor = run_sql(conn, "SELECT 1 AS x; SELECT 2 AS x;")
+        cursor = _execute_sql(conn, "SELECT 1 AS x; SELECT 2 AS x;")
         assert cursor is not None
         rows = cursor.fetchall()
         # Last cursor should correspond to 'SELECT 2 AS x;'
@@ -173,12 +173,12 @@ class TestRunSqlIntegrationFlow(FlowSpec):
 
 
 if __name__ == "__main__":
-    TestRunSqlIntegrationFlow()
+    TestExecuteSqlIntegrationFlow()
 
 
 @pytest.mark.slow
-def test_run_sql_integration_flow():
-    """Run the run_sql integration flow via Metaflow CLI."""
+def test_execute_sql_integration_flow():
+    """Run the _execute_sql integration flow via Metaflow CLI."""
     cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
 
     print("\n=== Metaflow Output ===")

@@ -4,7 +4,7 @@ from typing import Optional
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
 
-from ds_platform_utils.shared.utils import run_sql
+from ds_platform_utils._snowflake.utils import _execute_sql
 
 ####################
 # --- Metaflow --- #
@@ -73,7 +73,7 @@ def _create_snowflake_connection(
     _debug_print_query(sql)
 
     if sql.strip():
-        run_sql(conn, sql)
+        _execute_sql(conn, sql)
 
     return conn
 

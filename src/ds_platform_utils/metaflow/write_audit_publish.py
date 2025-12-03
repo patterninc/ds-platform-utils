@@ -10,8 +10,8 @@ from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
+from ds_platform_utils._snowflake.utils import _execute_sql
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
-from ds_platform_utils.shared.utils import run_sql
 
 if TYPE_CHECKING:
     from ds_platform_utils._snowflake.write_audit_publish import (
@@ -217,7 +217,7 @@ def publish(  # noqa: PLR0913, D417
 
     with conn.cursor() as cur:
         if warehouse is not None:
-            run_sql(conn, f"USE WAREHOUSE {warehouse}")
+            _execute_sql(conn, f"USE WAREHOUSE {warehouse}")
 
         last_op_was_write = False
         for operation in write_audit_publish(
@@ -338,7 +338,7 @@ def fetch_table_preview(
     if cursor is None:
         return []
     else:
-        result_cursor = run_sql(
+        result_cursor = _execute_sql(
             cursor.connection,
             f"""
             SELECT *

@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Any, Generator, Literal, Optional, Union
 
 from jinja2 import DebugUndefined, Template
+from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
-from ds_platform_utils.shared.utils import run_sql
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -164,6 +164,26 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
         )
 
 
+def _execute_sql(conn: SnowflakeConnection, sql: str) -> Optional[SnowflakeCursor]:
+    """Execute SQL statement(s) using Snowflake's ``connection.execute_string()`` and return the *last* resulting cursor.
+
+    Snowflake's ``execute_string`` allows a single string containing multiple SQL
+    statements (separated by semicolons) to be executed at once. Unlike
+    ``cursor.execute()``, which handles exactly one statement and returns a single
+    cursor object, ``execute_string`` returns a **list of cursors**—one cursor for each
+    individual SQL statement in the batch.
+
+    :param conn: Snowflake connection object
+    :param sql: SQL query or batch of semicolon-delimited SQL statements
+    :return: The cursor corresponding to the last executed statement, or None if no
+             statements were executed
+    """
+    last_cursor = None
+    for cur in conn.execute_string(sql):
+        last_cursor = cur
+    return last_cursor
+
+
 @dataclass
 class SQLOperation:
     """SQL operation details."""
@@ -201,8 +221,8 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
         print(f"Would execute query:\n{query}")
         return
 
-    # run the query using run_sql utility which handles multiple statements via execute_string
-    run_sql(cursor.connection, query)
+    # run the query using _execute_sql utility which handles multiple statements via execute_string
+    _execute_sql(cursor.connection, query)
     cursor.connection.commit()
 
 
@@ -217,7 +237,7 @@ def run_audit_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> dic
     if cursor is None:
         return {"mock_result": True}
 
-    cursor = run_sql(cursor.connection, query)
+    cursor = _execute_sql(cursor.connection, query)
     if cursor is None:
         return {}
 
@@ -247,7 +267,7 @@ def fetch_table_preview(
     if not cursor:
         return [{"mock_col": "mock_val"}]
 
-    cursor = run_sql(
+    cursor = _execute_sql(
         cursor.connection,
         f"""
         SELECT *

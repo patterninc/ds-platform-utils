@@ -11,6 +11,7 @@ from metaflow.cards import Markdown, Table
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
+from ds_platform_utils._snowflake.utils import _execute_sql
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
@@ -18,7 +19,6 @@ from ds_platform_utils.metaflow.write_audit_publish import (
     add_comment_to_each_sql_statement,
     get_select_dev_query_tags,
 )
-from ds_platform_utils.shared.utils import run_sql
 
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
@@ -112,14 +112,14 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     # set warehouse
     if warehouse is not None:
-        run_sql(conn, f"USE WAREHOUSE {warehouse};")
+        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
 
         # set query tag for cost tracking in select.dev
         # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
         # so we set a session query tag instead.
         tags = get_select_dev_query_tags()
         query_tag_str = json.dumps(tags)
-        run_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
+        _execute_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
 
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
@@ -199,9 +199,9 @@ def query_pandas_from_snowflake(
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     if warehouse is not None:
-        run_sql(conn, f"USE WAREHOUSE {warehouse};")
+        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
 
-    cursor_result = run_sql(conn, query)
+    cursor_result = _execute_sql(conn, query)
     if cursor_result is None:
         # No statements to execute, return empty DataFrame
         df = pd.DataFrame()
