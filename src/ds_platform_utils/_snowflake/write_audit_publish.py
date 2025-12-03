@@ -200,8 +200,8 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
     if cursor is None:
         print(f"Would execute query:\n{query}")
         return
-    
-    # run the query using run_sql utility which handles multiple statements via execute_string 
+
+    # run the query using run_sql utility which handles multiple statements via execute_string
     run_sql(cursor.connection, query)
     cursor.connection.commit()
 
