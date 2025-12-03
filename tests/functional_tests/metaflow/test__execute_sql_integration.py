@@ -146,7 +146,9 @@ class TestExecuteSqlIntegrationFlow(FlowSpec):
         assert cursor is None
 
         # 3) Comments only → Snowflake treats these as "no executable statements"
-        cursor = _execute_sql(conn, "-- comment only\n/* another comment */")
+        cursor = _execute_sql(conn, "-- comment only")
+        assert cursor is None
+        cursor = _execute_sql(conn, "/* comment only */")
         assert cursor is None
 
         # 4) Single statement (SELECT)
