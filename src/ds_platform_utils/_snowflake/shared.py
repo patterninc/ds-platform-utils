@@ -1,4 +1,4 @@
-""""Shared Snowflake utility functions."""
+"""Shared Snowflake utility functions."""
 
 from typing import Optional
 
