@@ -200,21 +200,22 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-    with conn.cursor() as cur:
-        if warehouse is not None:
-            # cur.execute(f"USE WAREHOUSE {warehouse};")
-            run_sql(conn, f"USE WAREHOUSE {warehouse};")
+    if warehouse is not None:
+        # cur.execute(f"USE WAREHOUSE {warehouse};")
+        run_sql(conn, f"USE WAREHOUSE {warehouse};")
 
-        # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
-        # result: pyarrow.Table = cur.execute(query).fetch_arrow_all(force_return_table=True)
-        cur = run_sql(conn, query)
-        if cur is None:
-            # No statements to execute, return empty DataFrame
-            df = pd.DataFrame()
-        else:
-            result: pyarrow.Table = cur.fetch_arrow_all(force_return_table=True)
-            df = result.to_pandas()
-            df.columns = df.columns.str.lower()
+    # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
+    # result: pyarrow.Table = cur.execute(query).fetch_arrow_all(force_return_table=True)
+    cursor_result = run_sql(conn, query)
+    if cursor_result is None:
+        # No statements to execute, return empty DataFrame
+        df = pd.DataFrame()
+    else:
+        result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
+        df = result.to_pandas()
+        df.columns = df.columns.str.lower()
 
-        current.card.append(Markdown("### Query Result"))
-        current.card.append(Table.from_dataframe(df.head()))
+    current.card.append(Markdown("### Query Result"))
+    current.card.append(Table.from_dataframe(df.head()))
+
+    return df
