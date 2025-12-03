@@ -42,21 +42,6 @@ class TestRunSql:
         mock_conn.execute_string.assert_called_once_with(sql)
         assert result is cursor
 
-    def test_returns_none_when_no_statements_executed(self):
-        """Test that _execute_sql returns None when no statements are executed."""
-        # Setup
-        mock_conn = Mock()
-        mock_conn.execute_string.return_value = []
-
-        sql = ""
-
-        # Execute
-        result = _execute_sql(mock_conn, sql)
-
-        # Verify
-        mock_conn.execute_string.assert_called_once_with(sql)
-        assert result is None
-
     def test_handles_empty_sql_string(self):
         """Test that _execute_sql correctly handles empty SQL strings."""
         # Setup
