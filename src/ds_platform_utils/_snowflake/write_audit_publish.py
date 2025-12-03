@@ -200,9 +200,8 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
     if cursor is None:
         print(f"Would execute query:\n{query}")
         return
-
-    # Count statements so we can tell Snowflake exactly how many to expect
-    # cursor.execute(query, num_statements=0)  # 0 means any number of statements
+    
+    # run the query using run_sql utility which handles multiple statements via execute_string 
     run_sql(cursor.connection, query)
     cursor.connection.commit()
 
@@ -218,7 +217,6 @@ def run_audit_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> dic
     if cursor is None:
         return {"mock_result": True}
 
-    # cursor.execute(query)
     cursor = run_sql(cursor.connection, query)
     if cursor is None:
         return {}
@@ -249,11 +247,6 @@ def fetch_table_preview(
     if not cursor:
         return [{"mock_col": "mock_val"}]
 
-    # cursor.execute(f"""
-    #     SELECT *
-    #     FROM {database}.{schema}.{table_name}
-    #     LIMIT {n_rows};
-    # """)
     cursor = run_sql(
         cursor.connection,
         f"""

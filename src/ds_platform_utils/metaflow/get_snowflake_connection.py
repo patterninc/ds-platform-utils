@@ -68,12 +68,6 @@ def _create_snowflake_connection(
     if query_tag:
         queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
 
-    # Execute all queries in single batch
-    # with conn.cursor() as cursor:
-    #     sql = "\n".join(queries)
-    #     _debug_print_query(sql)
-    #     cursor.execute(sql, num_statements=0)
-
     # Merge into single SQL batch
     sql = "\n".join(queries)
     _debug_print_query(sql)

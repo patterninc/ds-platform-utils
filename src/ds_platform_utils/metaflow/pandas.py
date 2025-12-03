@@ -112,8 +112,6 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     # set warehouse
     if warehouse is not None:
-        # with conn.cursor() as cur:
-        # cur.execute(f"USE WAREHOUSE {warehouse};")
         run_sql(conn, f"USE WAREHOUSE {warehouse};")
 
         # set query tag for cost tracking in select.dev
@@ -201,16 +199,14 @@ def query_pandas_from_snowflake(
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     if warehouse is not None:
-        # cur.execute(f"USE WAREHOUSE {warehouse};")
         run_sql(conn, f"USE WAREHOUSE {warehouse};")
 
-    # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
-    # result: pyarrow.Table = cur.execute(query).fetch_arrow_all(force_return_table=True)
     cursor_result = run_sql(conn, query)
     if cursor_result is None:
         # No statements to execute, return empty DataFrame
         df = pd.DataFrame()
     else:
+        # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
         result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
         df = result.to_pandas()
         df.columns = df.columns.str.lower()

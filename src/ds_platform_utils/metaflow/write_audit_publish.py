@@ -217,7 +217,6 @@ def publish(  # noqa: PLR0913, D417
 
     with conn.cursor() as cur:
         if warehouse is not None:
-            # cur.execute(f"USE WAREHOUSE {warehouse}")
             run_sql(conn, f"USE WAREHOUSE {warehouse}")
 
         last_op_was_write = False
@@ -336,15 +335,10 @@ def fetch_table_preview(
     :param table_name: Table name
     :param cursor: Snowflake cursor
     """
-    # cursor.execute(f"""
-    #     SELECT *
-    #     FROM {database}.{schema}.{table_name}
-    #     LIMIT {n_rows};
-    # """)
     if cursor is None:
         return []
     else:
-        cursor = run_sql(
+        result_cursor = run_sql(
             cursor.connection,
             f"""
             SELECT *
@@ -352,8 +346,10 @@ def fetch_table_preview(
             LIMIT {n_rows};
             """,
         )
-        columns = [col[0] for col in cursor.description]
-        rows = cursor.fetchall()
+        if result_cursor is None:
+            return []
+        columns = [col[0] for col in result_cursor.description]
+        rows = result_cursor.fetchall()
 
         # Create header row plus data rows
         table_rows = [[Artifact(col) for col in columns]]  # Header row
