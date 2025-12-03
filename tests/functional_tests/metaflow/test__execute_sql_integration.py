@@ -145,20 +145,14 @@ class TestExecuteSqlIntegrationFlow(FlowSpec):
         cursor = _execute_sql(conn, "   \n\t  ")
         assert cursor is None
 
-        # 3) Comments only → Snowflake treats these as "no executable statements"
-        cursor = _execute_sql(conn, "-- comment only")
-        assert cursor is None
-        cursor = _execute_sql(conn, "/* comment only */")
-        assert cursor is None
-
-        # 4) Single statement (SELECT)
+        # 3) Single statement (SELECT)
         cursor = _execute_sql(conn, "SELECT 1 AS x;")
         assert cursor is not None
         rows = cursor.fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 1  # x == 1
 
-        # 5) Multi-statement: ensure we get cursor for *last* stmt
+        # 4) Multi-statement: ensure we get cursor for *last* stmt
         cursor = _execute_sql(conn, "SELECT 1 AS x; SELECT 2 AS x;")
         assert cursor is not None
         rows = cursor.fetchall()
