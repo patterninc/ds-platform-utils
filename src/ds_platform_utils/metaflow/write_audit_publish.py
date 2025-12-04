@@ -10,7 +10,7 @@ from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
-from ds_platform_utils._snowflake.shared import _execute_sql
+from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 if TYPE_CHECKING:
@@ -98,7 +98,7 @@ def get_select_dev_query_tags() -> Dict[str, str]:
             stacklevel=2,
         )
 
-    def extract(prefix: str, default: str = "unknown") -> str:
+    def _extract(prefix: str, default: str = "unknown") -> str:
         for tag in fetched_tags:
             if tag.startswith(prefix + ":"):
                 return tag.split(":", 1)[1]
@@ -107,19 +107,19 @@ def get_select_dev_query_tags() -> Dict[str, str]:
     # most of these will be unknown if no tags are set on the flow
     # (most likely for the flow runs which are triggered manually locally)
     return {
-        "app": extract(
+        "app": _extract(
             "ds.domain"
         ),  # first tag after 'app:', is the domain of the flow, fetched from current tags of the flow
-        "workload_id": extract(
+        "workload_id": _extract(
             "ds.project"
         ),  # second tag after 'workload_id:', is the project of the flow which it belongs to
-        "flow_name": current.flow_name,  # name of the metaflow flow
+        "flow_name": current.flow_name,
         "project": current.project_name,  # Project name from the @project decorator, lets us
         # identify the flow’s project without relying on user tags (added via --tag).
         "step_name": current.step_name,  # name of the current step
         "run_id": current.run_id,  # run_id: unique id of the current run
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
-        "domain": extract("ds.domain"),  # business unit (domain) of the flow, same as app
+        "domain": _extract("ds.domain"),  # business unit (domain) of the flow, same as app
         "namespace": current.namespace,  # namespace of the flow
         "perimeter": str(os.environ.get("OB_CURRENT_PERIMETER") or os.environ.get("OBP_PERIMETER")),
         "is_production": str(

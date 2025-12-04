@@ -7,7 +7,7 @@ from typing import Any, Generator, Literal, Optional, Union
 from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
 
-from ds_platform_utils._snowflake.shared import _execute_sql
+from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 
 
