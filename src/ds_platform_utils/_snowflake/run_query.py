@@ -1,9 +1,11 @@
 """Shared Snowflake utility functions."""
 
-from typing import Optional
+import warnings
+from typing import Iterable, Optional
 
 from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
+from snowflake.connector.errors import ProgrammingError
 
 
 def _execute_sql(conn: SnowflakeConnection, sql: str) -> Optional[SnowflakeCursor]:
@@ -18,9 +20,22 @@ def _execute_sql(conn: SnowflakeConnection, sql: str) -> Optional[SnowflakeCurso
     :param conn: Snowflake connection object
     :param sql: SQL query or batch of semicolon-delimited SQL statements
     :return: The cursor corresponding to the last executed statement, or None if no
-             statements were executed
+             statements were executed or if the SQL contains only whitespace/comments
     """
-    last_cursor = None
-    for cur in conn.execute_string(sql):
-        last_cursor = cur
-    return last_cursor
+    if not sql.strip():
+        return None
+
+    try:
+        cursors: Iterable[SnowflakeCursor] = conn.execute_string(sql.strip())
+
+        if cursors is None:
+            return None
+
+        *_, last = cursors
+        return last
+    except ProgrammingError as e:
+        if "Empty SQL statement" in str(e):
+            # raise a warning and return None
+            warnings.warn("Empty SQL statement encountered; returning None.", category=UserWarning, stacklevel=2)
+            return None
+        raise
