@@ -1,4 +1,4 @@
-name: Publish DS Projen
+name: Publish DS Platform Utils
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for version tagging
+          fetch-depth: 0 # Fetch all history for version tagging
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -44,7 +44,7 @@ jobs:
           cache-dependency-glob: "${{ github.workspace }}/uv.lock"
 
       - name: Run pre-commit hooks
-        run: SKIP=no-commit-to-branch uv run poe lint  # using poethepoet needs to be setup before using poe lint
+        run: SKIP=no-commit-to-branch uv run poe lint # using poethepoet needs to be setup before using poe lint
 
   build-wheel:
     name: Build Wheel

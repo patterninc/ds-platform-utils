@@ -10,6 +10,7 @@ from metaflow import current
 from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
+from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ def get_select_dev_query_tags() -> Dict[str, str]:
             stacklevel=2,
         )
 
-    def extract(prefix: str, default: str = "unknown") -> str:
+    def _extract(prefix: str, default: str = "unknown") -> str:
         for tag in fetched_tags:
             if tag.startswith(prefix + ":"):
                 return tag.split(":", 1)[1]
@@ -106,19 +107,19 @@ def get_select_dev_query_tags() -> Dict[str, str]:
     # most of these will be unknown if no tags are set on the flow
     # (most likely for the flow runs which are triggered manually locally)
     return {
-        "app": extract(
+        "app": _extract(
             "ds.domain"
         ),  # first tag after 'app:', is the domain of the flow, fetched from current tags of the flow
-        "workload_id": extract(
+        "workload_id": _extract(
             "ds.project"
         ),  # second tag after 'workload_id:', is the project of the flow which it belongs to
-        "flow_name": current.flow_name,  # name of the metaflow flow
+        "flow_name": current.flow_name,
         "project": current.project_name,  # Project name from the @project decorator, lets us
         # identify the flow’s project without relying on user tags (added via --tag).
         "step_name": current.step_name,  # name of the current step
         "run_id": current.run_id,  # run_id: unique id of the current run
         "user": current.username,  # username of user who triggered the run (argo-workflows if its a deployed flow)
-        "domain": extract("ds.domain"),  # business unit (domain) of the flow, same as app
+        "domain": _extract("ds.domain"),  # business unit (domain) of the flow, same as app
         "namespace": current.namespace,  # namespace of the flow
         "perimeter": str(os.environ.get("OB_CURRENT_PERIMETER") or os.environ.get("OBP_PERIMETER")),
         "is_production": str(
@@ -216,7 +217,7 @@ def publish(  # noqa: PLR0913, D417
 
     with conn.cursor() as cur:
         if warehouse is not None:
-            cur.execute(f"USE WAREHOUSE {warehouse}")
+            _execute_sql(conn, f"USE WAREHOUSE {warehouse}")
 
         last_op_was_write = False
         for operation in write_audit_publish(
@@ -334,20 +335,28 @@ def fetch_table_preview(
     :param table_name: Table name
     :param cursor: Snowflake cursor
     """
-    cursor.execute(f"""
-        SELECT *
-        FROM {database}.{schema}.{table_name}
-        LIMIT {n_rows};
-    """)
-    columns = [col[0] for col in cursor.description]
-    rows = cursor.fetchall()
+    if cursor is None:
+        return []
+    else:
+        result_cursor = _execute_sql(
+            cursor.connection,
+            f"""
+            SELECT *
+            FROM {database}.{schema}.{table_name}
+            LIMIT {n_rows};
+            """,
+        )
+        if result_cursor is None:
+            return []
+        columns = [col[0] for col in result_cursor.description]
+        rows = result_cursor.fetchall()
 
-    # Create header row plus data rows
-    table_rows = [[Artifact(col) for col in columns]]  # Header row
-    for row in rows:
-        table_rows.append([Artifact(val) for val in row])  # Data rows
+        # Create header row plus data rows
+        table_rows = [[Artifact(col) for col in columns]]  # Header row
+        for row in rows:
+            table_rows.append([Artifact(val) for val in row])  # Data rows
 
-    return [
-        Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
-        Table(table_rows),
-    ]
+        return [
+            Markdown(f"### Table Preview: ({database}.{schema}.{table_name})"),
+            Table(table_rows),
+        ]

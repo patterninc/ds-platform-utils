@@ -4,6 +4,8 @@ from typing import Optional
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
 
+from ds_platform_utils._snowflake.run_query import _execute_sql
+
 ####################
 # --- Metaflow --- #
 ####################
@@ -41,7 +43,12 @@ def get_snowflake_connection(
     In metaflow, each step is a separate Python process, so the connection will automatically be
     closed at the end of any steps that use this singleton.
     """
-    return _create_snowflake_connection(use_utc=use_utc, query_tag=current.project_name)
+    if current and hasattr(current, "project_name"):
+        query_tag = current.project_name
+    else:
+        query_tag = None
+
+    return _create_snowflake_connection(use_utc=use_utc, query_tag=query_tag)
 
 
 #####################
@@ -66,11 +73,10 @@ def _create_snowflake_connection(
     if query_tag:
         queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
 
-    # Execute all queries in single batch
-    with conn.cursor() as cursor:
-        sql = "\n".join(queries)
-        _debug_print_query(sql)
-        cursor.execute(sql, num_statements=0)
+    # Merge into single SQL batch
+    sql = "\n".join(queries)
+    _debug_print_query(sql)
+    _execute_sql(conn, sql)
 
     return conn
 
