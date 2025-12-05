@@ -176,12 +176,6 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
 
-    # adding query tags comment in query for cost tracking in select.dev
-    tags = get_select_dev_query_tags()
-    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
-    query = get_query_from_string_or_fpath(query)
-    query = add_comment_to_each_sql_statement(query, query_comment_str)
-
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
         query = substitute_map_into_string(query, {"schema": schema})
@@ -196,6 +190,12 @@ def query_pandas_from_snowflake(
         current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
+
+    # adding query tags comment in query for cost tracking in select.dev
+    tags = get_select_dev_query_tags()
+    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
+    query = get_query_from_string_or_fpath(query)
+    query = add_comment_to_each_sql_statement(query, query_comment_str)
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     if warehouse is not None:
