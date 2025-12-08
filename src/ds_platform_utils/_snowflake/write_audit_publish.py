@@ -202,7 +202,7 @@ def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
         return
 
     # run the query using _execute_sql utility which handles multiple statements via execute_string
-    _execute_sql(cursor.connection, query)
+    _execute_sql(conn=cursor.connection, sql=query)
     cursor.connection.commit()
 
 

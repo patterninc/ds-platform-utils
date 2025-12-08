@@ -1,4 +1,4 @@
-from src.ds_platform_utils.metaflow.write_audit_publish import add_comment_to_each_sql_statement
+from src.ds_platform_utils.metaflow.write_audit_publish import annotate_sql_with_comment
 
 
 def test_add_comment_to_each_sql_statement():
@@ -12,6 +12,6 @@ def test_add_comment_to_each_sql_statement():
         "select 'abc;def' as col /* {'app':'test'} */;\n"
     )
 
-    output = add_comment_to_each_sql_statement(input_sql, comment)
+    original_query, annotated_query = annotate_sql_with_comment(input_sql, comment)
 
-    assert output.strip() == expected_output.strip()
+    assert annotated_query.strip() == expected_output.strip()

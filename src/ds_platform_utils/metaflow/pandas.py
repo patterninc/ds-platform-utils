@@ -16,7 +16,7 @@ from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
-    add_comment_to_each_sql_statement,
+    annotate_sql_with_comment,
     get_select_dev_query_tags,
 )
 
@@ -176,11 +176,7 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
 
-    # adding query tags comment in query for cost tracking in select.dev
-    tags = get_select_dev_query_tags()
-    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
     query = get_query_from_string_or_fpath(query)
-    query = add_comment_to_each_sql_statement(query, query_comment_str)
 
     if "{{schema}}" in query or "{{ schema }}" in query:
         schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
@@ -192,16 +188,21 @@ def query_pandas_from_snowflake(
     # print query if DEBUG_QUERY env var is set
     _debug_print_query(query)
 
+    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     if warehouse is not None:
         current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
+        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+
+    # Log the original query in the Metaflow card before tagging them for select.dev
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
-    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-    if warehouse is not None:
-        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+    # adding query tags comment in query for cost tracking in select.dev
+    tags = get_select_dev_query_tags()
+    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
+    _, annotated_query = annotate_sql_with_comment(query, query_comment_str)
 
-    cursor_result = _execute_sql(conn, query)
+    cursor_result = _execute_sql(conn, annotated_query)
     if cursor_result is None:
         # No statements to execute, return empty DataFrame
         df = pd.DataFrame()
