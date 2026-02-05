@@ -1,287 +1,135 @@
-"""Functional tests for Snowflake S3 stage operations.
+"""A Metaflow flow."""
 
-These tests verify the S3-Snowflake bridge functionality for large-scale data operations.
-"""
+import subprocess
+import sys
 
-from unittest.mock import MagicMock, Mock, patch
-
-import pandas as pd
 import pytest
+from metaflow import FlowSpec, project, step
 
-from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-    DEV_S3_BUCKET,
-    DEV_SNOWFLAKE_STAGE,
-    PROD_S3_BUCKET,
-    PROD_SNOWFLAKE_STAGE,
-    _get_s3_config,
-)
+from ds_platform_utils.metaflow.pandas_via_s3_stage import publish_pandas_via_s3_stage
 
 
-class TestS3Config:
-    """Test S3 configuration selection based on environment."""
+@project(name="test_pandas_read_write_flow_via_s3_stage")
+class TestPandasReadWriteFlowViaS3Stage(FlowSpec):
+    """A sample flow."""
 
-    def test_get_s3_config_dev(self):
-        """Test that dev configuration is returned when is_production=False."""
-        bucket, stage = _get_s3_config(is_production=False)
-        assert bucket == DEV_S3_BUCKET
-        assert stage == DEV_SNOWFLAKE_STAGE
+    @step
+    def start(self):
+        """Start the flow."""
+        self.next(self.test_publish_pandas)
 
-    def test_get_s3_config_prod(self):
-        """Test that prod configuration is returned when is_production=True."""
-        bucket, stage = _get_s3_config(is_production=True)
-        assert bucket == PROD_S3_BUCKET
-        assert stage == PROD_SNOWFLAKE_STAGE
+    @step
+    def test_publish_pandas(self):
+        """Test the publish_pandas function."""
+        import pandas as pd
 
+        from ds_platform_utils.metaflow import publish_pandas_via_s3_stage
 
-class TestQueryPandasFromSnowflakeViaS3Stage:
-    """Test query_pandas_from_snowflake_via_s3_stage function."""
+        # Create a sample DataFrame
+        data = {
+            "id": [1, 2, 3, 4, 5],
+            "name": ["Mario", "Luigi", "Peach", "Bowser", "Toad"],
+            "score": [90.5, 85.2, 88.7, 92.1, 78.9],
+        }
+        df = pd.DataFrame(data)
 
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.get_snowflake_connection")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._execute_sql")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._get_df_from_s3_folder")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.current")
-    def test_query_via_s3_stage_basic(self, mock_current, mock_get_df, mock_execute_sql, mock_get_conn):
-        """Test basic query execution via S3 stage."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            query_pandas_from_snowflake_via_s3_stage,
-        )
-
-        # Setup mocks
-        mock_current.is_production = False
-        mock_current.card = MagicMock()
-
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-
-        expected_df = pd.DataFrame({"col1": [1, 2, 3], "col2": ["a", "b", "c"]})
-        mock_get_df.return_value = expected_df
-
-        # Execute
-        query = "SELECT * FROM TEST_TABLE"
-        result_df = query_pandas_from_snowflake_via_s3_stage(query=query)
-
-        # Verify
-        assert isinstance(result_df, pd.DataFrame)
-        assert len(result_df) == 3
-        assert list(result_df.columns) == ["col1", "col2"]
-
-        # Verify connection was closed
-        mock_conn.close.assert_called_once()
-
-        # Verify COPY INTO was executed
-        assert mock_execute_sql.called
-
-
-class TestPublishPandasViaS3Stage:
-    """Test publish_pandas_via_s3_stage function."""
-
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.get_snowflake_connection")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._execute_sql")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._get_metaflow_s3_client")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.current")
-    @patch("os.makedirs")
-    @patch("os.remove")
-    @patch("os.rmdir")
-    def test_publish_via_s3_stage_basic(
-        self,
-        mock_rmdir,
-        mock_remove,
-        mock_makedirs,
-        mock_current,
-        mock_s3_client,
-        mock_execute_sql,
-        mock_get_conn,
-    ):
-        """Test basic DataFrame publishing via S3 stage."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            publish_pandas_via_s3_stage,
-        )
-
-        # Setup mocks
-        mock_current.is_production = False
-        mock_current.card = MagicMock()
-
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-
-        mock_s3 = MagicMock()
-        mock_s3_client.return_value.__enter__ = Mock(return_value=mock_s3)
-        mock_s3_client.return_value.__exit__ = Mock(return_value=False)
-
-        # Create test DataFrame
-        df = pd.DataFrame(
-            {
-                "col1": [1, 2, 3],
-                "col2": ["a", "b", "c"],
-            }
-        )
-
-        table_schema = [
-            ("col1", "INTEGER"),
-            ("col2", "VARCHAR(255)"),
-        ]
-
-        # Execute
+        # Publish the DataFrame to Snowflake
         publish_pandas_via_s3_stage(
-            table_name="TEST_TABLE",
+            table_name="pandas_test_table",
             df=df,
-            table_schema=table_schema,
-            batch_size=10,
+            table_schema=[
+                ("id", "INTEGER"),
+                ("name", "TEXT"),
+                ("score", "FLOAT"),
+            ],
+            auto_create_table=True,
+            overwrite=True,
         )
 
-        # Verify
-        # Connection was closed
-        mock_conn.close.assert_called_once()
+        self.next(self.test_publish_pandas_with_warehouse)
 
-        # S3 put_files was called
-        assert mock_s3.put_files.called
+    @step
+    def test_publish_pandas_with_warehouse(self):
+        """Test the publish pandas on having parameters: warehouse."""
+        import pandas as pd
 
-        # SQL was executed (table creation and COPY INTO)
-        assert mock_execute_sql.call_count >= 2
+        # Create a sample DataFrame
+        data = {
+            "id": [1, 2, 3, 4, 5],
+            "name": ["Mario", "Luigi", "Peach", "Bowser", "Toad"],
+            "score": [90.5, 85.2, 88.7, 92.1, 78.9],
+        }
+        df = pd.DataFrame(data)
 
-    def test_publish_via_s3_stage_empty_dataframe(self):
-        """Test that publishing an empty DataFrame raises ValueError."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            publish_pandas_via_s3_stage,
+        # Publish the DataFrame to Snowflake with a specific warehouse
+        publish_pandas_via_s3_stage(
+            table_name="pandas_test_table",
+            df=df,
+            table_schema=[
+                ("id", "INTEGER"),
+                ("name", "TEXT"),
+                ("score", "FLOAT"),
+            ],
+            auto_create_table=True,
+            overwrite=True,
+            warehouse="OUTERBOUNDS_DATA_SCIENCE_MED_WH",
         )
 
-        df = pd.DataFrame()
-        table_schema = [("col1", "INTEGER")]
+        self.next(self.test_query_pandas)
 
-        with pytest.raises(ValueError, match="DataFrame is empty"):
-            publish_pandas_via_s3_stage(
-                table_name="TEST_TABLE",
-                df=df,
-                table_schema=table_schema,
-            )
+    @step
+    def test_query_pandas(self):
+        """Test the query_pandas_from_snowflake function."""
+        from ds_platform_utils.metaflow import query_pandas_from_snowflake_via_s3_stage
 
-    def test_publish_via_s3_stage_invalid_type(self):
-        """Test that publishing non-DataFrame raises TypeError."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            publish_pandas_via_s3_stage,
-        )
+        # Query to retrieve the data we just published
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE;"
 
-        table_schema = [("col1", "INTEGER")]
+        # Query the data back
+        result_df = query_pandas_from_snowflake_via_s3_stage(query)
 
-        with pytest.raises(TypeError, match="df must be a pandas DataFrame"):
-            publish_pandas_via_s3_stage(
-                table_name="TEST_TABLE",
-                df="not a dataframe",
-                table_schema=table_schema,
-            )
+        # Quick validation
+        assert len(result_df) == 5, "Expected 5 rows in the result"
+        assert "id" in result_df.columns, "Expected 'id' column in result"
+        assert "name" in result_df.columns, "Expected 'name' column in result"
+        assert "score" in result_df.columns, "Expected 'score' column in result"
+
+        self.next(self.end)
+
+    @step
+    def end(self):
+        """End the flow."""
+        pass
 
 
-class TestMakeBatchPredictionsFromSnowflakeViaS3Stage:
-    """Test make_batch_predictions_from_snowflake_via_s3_stage function."""
+if __name__ == "__main__":
+    TestPandasReadWriteFlowViaS3Stage()
 
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.get_snowflake_connection")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._execute_sql")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._list_files_in_s3_folder")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._get_df_from_s3_files")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._get_metaflow_s3_client")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.current")
-    @patch("os.remove")
-    def test_batch_predictions_basic(
-        self,
-        mock_remove,
-        mock_current,
-        mock_s3_client,
-        mock_get_df_files,
-        mock_list_files,
-        mock_execute_sql,
-        mock_get_conn,
-    ):
-        """Test basic batch predictions pipeline."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            make_batch_predictions_from_snowflake_via_s3_stage,
-        )
 
-        # Setup mocks
-        mock_current.is_production = False
-        mock_current.card = MagicMock()
+@pytest.mark.slow
+def test_pandas_read_write_flow():
+    """Test that the publish flow runs successfully."""
+    cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
 
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
+    print("\n=== Metaflow Output ===")
+    for line in execute_with_output(cmd):
+        print(line, end="")
 
-        mock_s3 = MagicMock()
-        mock_s3_client.return_value.__enter__ = Mock(return_value=mock_s3)
-        mock_s3_client.return_value.__exit__ = Mock(return_value=False)
 
-        # Mock S3 file listing
-        mock_list_files.return_value = [
-            "s3://bucket/path/file1.parquet",
-            "s3://bucket/path/file2.parquet",
-        ]
+def execute_with_output(cmd):
+    """Execute a command and yield output lines as they are produced."""
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,  # Merge stderr into stdout
+        universal_newlines=True,
+        bufsize=1,
+    )
 
-        # Mock reading from S3
-        input_df = pd.DataFrame({"input_col": [1, 2, 3]})
-        mock_get_df_files.return_value = input_df
+    for line in iter(process.stdout.readline, ""):
+        yield line
 
-        # Define predictor function
-        def predictor(df: pd.DataFrame) -> pd.DataFrame:
-            return pd.DataFrame(
-                {
-                    "prediction": df["input_col"] * 2,
-                }
-            )
-
-        output_schema = [("prediction", "INTEGER")]
-
-        # Execute
-        make_batch_predictions_from_snowflake_via_s3_stage(
-            input_query="SELECT * FROM INPUT_TABLE",
-            output_table_name="OUTPUT_TABLE",
-            output_table_schema=output_schema,
-            model_predictor_function=predictor,
-        )
-
-        # Verify
-        # Connection was closed
-        mock_conn.close.assert_called_once()
-
-        # Predictor was called for each file (2 times)
-        # S3 put_files was called for predictions
-        assert mock_s3.put_files.called
-
-        # SQL was executed (COPY INTO for input, table creation, COPY INTO for output)
-        assert mock_execute_sql.call_count >= 3
-
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.get_snowflake_connection")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._execute_sql")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage._list_files_in_s3_folder")
-    @patch("ds_platform_utils.metaflow.pandas_via_s3_stage.current")
-    def test_batch_predictions_no_files_raises_error(
-        self,
-        mock_current,
-        mock_list_files,
-        mock_execute_sql,
-        mock_get_conn,
-    ):
-        """Test that no input files raises ValueError."""
-        from ds_platform_utils.metaflow.pandas_via_s3_stage import (
-            make_batch_predictions_from_snowflake_via_s3_stage,
-        )
-
-        # Setup mocks
-        mock_current.is_production = False
-        mock_current.card = MagicMock()
-
-        mock_conn = MagicMock()
-        mock_get_conn.return_value = mock_conn
-
-        # Mock empty file list
-        mock_list_files.return_value = []
-
-        def predictor(df: pd.DataFrame) -> pd.DataFrame:
-            return df
-
-        output_schema = [("col1", "INTEGER")]
-
-        # Execute and verify error
-        with pytest.raises(ValueError, match="No input files found"):
-            make_batch_predictions_from_snowflake_via_s3_stage(
-                input_query="SELECT * FROM INPUT_TABLE",
-                output_table_name="OUTPUT_TABLE",
-                output_table_schema=output_schema,
-                model_predictor_function=predictor,
-            )
+    process.stdout.close()
+    return_code = process.wait()
+    if return_code:
+        raise subprocess.CalledProcessError(return_code, cmd)

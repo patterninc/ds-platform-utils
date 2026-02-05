@@ -2,59 +2,59 @@ import pandas as pd
 from metaflow import S3
 
 
-def get_metaflow_s3_client():
+def _get_metaflow_s3_client():
     return S3(role="arn:aws:iam::209479263910:role/outerbounds_iam_role")
 
 
-def list_files_in_s3_folder(path: str) -> list:
+def _list_files_in_s3_folder(path: str) -> list:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
-    with get_metaflow_s3_client() as s3:
+    with _get_metaflow_s3_client() as s3:
         return [path.url for path in s3.list_paths([path])]
 
 
-def get_df_from_s3_file(path: str) -> pd.DataFrame:
+def _get_df_from_s3_file(path: str) -> pd.DataFrame:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
-    with get_metaflow_s3_client() as s3:
+    with _get_metaflow_s3_client() as s3:
         return pd.read_parquet(s3.get(path).path)
 
 
-def get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
+def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
     if any(not path.startswith("s3://") for path in paths):
         raise ValueError("Invalid S3 URI. All paths must start with 's3://'.")
 
-    with get_metaflow_s3_client() as s3:
+    with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
         return pd.read_parquet(df_paths)
 
 
-def get_df_from_s3_folder(path: str) -> pd.DataFrame:
+def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
-    files = list_files_in_s3_folder(path)
-    return get_df_from_s3_files(files)
+    files = _list_files_in_s3_folder(path)
+    return _get_df_from_s3_files(files)
 
 
-def put_df_to_s3_file(df: pd.DataFrame, path: str) -> None:
+def _put_df_to_s3_file(df: pd.DataFrame, path: str) -> None:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
-    with get_metaflow_s3_client() as s3:
+    with _get_metaflow_s3_client() as s3:
         local_path = "/tmp/temp_parquet_file.parquet"
         df.to_parquet(local_path)
         s3.put_files(key_paths=[[path, local_path]])
 
 
-def put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None) -> None:
+def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None) -> None:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     if not path.endswith("/"):
-        path += "/"
+        path = path.removesuffix("/")
 
     target_chunk_size_mb = 50
     target_chunk_size_bytes = target_chunk_size_mb * 1024 * 1024
@@ -68,13 +68,13 @@ def put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None) -> None:
         chunk_size = int(target_chunk_size_bytes / bytes_per_row)
         chunk_size = max(1, chunk_size)
 
-    with get_metaflow_s3_client() as s3:
-        local_path_template = "/tmp/temp_parquet_file_part_{}.parquet"
+    with _get_metaflow_s3_client() as s3:
+        local_path_template = "/tmp/data_part_{}.parquet"
         key_paths = []
         num_rows = df.shape[0]
         for i in range(0, num_rows, chunk_size):
             local_path = local_path_template.format(i // chunk_size)
             df.iloc[i : i + chunk_size].to_parquet(local_path)
-            s3_path = f"{path}part_{i // chunk_size}.parquet"
+            s3_path = f"{path}/data_part_{i // chunk_size}.parquet"
             key_paths.append([s3_path, local_path])
         s3.put_files(key_paths=key_paths)
