@@ -136,6 +136,34 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     return "\n\n".join(sql_statements)
 
 
+def _infer_snowflake_schema_from_df(df: pd.DataFrame) -> List[Tuple[str, str]]:
+    """Infer Snowflake table schema from a pandas DataFrame.
+
+    This function maps pandas data types to corresponding Snowflake data types.
+    It returns a list of tuples, where each tuple contains a column name and its inferred Snowflake data type.
+
+    :param df: Input pandas DataFrame
+    :return: List of tuples with column names and inferred Snowflake data types
+    """
+    dtype_mapping = {
+        "object": "TEXT",
+        "int64": "NUMBER",
+        "float64": "FLOAT",
+        "bool": "BOOLEAN",
+        "datetime64[ns]": "TIMESTAMP_NTZ",
+        "datetime64[ns, tz]": "TIMESTAMP_TZ",
+        # Add more mappings as needed
+    }
+
+    schema = []
+    for col_name, dtype in df.dtypes.items():
+        dtype_str = str(dtype)
+        snowflake_type = dtype_mapping.get(dtype_str, "STRING")  # Default to STRING if type is not mapped
+        schema.append((col_name, snowflake_type))
+
+    return schema
+
+
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
     df: pd.DataFrame,
