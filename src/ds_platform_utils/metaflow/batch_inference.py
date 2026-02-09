@@ -1,4 +1,3 @@
-from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -19,7 +18,7 @@ from ds_platform_utils.metaflow.pandas import (
     _generate_snowflake_to_s3_copy_query,
     _get_s3_config,
 )
-from ds_platform_utils.metaflow.s3 import _get_df_from_s3_file, _list_files_in_s3_folder, _put_df_to_s3_file
+from ds_platform_utils.metaflow.s3 import _download_all_files_in_s3_folder, _get_df_from_s3_file, _put_df_to_s3_file
 
 
 def batch_inference(  # noqa: PLR0913 (too many arguments)
@@ -70,7 +69,7 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
 
     # Step 2: Get input files from S3 and apply model predictor function to generate output dataframe
 
-    input_files = _list_files_in_s3_folder(input_s3_path)
+    input_files = _download_all_files_in_s3_folder(input_s3_path)
 
     if not input_files:
         raise ValueError(f"No input files found in S3 path: {input_s3_path}")
@@ -82,20 +81,15 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     enumerated_input_files = list(enumerate(input_files))
     total_predictions = 0
 
-    def process_file(args):
-        file_idx, input_file = args
+    for file_idx, input_file in enumerated_input_files:
         print(f"Processing file {file_idx + 1}/{len(input_files)}")
-        input_df = _get_df_from_s3_file(input_file)
+        input_df = pd.read_parquet(input_file)
         predictions_df = model_predictor_function(input_df)
         _put_df_to_s3_file(
             df=predictions_df,
             path=f"{output_s3_path}/data_part_{file_idx}.parquet",
         )
-        return len(predictions_df)
-
-    with Pool(processes=parallelism) as pool:
-        prediction_counts = pool.map(process_file, enumerated_input_files)
-        total_predictions = sum(prediction_counts)
+        total_predictions += len(predictions_df)
 
     print(f"Total predictions generated: {total_predictions}")
 
