@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Union
+from typing import Any, Dict, Literal, Optional, Tuple, Union
 
 import pandas as pd
 import pyarrow
@@ -12,8 +12,17 @@ from snowflake.connector import SnowflakeConnection
 from snowflake.connector.pandas_tools import write_pandas
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
+from ds_platform_utils.metaflow._consts import (
+    DEV_S3_BUCKET,
+    DEV_SNOWFLAKE_STAGE,
+    NON_PROD_SCHEMA,
+    PROD_S3_BUCKET,
+    PROD_SCHEMA,
+    PROD_SNOWFLAKE_STAGE,
+    S3_DATA_FOLDER,
+)
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
+from ds_platform_utils.metaflow.s3 import _get_df_from_s3_folder
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
     add_comment_to_each_sql_statement,
@@ -34,6 +43,46 @@ TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
     "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
 ]
+
+
+def _get_s3_config(is_production: bool) -> Tuple[str, str]:
+    """Return the appropriate S3 bucket and Snowflake stage based on the environment."""
+    if is_production:
+        s3_bucket = PROD_S3_BUCKET
+        snowflake_stage = PROD_SNOWFLAKE_STAGE
+    else:
+        s3_bucket = DEV_S3_BUCKET
+        snowflake_stage = DEV_SNOWFLAKE_STAGE
+
+    return s3_bucket, snowflake_stage
+
+
+def _generate_snowflake_to_s3_copy_query(
+    query: str,
+    snowflake_stage_path: str,
+    file_name: str = "data.parquet",
+) -> str:
+    """Generate SQL COPY INTO command to export Snowflake query results to S3.
+
+    :param query: SQL query to execute
+    :param snowflake_stage: Snowflake stage name (e.g., 'DEV_OUTERBOUNDS_S3_STAGE')
+    :param s3_folder_path: Relative S3 folder path within the stage (e.g., 'temp/query_20260205_123456')
+    :param file_name: Output file name. Default 'data.parquet'
+    :return: COPY INTO SQL command
+    """
+    if query.count(";") > 1:
+        raise ValueError("Multiple SQL statements detected. Please provide a single query statement.")
+    query = query.replace(";", "")  # Remove trailing semicolon if present
+    copy_query = f"""
+    COPY INTO @{snowflake_stage_path}/
+    FROM (
+        {query}
+    )
+    OVERWRITE = TRUE
+    FILE_FORMAT = (TYPE = 'parquet')
+    HEADER = TRUE;
+    """
+    return copy_query
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -114,12 +163,13 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
 
-        # set query tag for cost tracking in select.dev
-        # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
-        # so we set a session query tag instead.
-        tags = get_select_dev_query_tags()
-        query_tag_str = json.dumps(tags)
-        _execute_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
+    # set query tag for cost tracking in select.dev
+    # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
+    # so we set a session query tag instead.
+    tags = get_select_dev_query_tags()
+    query_tag_str = json.dumps(tags)
+    _execute_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
+    _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
@@ -150,6 +200,7 @@ def query_pandas_from_snowflake(
     warehouse: Optional[TWarehouse] = None,
     ctx: Optional[Dict[str, Any]] = None,
     use_utc: bool = True,
+    use_s3_stage: bool = False,
 ) -> pd.DataFrame:
     """Returns a pandas dataframe from a Snowflake query.
 
@@ -160,6 +211,7 @@ def query_pandas_from_snowflake(
         `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
     :param ctx: Context dictionary to substitute into the query string.
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
+    :param use_s3_stage: Whether to use the S3 stage method to query Snowflake, which is more efficient for large queries.
     :return: DataFrame containing the results of the query.
 
     **NOTE:** If the query contains `{schema}` placeholders, they will be replaced with the appropriate schema name.
@@ -176,6 +228,8 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
 
+    schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
+
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_select_dev_query_tags()
     query_comment_str = f"\n\n/* {json.dumps(tags)} */"
@@ -183,7 +237,6 @@ def query_pandas_from_snowflake(
     query = add_comment_to_each_sql_statement(query, query_comment_str)
 
     if "{{schema}}" in query or "{{ schema }}" in query:
-        schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
         query = substitute_map_into_string(query, {"schema": schema})
 
     if ctx:
@@ -200,17 +253,33 @@ def query_pandas_from_snowflake(
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+    _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
-    cursor_result = _execute_sql(conn, query)
-    if cursor_result is None:
-        # No statements to execute, return empty DataFrame
-        df = pd.DataFrame()
+    if use_s3_stage:
+        s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+        data_folder = "query_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
+        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
+        sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
+
+        copy_query = _generate_snowflake_to_s3_copy_query(
+            query=query,
+            snowflake_stage_path=sf_stage_path,
+        )
+        # Copy data to S3
+        _execute_sql(conn, copy_query)
+
+        df = _get_df_from_s3_folder(s3_path)
     else:
-        # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
-        result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
-        df = result.to_pandas()
-        df.columns = df.columns.str.lower()
+        cursor_result = _execute_sql(conn, query)
+        if cursor_result is None:
+            # No statements to execute, return empty DataFrame
+            df = pd.DataFrame()
+        else:
+            # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
+            result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
+            df = result.to_pandas()
 
+    df.columns = df.columns.str.lower()
     current.card.append(Markdown("### Query Result"))
     current.card.append(Table.from_dataframe(df.head()))
 
