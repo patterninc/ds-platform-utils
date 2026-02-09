@@ -22,6 +22,24 @@ from ds_platform_utils.metaflow.pandas import (
 from ds_platform_utils.metaflow.s3 import _get_df_from_s3_file, _list_files_in_s3_folder, _put_df_to_s3_file
 
 
+def _process_inference_file(
+    file_idx: int,
+    input_file: str,
+    output_s3_path: str,
+    model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
+    input_files: List[str],
+):
+    """Process a single file through the model predictor and write results to S3."""
+    print(f"Processing file {file_idx + 1}/{len(input_files)}")
+    input_df = _get_df_from_s3_file(input_file)
+    predictions_df = model_predictor_function(input_df)
+    _put_df_to_s3_file(
+        df=predictions_df,
+        path=f"{output_s3_path}/data_part_{file_idx}.parquet",
+    )
+    return len(predictions_df)
+
+
 def batch_inference(  # noqa: PLR0913 (too many arguments)
     input_query: Union[str, Path],
     output_table_name: str,
@@ -79,22 +97,16 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     current.card.append(Table.from_dataframe(_get_df_from_s3_file(input_files[0])))
 
     # Step 3: Process each file through the model and write predictions to S3
-    enumerated_input_files = list(enumerate(input_files))
     total_predictions = 0
 
-    def process_file(args):
-        file_idx, input_file = args
-        print(f"Processing file {file_idx + 1}/{len(input_files)}")
-        input_df = _get_df_from_s3_file(input_file)
-        predictions_df = model_predictor_function(input_df)
-        _put_df_to_s3_file(
-            df=predictions_df,
-            path=f"{output_s3_path}/data_part_{file_idx}.parquet",
-        )
-        return len(predictions_df)
-
     with Pool(processes=parallelism) as pool:
-        prediction_counts = pool.map(process_file, enumerated_input_files)
+        prediction_counts = pool.starmap(
+            _process_inference_file,
+            [
+                (file_idx, input_file, output_s3_path, model_predictor_function, input_files)
+                for file_idx, input_file in enumerate(input_files)
+            ],
+        )
         total_predictions = sum(prediction_counts)
 
     print(f"Total predictions generated: {total_predictions}")
