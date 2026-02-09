@@ -21,18 +21,6 @@ from ds_platform_utils.metaflow.pandas import (
 from ds_platform_utils.metaflow.s3 import _download_all_files_in_s3_folder, _put_df_to_s3_file
 
 
-def process_file(args, model_predictor_function, output_s3_path, len_input_files):
-    file_idx, input_file = args
-    print(f"Processing file {file_idx + 1}/{len_input_files}")
-    input_df = pd.read_parquet(input_file)
-    predictions_df = model_predictor_function(input_df)
-    _put_df_to_s3_file(
-        df=predictions_df,
-        path=f"{output_s3_path}/data_part_{file_idx}.parquet",
-    )
-    return len(predictions_df)
-
-
 def batch_inference(  # noqa: PLR0913 (too many arguments)
     input_query: Union[str, Path],
     output_table_name: str,
@@ -91,27 +79,21 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
 
     # Step 3: Process each file through the model and write predictions to S3
 
-    from functools import partial
-
-    process_file_partial = partial(
-        process_file,
-        model_predictor_function=model_predictor_function,
-        output_s3_path=output_s3_path,
-        len_input_files=len(input_files),
-    )
-
-    import pickle
-
-    print(pickle.dumps(process_file)[:100])  # just to check if the function is pic
-
-    print(
-        pickle.dumps(process_file_partial)[:100]
-    )  # just to check if the function is picklable before we try to use it in multiprocessing. If this line raises an error, then the process_file function is not picklable and we won't be able to use it in multiprocessing.Pool
+    def process_file(args):
+        file_idx, input_file = args
+        print(f"Processing file {file_idx + 1}/{len(input_files)}")
+        input_df = pd.read_parquet(input_file)
+        predictions_df = model_predictor_function(input_df)
+        _put_df_to_s3_file(
+            df=predictions_df,
+            path=f"{output_s3_path}/data_part_{file_idx}.parquet",
+        )
+        return len(predictions_df)
 
     enumerated_input_files = list(enumerate(input_files))
     from metaflow import parallel_map
 
-    prediction_counts = parallel_map(process_file_partial, enumerated_input_files, max_parallel=parallelism)
+    prediction_counts = parallel_map(process_file, enumerated_input_files, max_parallel=parallelism)
 
     total_predictions = sum(prediction_counts)
     print(f"Total predictions generated: {total_predictions}")
