@@ -18,7 +18,7 @@ from ds_platform_utils.metaflow.pandas import (
     _generate_snowflake_to_s3_copy_query,
     _get_s3_config,
 )
-from ds_platform_utils.metaflow.s3 import _get_df_from_s3_file, _put_df_to_s3_file
+from ds_platform_utils.metaflow.s3 import _get_df_from_s3_file, _list_files_in_s3_folder, _put_df_to_s3_file
 
 
 def batch_inference(  # noqa: PLR0913 (too many arguments)
