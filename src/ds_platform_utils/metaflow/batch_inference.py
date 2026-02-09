@@ -91,10 +91,12 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
         return len(predictions_df)
 
     enumerated_input_files = list(enumerate(input_files))
-    from metaflow import parallel_map
+    import concurrent.futures
 
-    prediction_counts = parallel_map(process_file, enumerated_input_files, max_parallel=parallelism)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=parallelism) as executor:
+        prediction_counts = list(executor.map(process_file, enumerated_input_files))
 
+    print("Predictions generated per file:")
     total_predictions = sum(prediction_counts)
     print(f"Total predictions generated: {total_predictions}")
 
