@@ -92,7 +92,7 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
 
     # Step 3: Process each file through the model and write predictions to S3
 
-    from itertools import partial
+    from functools import partial
 
     process_file_partial = partial(
         process_file,
