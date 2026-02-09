@@ -1,3 +1,4 @@
+from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -78,10 +79,9 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     current.card.append(Table.from_dataframe(pd.read_parquet(input_files[0])))
 
     # Step 3: Process each file through the model and write predictions to S3
-    enumerated_input_files = list(enumerate(input_files))
-    total_predictions = 0
 
-    for file_idx, input_file in enumerated_input_files:
+    def process_file(args):
+        file_idx, input_file = args
         print(f"Processing file {file_idx + 1}/{len(input_files)}")
         input_df = pd.read_parquet(input_file)
         predictions_df = model_predictor_function(input_df)
@@ -89,8 +89,13 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
             df=predictions_df,
             path=f"{output_s3_path}/data_part_{file_idx}.parquet",
         )
-        total_predictions += len(predictions_df)
+        return len(predictions_df)
 
+    enumerated_input_files = list(enumerate(input_files))
+    with Pool(processes=parallelism) as pool:
+        prediction_counts = pool.map(process_file, enumerated_input_files)
+
+    total_predictions = sum(prediction_counts)
     print(f"Total predictions generated: {total_predictions}")
 
     # Step 4: Build COPY INTO query to load predictions from S3 back to Snowflake
