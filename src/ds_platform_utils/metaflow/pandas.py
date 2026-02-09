@@ -1,7 +1,7 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import pandas as pd
 import pyarrow
@@ -22,7 +22,7 @@ from ds_platform_utils.metaflow._consts import (
     S3_DATA_FOLDER,
 )
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.s3 import _get_df_from_s3_folder
+from ds_platform_utils.metaflow.s3 import _get_df_from_s3_folder, _put_df_to_s3_folder
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
     add_comment_to_each_sql_statement,
@@ -65,8 +65,7 @@ def _generate_snowflake_to_s3_copy_query(
     """Generate SQL COPY INTO command to export Snowflake query results to S3.
 
     :param query: SQL query to execute
-    :param snowflake_stage: Snowflake stage name (e.g., 'DEV_OUTERBOUNDS_S3_STAGE')
-    :param s3_folder_path: Relative S3 folder path within the stage (e.g., 'temp/query_20260205_123456')
+    :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
     :param file_name: Output file name. Default 'data.parquet'
     :return: COPY INTO SQL command
     """
@@ -85,6 +84,58 @@ def _generate_snowflake_to_s3_copy_query(
     return copy_query
 
 
+def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
+    schema: str,
+    table_name: str,
+    snowflake_stage_path: str,
+    table_schema: List[Tuple[str, str]],
+    overwrite: bool = True,
+    auto_create_table: bool = True,
+    use_logical_type: bool = True,
+) -> str:
+    """Generate SQL commands to load data from S3 to Snowflake table.
+
+    This function generates a complete SQL script that includes:
+    1. DROP TABLE IF EXISTS (if overwrite=True)
+    2. CREATE TABLE IF NOT EXISTS (if auto_create_table=True or overwrite=True)
+    3. COPY INTO command to load data from S3
+
+    :param schema: Snowflake schema name (e.g., 'DATA_SCIENCE' or 'DATA_SCIENCE_STAGE')
+    :param table_name: Target table name
+    :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
+    :param table_schema: List of tuples with column names and types
+    :param overwrite: If True, drop and recreate the table. Default True
+    :param auto_create_table: If True, create the table if it doesn't exist. Default True
+    :param use_logical_type: Whether to use Parquet logical types when reading the parquet files. Default True.
+    :return: Complete SQL script with table management and COPY INTO commands
+    """
+    sql_statements = []
+
+    # Step 1: Drop table if overwrite is True
+    if overwrite:
+        sql_statements.append(f"DROP TABLE IF EXISTS PATTERN_DB.{schema}.{table_name};")
+
+    # Step 2: Create table if auto_create_table or overwrite
+    if auto_create_table or overwrite:
+        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_schema])
+        create_table_query = (
+            f"""CREATE TABLE IF NOT EXISTS PATTERN_DB.{schema}.{table_name} ( {table_create_columns_str} );"""
+        )
+        sql_statements.append(create_table_query)
+
+    # Step 3: Generate COPY INTO command
+    columns_str = ",\n    ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_schema])
+
+    copy_query = f"""COPY INTO PATTERN_DB.{schema}.{table_name} FROM (
+        SELECT {columns_str}
+        FROM @{snowflake_stage_path} )
+        FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type});"""
+    sql_statements.append(copy_query)
+
+    # Combine all statements
+    return "\n\n".join(sql_statements)
+
+
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
     df: pd.DataFrame,
@@ -98,6 +149,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
     use_utc: bool = True,
+    use_s3_stage: bool = False,
+    table_schema: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -138,6 +191,11 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         parquet files for the uploaded pandas dataframe.
 
     :param use_utc: Whether to set the Snowflake session to use UTC time zone. Default is True.
+
+    :param use_s3_stage: Whether to use the S3 stage method to publish the DataFrame, which is more efficient for large DataFrames.
+
+    :param table_schema: Optional list of tuples specifying the column names and types for the Snowflake table.
+        This is only used when `use_s3_stage` is True, and is required in that case. The list should be in the format: `[(col_name1, col_type1), (col_name2, col_type2), ...]`, where `col_type` is a valid Snowflake data type (e.g., 'STRING', 'NUMBER', 'TIMESTAMP_NTZ', etc.).
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
@@ -170,6 +228,35 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     query_tag_str = json.dumps(tags)
     _execute_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
+
+    if use_s3_stage:
+        if table_schema is None:
+            raise ValueError("table_schema is required when use_s3_stage is True.")
+        s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+        data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
+        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
+        sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
+
+        # Write DataFrame to S3 as Parquet
+        # Upload DataFrame to S3 as parquet files
+        _put_df_to_s3_folder(
+            df=df,
+            path=s3_path,
+            chunk_size=chunk_size,
+            compression=compression,
+        )
+
+        # Generate and execute Snowflake SQL to load data from S3 to Snowflake
+        copy_query = _generate_s3_to_snowflake_copy_query(
+            schema=schema,
+            table_name=table_name,
+            snowflake_stage_path=sf_stage_path,
+            table_schema=table_schema,
+            overwrite=overwrite,
+            auto_create_table=auto_create_table,
+            use_logical_type=use_logical_type,
+        )
+        _execute_sql(conn, copy_query)
 
     # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
     write_pandas(
