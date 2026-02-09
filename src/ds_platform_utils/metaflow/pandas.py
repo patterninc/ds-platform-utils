@@ -61,6 +61,7 @@ def _generate_snowflake_to_s3_copy_query(
     query: str,
     snowflake_stage_path: str,
     file_name: str = "data.parquet",
+    batch_size_in_mb: int = 16,
 ) -> str:
     """Generate SQL COPY INTO command to export Snowflake query results to S3.
 
@@ -79,6 +80,7 @@ def _generate_snowflake_to_s3_copy_query(
     )
     OVERWRITE = TRUE
     FILE_FORMAT = (TYPE = 'parquet')
+    MAX_FILE_SIZE = {batch_size_in_mb * 1024 * 1024}
     HEADER = TRUE;
     """
     return copy_query
@@ -119,7 +121,7 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     if auto_create_table or overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_schema])
         create_table_query = (
-            f"""CREATE TABLE IF NOT EXISTS PATTERN_DB.{schema}.{table_name} ( {table_create_columns_str} );"""
+            f"""CREATE OR REPLACE TABLE PATTERN_DB.{schema}.{table_name} ( {table_create_columns_str} );"""
         )
         sql_statements.append(create_table_query)
 

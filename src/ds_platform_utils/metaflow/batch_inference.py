@@ -62,6 +62,7 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     copy_to_s3_query = _generate_snowflake_to_s3_copy_query(
         query=input_query,
         snowflake_stage_path=input_snowflake_stage_path,
+        batch_size_in_mb=batch_size_in_mb,
     )
     _execute_sql(conn, copy_to_s3_query)
     conn.close()
