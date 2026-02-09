@@ -18,7 +18,7 @@ from ds_platform_utils.metaflow.pandas import (
     _generate_snowflake_to_s3_copy_query,
     _get_s3_config,
 )
-from ds_platform_utils.metaflow.s3 import _download_all_files_in_s3_folder, _get_df_from_s3_file, _put_df_to_s3_file
+from ds_platform_utils.metaflow.s3 import _download_all_files_in_s3_folder, _put_df_to_s3_file
 
 
 def batch_inference(  # noqa: PLR0913 (too many arguments)
@@ -75,7 +75,7 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
         raise ValueError(f"No input files found in S3 path: {input_s3_path}")
 
     current.card.append(Markdown("#### Input query results"))
-    current.card.append(Table.from_dataframe(_get_df_from_s3_file(input_files[0])))
+    current.card.append(Table.from_dataframe(pd.read_parquet(input_files[0])))
 
     # Step 3: Process each file through the model and write predictions to S3
     enumerated_input_files = list(enumerate(input_files))
