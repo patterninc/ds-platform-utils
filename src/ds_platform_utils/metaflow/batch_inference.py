@@ -91,6 +91,12 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
         )
         return len(predictions_df)
 
+    import pickle
+
+    print(
+        pickle.dumps(process_file)[:100]
+    )  # just to check if the function is picklable before we try to use it in multiprocessing. If this line raises an error, then the process_file function is not picklable and we won't be able to use it in multiprocessing.Pool
+
     enumerated_input_files = list(enumerate(input_files))
     with Pool(processes=parallelism) as pool:
         prediction_counts = pool.map(process_file, enumerated_input_files)
