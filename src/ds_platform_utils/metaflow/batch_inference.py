@@ -1,4 +1,3 @@
-from multiprocessing import Pool
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -110,8 +109,9 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     )  # just to check if the function is picklable before we try to use it in multiprocessing. If this line raises an error, then the process_file function is not picklable and we won't be able to use it in multiprocessing.Pool
 
     enumerated_input_files = list(enumerate(input_files))
-    with Pool(processes=parallelism) as pool:
-        prediction_counts = pool.map(process_file_partial, enumerated_input_files)
+    from metaflow import parallel_map
+
+    prediction_counts = parallel_map(process_file_partial, enumerated_input_files, max_parallel=parallelism)
 
     total_predictions = sum(prediction_counts)
     print(f"Total predictions generated: {total_predictions}")
