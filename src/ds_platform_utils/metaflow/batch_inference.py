@@ -93,7 +93,7 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     enumerated_input_files = list(enumerate(input_files))
     import concurrent.futures
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=parallelism) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
         prediction_counts = list(executor.map(process_file, enumerated_input_files))
 
     print("Predictions generated per file:")
