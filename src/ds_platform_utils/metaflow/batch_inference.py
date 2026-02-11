@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -17,17 +18,18 @@ from ds_platform_utils.metaflow.pandas import (
     _generate_s3_to_snowflake_copy_query,
     _generate_snowflake_to_s3_copy_query,
     _get_s3_config,
+    _infer_table_schema,
 )
-from ds_platform_utils.metaflow.s3 import _download_all_files_in_s3_folder, _put_df_to_s3_file
+from ds_platform_utils.metaflow.s3 import _get_metaflow_s3_client, _list_files_in_s3_folder
 
 
 def batch_inference(  # noqa: PLR0913 (too many arguments)
     input_query: Union[str, Path],
     output_table_name: str,
-    output_table_schema: List[Tuple[str, str]],
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
+    output_table_schema: Optional[List[Tuple[str, str]]] = None,
     use_utc: bool = True,
-    batch_size_in_mb: int = 100,
+    batch_size_in_mb: int = 16,
     parallelism: int = 1,
     warehouse: Optional[str] = None,
     ctx: Optional[dict] = None,
@@ -67,45 +69,55 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
     _execute_sql(conn, copy_to_s3_query)
     conn.close()
 
-    # Step 2: Get input files from S3 and apply model predictor function to generate output dataframe
+    s3_files = _list_files_in_s3_folder(input_s3_path)
+    s3 = _get_metaflow_s3_client()
+    local_input_files = [obj.path for obj in s3.get_many(s3_files)]
 
-    input_files = _download_all_files_in_s3_folder(input_s3_path)
-
-    if not input_files:
-        raise ValueError(f"No input files found in S3 path: {input_s3_path}")
+    temp_folder = tempfile.TemporaryDirectory()
+    local_output_path = temp_folder.name
+    s3_local_mapping = []
 
     current.card.append(Markdown("#### Input query results"))
-    current.card.append(Table.from_dataframe(pd.read_parquet(input_files[0])))
+    current.card.append(Table.from_dataframe(pd.read_parquet(local_input_files[0]).head(5)))
 
-    # Step 3: Process each file through the model and write predictions to S3
+    def process_file(batch_id, input_files_batch):
+        print(f"Processing batch {batch_id}")
+        df = pd.read_parquet(input_files_batch)
+        predictions_df = model_predictor_function(df)
+        local_output_file = f"{local_output_path}/predictions_batch_{batch_id}.parquet"
+        s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
+        predictions_df.to_parquet(local_output_file, index=False)
+        return s3_output_file, local_output_file
 
-    def process_file(args):
-        file_idx, input_file = args
-        print(f"Processing file {file_idx + 1}/{len(input_files)}")
-        input_df = pd.read_parquet(input_file)
-        predictions_df = model_predictor_function(input_df)
-        _put_df_to_s3_file(
-            df=predictions_df,
-            path=f"{output_s3_path}/data_part_{file_idx}.parquet",
-        )
-        return len(predictions_df)
+    # enumerated_input_files = list(enumerate(local_input_files))
 
-    enumerated_input_files = list(enumerate(input_files))
-    import concurrent.futures
+    from concurrent.futures import ThreadPoolExecutor
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=parallelism) as executor:
-        prediction_counts = list(executor.map(process_file, enumerated_input_files))
+    print("Starting batch inference...")
+    print(f"Total files to process: {len(local_input_files)}")
+    with ThreadPoolExecutor(max_workers=parallelism) as executor:
+        futures = []
+        for i in range(0, len(local_input_files)):
+            batch_id = i
+            futures.append(executor.submit(process_file, batch_id, local_input_files[i]))
 
-    print("Predictions generated per file:")
-    total_predictions = sum(prediction_counts)
-    print(f"Total predictions generated: {total_predictions}")
+        for future in futures:
+            s3_local_mapping.append(future.result())
+    print("Batch inference completed. Uploading results to S3...")
 
-    # Step 4: Build COPY INTO query to load predictions from S3 back to Snowflake
+    s3.put_files(key_paths=s3_local_mapping)
+
+    s3.close()
+    temp_folder.cleanup()
 
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
+
+    if output_table_schema is None:
+        # Infer schema from the first predictions file
+        output_table_schema = _infer_table_schema(conn, output_snowflake_stage_path, True)
 
     copy_from_s3_query = _generate_s3_to_snowflake_copy_query(
         schema=schema,

@@ -90,7 +90,7 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     schema: str,
     table_name: str,
     snowflake_stage_path: str,
-    table_schema: List[Tuple[str, str]],
+    table_schema: Optional[List[Tuple[str, str]]] = None,
     overwrite: bool = True,
     auto_create_table: bool = True,
     use_logical_type: bool = True,
@@ -138,32 +138,29 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     return "\n\n".join(sql_statements)
 
 
-def _infer_snowflake_schema_from_df(df: pd.DataFrame) -> List[Tuple[str, str]]:
-    """Infer Snowflake table schema from a pandas DataFrame.
+def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool) -> List[Tuple[str, str]]:
+    """Infer Snowflake table schema from Parquet files in a Snowflake stage.
 
-    This function maps pandas data types to corresponding Snowflake data types.
-    It returns a list of tuples, where each tuple contains a column name and its inferred Snowflake data type.
-
-    :param df: Input pandas DataFrame
+    :param snowflake_stage_path: The path to the Snowflake stage where the Parquet files are located. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
     :return: List of tuples with column names and inferred Snowflake data types
     """
-    dtype_mapping = {
-        "object": "TEXT",
-        "int64": "NUMBER",
-        "float64": "FLOAT",
-        "bool": "BOOLEAN",
-        "datetime64[ns]": "TIMESTAMP_NTZ",
-        "datetime64[ns, tz]": "TIMESTAMP_TZ",
-        # Add more mappings as needed
-    }
-
-    schema = []
-    for col_name, dtype in df.dtypes.items():
-        dtype_str = str(dtype)
-        snowflake_type = dtype_mapping.get(dtype_str, "STRING")  # Default to STRING if type is not mapped
-        schema.append((col_name, snowflake_type))
-
-    return schema
+    _execute_sql(
+        conn,
+        f"CREATE OR REPLACE TEMP FILE FORMAT PQT_FILE_FORMATTYPE = PARQUETUSE_LOGICAL_TYPE = {use_logical_type};",
+    )
+    infer_schema_query = f"""
+        SELECT column_name, data_type
+        FROM TABLE(
+            INFER_SCHEMA(
+                LOCATION => '@{snowflake_stage_path}',
+                FILE_FORMAT => 'PQT_FILE_FORMAT'
+        ));
+    """
+    cursor = _execute_sql(conn, infer_schema_query)
+    if cursor is None:
+        raise ValueError("Failed to infer schema: No cursor returned from Snowflake.")
+    result = cursor.fetch_pandas_all()
+    return list(zip(result["COLUMN_NAME"], result["TYPE"]))
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -246,22 +243,11 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Table.from_dataframe(df.head()))
 
     conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-
-    # set warehouse
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
-
-    # set query tag for cost tracking in select.dev
-    # REASON: because write_pandas() doesn't allow modifying the SQL query to add SQL comments in it directly,
-    # so we set a session query tag instead.
-    tags = get_select_dev_query_tags()
-    query_tag_str = json.dumps(tags)
-    _execute_sql(conn, f"ALTER SESSION SET QUERY_TAG = '{query_tag_str}';")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if use_s3_stage:
-        if table_schema is None:
-            raise ValueError("table_schema is required when use_s3_stage is True.")
         s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
         data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
         s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
@@ -276,6 +262,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             compression=compression,
         )
 
+        if table_schema is None:
+            # Infer table schema from the Parquet files in the Snowflake stage
+            table_schema = _infer_table_schema(conn, sf_stage_path, use_logical_type)
         # Generate and execute Snowflake SQL to load data from S3 to Snowflake
         copy_query = _generate_s3_to_snowflake_copy_query(
             schema=schema,
@@ -288,21 +277,22 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         )
         _execute_sql(conn, copy_query)
 
-    # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
-    write_pandas(
-        conn=conn,
-        df=df,
-        table_name=table_name,
-        schema=schema,
-        chunk_size=chunk_size,
-        compression=compression,
-        parallel=parallel,
-        quote_identifiers=quote_identifiers,
-        auto_create_table=auto_create_table,
-        overwrite=overwrite,
-        use_logical_type=use_logical_type,
-    )
-
+    else:
+        # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
+        write_pandas(
+            conn=conn,
+            df=df,
+            table_name=table_name,
+            schema=schema,
+            chunk_size=chunk_size,
+            compression=compression,
+            parallel=parallel,
+            quote_identifiers=quote_identifiers,
+            auto_create_table=auto_create_table,
+            overwrite=overwrite,
+            use_logical_type=use_logical_type,
+        )
+    conn.close()
     # Add a link to the table in Snowflake to the card
     table_url = _make_snowflake_table_url(
         database="PATTERN_DB",
@@ -395,7 +385,7 @@ def query_pandas_from_snowflake(
             # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
             result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
             df = result.to_pandas()
-
+    conn.close()
     df.columns = df.columns.str.lower()
     current.card.append(Markdown("### Query Result"))
     current.card.append(Table.from_dataframe(df.head()))
