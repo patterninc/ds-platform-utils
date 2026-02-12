@@ -78,13 +78,13 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     current.card.append(Markdown("#### Input query results"))
     current.card.append(Table.from_dataframe(pd.read_parquet(s3._get_df_from_s3_file(input_s3_files[0])).head(5)))
 
-    def process_file(batch_id, input_files_batch):
+    def process_file(batch_id, input_s3_file):
         print(f"Processing batch {batch_id}")
         print(f"Reading input files for batch {batch_id} from S3...")
         t1 = time.time()
-        df = pd.read_parquet(s3._get_df_from_s3_files(input_files_batch))
+        df = pd.read_parquet(s3._get_df_from_s3_file(input_s3_file))
         t2 = time.time()
-        print(f"Read {len(input_files_batch)} files with {len(df)} rows in {t2 - t1:.2f} seconds.")
+        print(f"Read {len(input_s3_file)} files with {len(df)} rows in {t2 - t1:.2f} seconds.")
         predictions_df = model_predictor_function(df)
         t3 = time.time()
         print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
@@ -124,7 +124,6 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     print("Copying predictions from S3 to Snowflake...")
     _execute_sql(conn, copy_from_s3_query)
     t1 = time.time()
-    print(f"Data import completed in {t1 - t0:.2f} seconds}.")
-    
-    
+    print(f"Data import completed in {t1 - t0:.2f} seconds.")
+
     conn.close()
