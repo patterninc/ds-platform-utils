@@ -1,4 +1,3 @@
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
@@ -9,6 +8,7 @@ from metaflow.cards import Markdown, Table
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath, substitute_map_into_string
+from ds_platform_utils.metaflow import s3
 from ds_platform_utils.metaflow._consts import (
     NON_PROD_SCHEMA,
     PROD_SCHEMA,
@@ -21,7 +21,6 @@ from ds_platform_utils.metaflow.pandas import (
     _get_s3_config,
     _infer_table_schema,
 )
-from ds_platform_utils.metaflow.s3 import _get_metaflow_s3_client, _list_files_in_s3_folder
 
 
 def batch_inference(  # noqa: PLR0913, PLR0915
@@ -70,44 +69,26 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     _execute_sql(conn, copy_to_s3_query)
     conn.close()
 
-    s3_files = _list_files_in_s3_folder(input_s3_path)
-    s3 = _get_metaflow_s3_client()
-    local_input_files = [obj.path for obj in s3.get_many(s3_files)]
-
-    temp_folder = tempfile.TemporaryDirectory()
-    local_output_path = temp_folder.name
-    s3_local_mapping = []
-
+    input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
     current.card.append(Markdown("#### Input query results"))
-    current.card.append(Table.from_dataframe(pd.read_parquet(local_input_files[0]).head(5)))
+    current.card.append(Table.from_dataframe(pd.read_parquet(s3._get_df_from_s3_file(input_s3_files[0])).head(5)))
 
     def process_file(batch_id, input_files_batch):
         print(f"Processing batch {batch_id}")
-        df = pd.read_parquet(input_files_batch)
+        df = pd.read_parquet(s3._get_df_from_s3_files(input_files_batch))
         predictions_df = model_predictor_function(df)
-        local_output_file = f"{local_output_path}/predictions_batch_{batch_id}.parquet"
         s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
-        predictions_df.to_parquet(local_output_file, index=False)
-        return s3_output_file, local_output_file
-
-    # enumerated_input_files = list(enumerate(local_input_files))
+        s3._put_df_to_s3_file(predictions_df, s3_output_file)
 
     print("Starting batch inference...")
-    print(f"Total files to process: {len(local_input_files)}")
+    print(f"Total files to process: {len(input_s3_files)}")
     with ThreadPoolExecutor(max_workers=parallelism) as executor:
         futures = []
-        for i in range(0, len(local_input_files)):
+        for i in range(0, len(input_s3_files)):
             batch_id = i
-            futures.append(executor.submit(process_file, batch_id, local_input_files[i]))
+            futures.append(executor.submit(process_file, batch_id, input_s3_files[i]))
 
-        for future in futures:
-            s3_local_mapping.append(future.result())
     print("Batch inference completed. Uploading results to S3...")
-
-    s3.put_files(key_paths=s3_local_mapping)
-
-    s3.close()
-    temp_folder.cleanup()
 
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:

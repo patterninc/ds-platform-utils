@@ -1,3 +1,5 @@
+import tempfile
+
 import pandas as pd
 from metaflow import S3
 
@@ -12,14 +14,6 @@ def _list_files_in_s3_folder(path: str) -> list:
 
     with _get_metaflow_s3_client() as s3:
         return [path.url for path in s3.list_paths([path])]
-
-
-def _download_all_files_in_s3_folder(path: str) -> list:
-    if not path.startswith("s3://"):
-        raise ValueError("Invalid S3 URI. Must start with 's3://'.")
-
-    s3 = _get_metaflow_s3_client()
-    return [obj.path for obj in s3.get_many(_list_files_in_s3_folder(path))]
 
 
 def _get_df_from_s3_file(path: str) -> pd.DataFrame:
@@ -52,10 +46,9 @@ def _put_df_to_s3_file(df: pd.DataFrame, path: str) -> None:
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     with _get_metaflow_s3_client() as s3:
-        timestamp_str = pd.Timestamp("now").strftime("%Y%m%d_%H%M%S_%f")
-        local_path = f"/tmp/{timestamp_str}.parquet"
-        df.to_parquet(local_path)
-        s3.put_files(key_paths=[[path, local_path]])
+        with tempfile.NamedTemporaryFile(suffix=".parquet") as tmp_file:
+            df.to_parquet(tmp_file.name)
+            s3.put_files(key_paths=[[path, tmp_file.name]])
 
 
 def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None, compression="snappy") -> None:
@@ -77,14 +70,14 @@ def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None, compressi
         chunk_size = int(target_chunk_size_bytes / bytes_per_row)
         chunk_size = max(1, chunk_size)
 
-    with _get_metaflow_s3_client() as s3:
-        timestamp = pd.Timestamp("now").strftime("%Y%m%d_%H%M%S_%f")
-        local_path_template = f"/tmp/{timestamp}_data_part_{{}}.parquet"
-        key_paths = []
-        num_rows = df.shape[0]
-        for i in range(0, num_rows, chunk_size):
-            local_path = local_path_template.format(i // chunk_size)
-            df.iloc[i : i + chunk_size].to_parquet(local_path, index=False, compression=compression)
-            s3_path = f"{path}/data_part_{i // chunk_size}.parquet"
-            key_paths.append([s3_path, local_path])
-        s3.put_files(key_paths=key_paths)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        with _get_metaflow_s3_client() as s3:
+            template_path = f"{temp_dir}/data_part_{{}}.parquet"
+            key_paths = []
+            num_rows = df.shape[0]
+            for i in range(0, num_rows, chunk_size):
+                local_path = template_path.format(i // chunk_size)
+                df.iloc[i : i + chunk_size].to_parquet(local_path, index=False, compression=compression)
+                s3_path = f"{path}/data_part_{i // chunk_size}.parquet"
+                key_paths.append([s3_path, local_path])
+            s3.put_files(key_paths=key_paths)
