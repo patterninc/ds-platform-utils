@@ -1,7 +1,8 @@
 import tempfile
+from pathlib import Path
 
 import pandas as pd
-from metaflow import S3
+from metaflow import S3, current
 
 
 def _get_metaflow_s3_client():
@@ -48,7 +49,10 @@ def _put_df_to_s3_file(df: pd.DataFrame, path: str) -> None:
     if len(df) == 0:
         raise ValueError("DataFrame is empty. Cannot write empty DataFrame to S3.")
     with _get_metaflow_s3_client() as s3:
-        with tempfile.NamedTemporaryFile(suffix=".parquet") as tmp_file:
+        with tempfile.NamedTemporaryFile(
+            prefix=str(Path(current.tempdir).absolute()) + "/",  # type: ignore
+            suffix=".parquet",
+        ) as tmp_file:
             df.to_parquet(tmp_file.name, index=False)
             s3.put_files(key_paths=[[path, tmp_file.name]])
 
@@ -74,7 +78,7 @@ def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None, compressi
         chunk_size = int(target_chunk_size_bytes / bytes_per_row)
         chunk_size = max(1, chunk_size)
 
-    with tempfile.TemporaryDirectory() as temp_dir:
+    with tempfile.TemporaryDirectory(prefix=str(Path(current.tempdir).absolute()) + "/") as temp_dir:  # type: ignore
         with _get_metaflow_s3_client() as s3:
             template_path = f"{temp_dir}/data_part_{{}}.parquet"
             key_paths = []
