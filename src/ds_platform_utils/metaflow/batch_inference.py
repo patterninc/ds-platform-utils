@@ -1,4 +1,5 @@
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -23,7 +24,7 @@ from ds_platform_utils.metaflow.pandas import (
 from ds_platform_utils.metaflow.s3 import _get_metaflow_s3_client, _list_files_in_s3_folder
 
 
-def batch_inference(  # noqa: PLR0913 (too many arguments)
+def batch_inference(  # noqa: PLR0913, PLR0915
     input_query: Union[str, Path],
     output_table_name: str,
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
@@ -90,8 +91,6 @@ def batch_inference(  # noqa: PLR0913 (too many arguments)
         return s3_output_file, local_output_file
 
     # enumerated_input_files = list(enumerate(local_input_files))
-
-    from concurrent.futures import ThreadPoolExecutor
 
     print("Starting batch inference...")
     print(f"Total files to process: {len(local_input_files)}")
