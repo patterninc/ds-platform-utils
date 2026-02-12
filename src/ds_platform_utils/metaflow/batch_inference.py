@@ -87,6 +87,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         print(f"Reading input files for batch {batch_id} from S3...")
         t1 = time.time()
         df = s3._get_df_from_s3_files(input_s3_files)
+        df.columns = [col.lower() for col in df.columns]  # Ensure columns are lowercase for consistent processing
         t2 = time.time()
         print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
         predictions_df = model_predictor_function(df)
