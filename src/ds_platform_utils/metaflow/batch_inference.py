@@ -23,6 +23,8 @@ from ds_platform_utils.metaflow.pandas import (
     _infer_table_schema,
 )
 
+default_file_size_in_mb = 16
+
 
 def batch_inference(  # noqa: PLR0913, PLR0915
     input_query: Union[str, Path],
@@ -30,7 +32,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
     output_table_schema: Optional[List[Tuple[str, str]]] = None,
     use_utc: bool = True,
-    batch_size_in_mb: int = 16,
+    batch_size_in_mb: int = 128,
     parallelism: int = 1,
     warehouse: Optional[str] = None,
     ctx: Optional[dict] = None,
@@ -65,7 +67,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     copy_to_s3_query = _generate_snowflake_to_s3_copy_query(
         query=input_query,
         snowflake_stage_path=input_snowflake_stage_path,
-        batch_size_in_mb=batch_size_in_mb,
+        batch_size_in_mb=default_file_size_in_mb,
     )
     t0 = time.time()
     print("Exporting data from Snowflake to S3...")
@@ -74,15 +76,17 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     t1 = time.time()
     print(f"Data export completed in {t1 - t0:.2f} seconds. Starting batch inference...")
 
+    batch_size = max(1, batch_size_in_mb // default_file_size_in_mb)
+
     input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
     current.card.append(Markdown("#### Input query results"))
     current.card.append(Table.from_dataframe(s3._get_df_from_s3_file(input_s3_files[0]).head(5)))
 
-    def process_file(batch_id, input_s3_file):
+    def process_file(batch_id, input_s3_files):
         print(f"Processing batch {batch_id}")
         print(f"Reading input files for batch {batch_id} from S3...")
         t1 = time.time()
-        df = s3._get_df_from_s3_file(input_s3_file)
+        df = s3._get_df_from_s3_files(input_s3_files)
         t2 = time.time()
         print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
         predictions_df = model_predictor_function(df)
@@ -97,9 +101,10 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     print(f"Total files to process: {len(input_s3_files)}")
     with ThreadPoolExecutor(max_workers=parallelism) as executor:
         futures = []
-        for i in range(0, len(input_s3_files)):
-            batch_id = i
-            futures.append(executor.submit(process_file, batch_id, input_s3_files[i]))
+        for i in range(0, len(input_s3_files), batch_size):
+            batch_id = i // batch_size
+            batch_files = input_s3_files[i : i + batch_size]
+            futures.append(executor.submit(process_file, batch_id, batch_files))
         # Wait for all futures to complete
         for future in futures:
             future.result()
