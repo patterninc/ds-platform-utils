@@ -149,7 +149,7 @@ def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool)
         f"CREATE OR REPLACE TEMP FILE FORMAT PQT_FILE_FORMAT TYPE = PARQUET USE_LOGICAL_TYPE = {use_logical_type};",
     )
     infer_schema_query = f"""
-        SELECT column_name, data_type
+        SELECT COLUMN_NAME, TYPE
         FROM TABLE(
             INFER_SCHEMA(
                 LOCATION => '@{snowflake_stage_path}',
