@@ -1,3 +1,4 @@
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
@@ -66,10 +67,12 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         snowflake_stage_path=input_snowflake_stage_path,
         batch_size_in_mb=batch_size_in_mb,
     )
+    t0 = time.time()
     print("Exporting data from Snowflake to S3...")
     _execute_sql(conn, copy_to_s3_query)
     conn.close()
-    print("Data export completed. Starting batch inference...")
+    t1 = time.time()
+    print(f"Data export completed in {t1 - t0:.2f} seconds. Starting batch inference...")
 
     input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
     current.card.append(Markdown("#### Input query results"))
@@ -77,10 +80,18 @@ def batch_inference(  # noqa: PLR0913, PLR0915
 
     def process_file(batch_id, input_files_batch):
         print(f"Processing batch {batch_id}")
+        print(f"Reading input files for batch {batch_id} from S3...")
+        t1 = time.time()
         df = pd.read_parquet(s3._get_df_from_s3_files(input_files_batch))
+        t2 = time.time()
+        print(f"Read {len(input_files_batch)} files with {len(df)} rows in {t2 - t1:.2f} seconds.")
         predictions_df = model_predictor_function(df)
+        t3 = time.time()
+        print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
         s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
         s3._put_df_to_s3_file(predictions_df, s3_output_file)
+        t4 = time.time()
+        print(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
 
     print("Starting batch inference...")
     print(f"Total files to process: {len(input_s3_files)}")
@@ -109,5 +120,11 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         auto_create_table=True,
         table_schema=output_table_schema,
     )
+    t0 = time.time()
+    print("Copying predictions from S3 to Snowflake...")
     _execute_sql(conn, copy_from_s3_query)
+    t1 = time.time()
+    print(f"Data import completed in {t1 - t0:.2f} seconds}.")
+    
+    
     conn.close()
