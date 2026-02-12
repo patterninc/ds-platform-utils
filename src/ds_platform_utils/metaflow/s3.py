@@ -14,7 +14,7 @@ def _list_files_in_s3_folder(path: str) -> list:
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     with _get_metaflow_s3_client() as s3:
-        return [path.url for path in s3.list_paths([path])]
+        return [path.url for path in s3.list_recursive([path])]
 
 
 def _get_df_from_s3_file(path: str) -> pd.DataFrame:
