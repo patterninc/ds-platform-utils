@@ -14,7 +14,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
     @step
     def start(self):
         """Start the flow."""
-        self.next(self.test_publish_pandas)
+        self.next(self.test_publish_pandas_with_schema)
 
     @step
     def test_publish_pandas_with_schema(self):
@@ -45,7 +45,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
             ],
         )
 
-        self.next(self.test_publish_pandas_with_warehouse)
+        self.next(self.test_publish_pandas_without_schema)
 
     @step
     def test_publish_pandas_without_schema(self):
@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
 @pytest.mark.slow
 def test_pandas_read_write_flow_via_s3():
-    """Test that the publish flow runs successfully."""
+    """Test the pandas read/write flow via S3."""
     cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
 
     print("\n=== Metaflow Output ===")
