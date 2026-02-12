@@ -76,7 +76,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
 
     input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
     current.card.append(Markdown("#### Input query results"))
-    current.card.append(Table.from_dataframe(pd.read_parquet(s3._get_df_from_s3_file(input_s3_files[0])).head(5)))
+    current.card.append(Table.from_dataframe(s3._get_df_from_s3_file(input_s3_files[0]).head(5)))
 
     def process_file(batch_id, input_s3_file):
         print(f"Processing batch {batch_id}")
