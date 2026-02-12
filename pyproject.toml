@@ -17,7 +17,6 @@ dependencies = [
     "pandas",
     "jinja2",
     "sqlparse>=0.5.3",
-    "polars>=1.36.1",
 ]
 
 [dependency-groups]
