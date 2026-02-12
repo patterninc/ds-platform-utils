@@ -66,8 +66,10 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         snowflake_stage_path=input_snowflake_stage_path,
         batch_size_in_mb=batch_size_in_mb,
     )
+    print("Exporting data from Snowflake to S3...")
     _execute_sql(conn, copy_to_s3_query)
     conn.close()
+    print("Data export completed. Starting batch inference...")
 
     input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
     current.card.append(Markdown("#### Input query results"))
