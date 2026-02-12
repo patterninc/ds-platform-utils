@@ -82,9 +82,9 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         print(f"Processing batch {batch_id}")
         print(f"Reading input files for batch {batch_id} from S3...")
         t1 = time.time()
-        df = pd.read_parquet(s3._get_df_from_s3_file(input_s3_file))
+        df = s3._get_df_from_s3_file(input_s3_file)
         t2 = time.time()
-        print(f"Read {len(input_s3_file)} files with {len(df)} rows in {t2 - t1:.2f} seconds.")
+        print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
         predictions_df = model_predictor_function(df)
         t3 = time.time()
         print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
@@ -100,6 +100,9 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         for i in range(0, len(input_s3_files)):
             batch_id = i
             futures.append(executor.submit(process_file, batch_id, input_s3_files[i]))
+        # Wait for all futures to complete
+        for future in futures:
+            future.result()
 
     print("Batch inference completed. Uploading results to S3...")
 
