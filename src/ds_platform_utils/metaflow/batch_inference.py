@@ -34,7 +34,7 @@ def debug(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def snowflake_batch_transform(  # noqa: PLR0913, PLR0915
+def batch_inference(  # noqa: PLR0913, PLR0915
     input_query: Union[str, Path],
     output_table_name: str,
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
