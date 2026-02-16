@@ -122,8 +122,8 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     current.card.append(Markdown("#### Input query results"))
     current.card.append(Table.from_dataframe(s3._get_df_from_s3_file(input_s3_files[0]).head(5)))
 
-    download_queue = queue.Queue(maxsize=3)  # Adjust maxsize per memory limits
-    inference_queue = queue.Queue(maxsize=3)
+    download_queue = queue.Queue(maxsize=1)  # Adjust maxsize per memory limits
+    inference_queue = queue.Queue(maxsize=1)
 
     def download_worker(file_keys):
         for batch_id, key in enumerate(file_keys):
