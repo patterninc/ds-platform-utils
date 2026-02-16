@@ -1,3 +1,4 @@
+import os
 import queue
 import threading
 import time
@@ -27,17 +28,53 @@ from ds_platform_utils.metaflow.pandas import (
 default_file_size_in_mb = 16
 
 
-def batch_inference(  # noqa: PLR0913, PLR0915
+def debug(*args, **kwargs):
+    if os.getenv("DEBUG"):
+        print(*args, **kwargs)
+
+
+def snowflake_batch_transform(  # noqa: PLR0913, PLR0915
     input_query: Union[str, Path],
     output_table_name: str,
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
     output_table_schema: Optional[List[Tuple[str, str]]] = None,
     use_utc: bool = True,
     batch_size_in_mb: int = 128,
-    parallelism: int = 1,
     warehouse: Optional[str] = None,
     ctx: Optional[dict] = None,
 ):
+    """Execute batch inference on data from Snowflake, process it through a model, and upload results back to Snowflake.
+
+    This function orchestrates a multi-threaded pipeline that:
+    1. Exports data from Snowflake to S3 using COPY INTO
+    2. Downloads data from S3 in batches
+    3. Runs model predictions on each batch
+    4. Uploads predictions back to S3
+    5. Imports results into a Snowflake table using COPY INTO
+
+    Args:
+        input_query (Union[str, Path]): SQL query string or file path to query that defines the data to process.
+        output_table_name (str): Name of the Snowflake table where predictions will be written.
+        model_predictor_function (Callable[[pd.DataFrame], pd.DataFrame]): Function that takes a DataFrame and returns predictions DataFrame.
+        output_table_schema (Optional[List[Tuple[str, str]]], optional): Snowflake table schema as list of (column_name, column_type) tuples.
+            If None, schema is inferred from the first predictions file. Defaults to None.
+        use_utc (bool, optional): Whether to use UTC timezone for Snowflake connection. Defaults to True.
+        batch_size_in_mb (int, optional): Target batch size in megabytes for processing. Defaults to 128.
+        parallelism (int, optional): Reserved for future parallel processing capability. Defaults to 1.
+        warehouse (Optional[str], optional): Snowflake warehouse to use for queries. If None, uses default warehouse. Defaults to None.
+        ctx (Optional[dict], optional): Dictionary of variable substitutions for the input query template. Defaults to None.
+
+    Raises:
+        Exceptions from Snowflake connection, S3 operations, or model prediction function may propagate.
+
+    Notes:
+        - Uses production or non-production schema based on execution context (Metaflow).
+        - Creates temporary S3 and Snowflake stage folders with timestamps for isolation.
+        - Implements a three-threaded pipeline: download -> inference -> upload.
+        - Column names are normalized to lowercase for consistent processing.
+        - Displays input query, sample data, and progress messages via Metaflow cards.
+
+    """
     is_production = current.is_production if hasattr(current, "is_production") else False
     s3_bucket, snowflake_stage = _get_s3_config(is_production)
     schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
@@ -126,7 +163,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
             print(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
 
     print("Starting batch inference...")
-    print(f"Total files to process: {len(input_s3_files)}")
+    print(f"Total files to process: {len(input_s3_batches)}")
 
     # Start pipeline threads
     t1 = threading.Thread(target=download_worker, args=(input_s3_batches,))
