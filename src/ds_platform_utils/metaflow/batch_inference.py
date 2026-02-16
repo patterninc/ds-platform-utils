@@ -1,5 +1,6 @@
+import queue
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -79,36 +80,66 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     batch_size = max(1, batch_size_in_mb // default_file_size_in_mb)
 
     input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
+    input_s3_batches = [input_s3_files[i : i + batch_size] for i in range(0, len(input_s3_files), batch_size)]
     current.card.append(Markdown("#### Input query results"))
     current.card.append(Table.from_dataframe(s3._get_df_from_s3_file(input_s3_files[0]).head(5)))
 
-    def process_file(batch_id, input_s3_files):
-        print(f"Processing batch {batch_id}")
-        print(f"Reading input files for batch {batch_id} from S3...")
-        t1 = time.time()
-        df = s3._get_df_from_s3_files(input_s3_files)
-        df.columns = [col.lower() for col in df.columns]  # Ensure columns are lowercase for consistent processing
-        t2 = time.time()
-        print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
-        predictions_df = model_predictor_function(df)
-        t3 = time.time()
-        print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
-        s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
-        s3._put_df_to_s3_file(predictions_df, s3_output_file)
-        t4 = time.time()
-        print(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
+    download_queue = queue.Queue(maxsize=5)  # Adjust maxsize per memory limits
+    inference_queue = queue.Queue(maxsize=5)
+
+    def download_worker(file_keys):
+        for batch_id, key in enumerate(file_keys):
+            print(f"Processing batch {batch_id}")
+            print(f"Reading input files for batch {batch_id} from S3...")
+            t1 = time.time()
+            df = s3._get_df_from_s3_files(key)
+            df.columns = [col.lower() for col in df.columns]  # Ensure columns are lowercase for consistent processing
+            t2 = time.time()
+            print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
+            download_queue.put((batch_id, df))
+        download_queue.put(None)  # Sentinel for end
+
+    def inference_worker():
+        while True:
+            item = download_queue.get()
+            if item is None:
+                inference_queue.put(None)
+                break
+            batch_id, df = item
+            print(f"Generating predictions for batch {batch_id}...")
+            t2 = time.time()
+            predictions_df = model_predictor_function(df)
+            t3 = time.time()
+            print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
+            inference_queue.put((batch_id, predictions_df))
+
+    def upload_worker():
+        while True:
+            item = inference_queue.get()
+            if item is None:
+                break
+            batch_id, predictions_df = item
+            t3 = time.time()
+            s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
+            s3._put_df_to_s3_file(predictions_df, s3_output_file)
+            t4 = time.time()
+            print(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
 
     print("Starting batch inference...")
     print(f"Total files to process: {len(input_s3_files)}")
-    with ThreadPoolExecutor(max_workers=parallelism) as executor:
-        futures = []
-        for i in range(0, len(input_s3_files), batch_size):
-            batch_id = i // batch_size
-            batch_files = input_s3_files[i : i + batch_size]
-            futures.append(executor.submit(process_file, batch_id, batch_files))
-        # Wait for all futures to complete
-        for future in futures:
-            future.result()
+
+    # Start pipeline threads
+    t1 = threading.Thread(target=download_worker, args=(input_s3_batches,))
+    t2 = threading.Thread(target=inference_worker)
+    t3 = threading.Thread(target=upload_worker)
+
+    t1.start()
+    t2.start()
+    t3.start()
+
+    t1.join()
+    t2.join()
+    t3.join()
 
     print("Batch inference completed. Uploading results to S3...")
 
