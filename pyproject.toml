@@ -142,7 +142,7 @@ cmd = "uvx pre-commit run --all-files"
 help = "Run linting, formatting, projen synth, and other static code quality tools"
 
 [tool.poe.tasks.test]
-cmd = "pytest -n 4"
+cmd = "pytest"
 help = "Run all tests with optional additional arguments"
 
 
