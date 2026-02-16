@@ -30,6 +30,7 @@ default_file_size_in_mb = 16
 
 def debug(*args, **kwargs):
     if os.getenv("DEBUG"):
+        print("DEBUG: ", end="")
         print(*args, **kwargs)
 
 
@@ -126,13 +127,13 @@ def snowflake_batch_transform(  # noqa: PLR0913, PLR0915
 
     def download_worker(file_keys):
         for batch_id, key in enumerate(file_keys):
-            print(f"Processing batch {batch_id}")
-            print(f"Reading input files for batch {batch_id} from S3...")
+            debug(f"Processing batch {batch_id}")
+            debug(f"Reading input files for batch {batch_id} from S3...")
             t1 = time.time()
             df = s3._get_df_from_s3_files(key)
             df.columns = [col.lower() for col in df.columns]  # Ensure columns are lowercase for consistent processing
             t2 = time.time()
-            print(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
+            debug(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
             download_queue.put((batch_id, df))
         download_queue.put(None)  # Sentinel for end
 
@@ -143,11 +144,11 @@ def snowflake_batch_transform(  # noqa: PLR0913, PLR0915
                 inference_queue.put(None)
                 break
             batch_id, df = item
-            print(f"Generating predictions for batch {batch_id}...")
+            debug(f"Generating predictions for batch {batch_id}...")
             t2 = time.time()
             predictions_df = model_predictor_function(df)
             t3 = time.time()
-            print(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
+            debug(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
             inference_queue.put((batch_id, predictions_df))
 
     def upload_worker():
@@ -160,10 +161,10 @@ def snowflake_batch_transform(  # noqa: PLR0913, PLR0915
             s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
             s3._put_df_to_s3_file(predictions_df, s3_output_file)
             t4 = time.time()
-            print(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
+            debug(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
 
-    print("Starting batch inference...")
-    print(f"Total files to process: {len(input_s3_batches)}")
+    debug("Starting batch inference...")
+    debug(f"Total files to process: {len(input_s3_batches)}")
 
     # Start pipeline threads
     t1 = threading.Thread(target=download_worker, args=(input_s3_batches,))
