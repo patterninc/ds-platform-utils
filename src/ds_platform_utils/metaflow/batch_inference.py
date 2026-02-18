@@ -49,17 +49,24 @@ def make_batches_of_files(files_list, batch_size_in_mb):
     batches = []
     current_batch = []
     current_batch_size = 0
+    warnings = False
+
+    batch_size_in_bytes = batch_size_in_mb * 1024 * 1024
     for file_key, file_size in file_sizes:
-        if current_batch_size + file_size > batch_size_in_mb * 1024 * 1024:
+        current_batch.append(file_key)
+        current_batch_size += file_size
+        if current_batch_size > batch_size_in_bytes:
+            if len(current_batch) == 1:
+                warnings = True
             batches.append(current_batch)
             current_batch = []
             current_batch_size = 0
 
-        current_batch.append(file_key)
-        current_batch_size += file_size
-
     if current_batch:
         batches.append(current_batch)
+    if warnings:
+        print("⚠️ Files larger than batch size detected. Increase batch size to avoid this warning.")
+
     return batches
 
 

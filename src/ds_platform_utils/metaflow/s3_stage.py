@@ -180,7 +180,7 @@ def copy_snowflake_to_s3(
 def copy_s3_to_snowflake(  # noqa: PLR0913
     s3_path: str,
     table_name: str,
-    table_defination: List[Tuple[str, str]],
+    table_defination: Optional[List[Tuple[str, str]]] = None,
     warehouse: Optional[str] = None,
     use_utc: bool = True,
     auto_create_table: bool = False,
