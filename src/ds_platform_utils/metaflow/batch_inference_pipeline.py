@@ -143,7 +143,7 @@ class BatchInferencePipeline:
             print("⚠️ Fewer files than workers. Assigning one file per worker until files run out.")
             parallel_workers = len(files)
 
-        return {worker_id: files[worker_id::parallel_workers] for worker_id in range(parallel_workers)}
+        return {worker_id: files[worker_id::parallel_workers] for worker_id in range(1, parallel_workers + 1)}
 
     def query_and_batch(
         self,
