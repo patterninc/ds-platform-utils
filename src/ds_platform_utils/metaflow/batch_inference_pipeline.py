@@ -148,7 +148,9 @@ class BatchInferencePipeline:
     def query_and_batch(
         self,
         input_query: Union[str, Path],
-        query_variables: Optional[dict] = None,
+        ctx: Optional[dict] = None,
+        warehouse: Optional[str] = None,
+        use_utc: bool = True,
         parallel_workers: int = 1,
     ) -> List[int]:
         """Step 1: Export data from Snowflake to S3 and create batches for parallel processing.
@@ -156,7 +158,7 @@ class BatchInferencePipeline:
         Args:
             input_query: SQL query string or file path to query
 
-            query_variables: Dict of variable substitutions for SQL template
+            ctx: Dict of variable substitutions for SQL template
             parallel_workers: Number of parallel workers to use for processing
 
         Returns:
@@ -167,15 +169,15 @@ class BatchInferencePipeline:
 
         # Process input query
         input_query = get_query_from_string_or_fpath(input_query)
-        input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (query_variables or {}))
+        input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
         _debug_print_query(input_query)
 
         # Export from Snowflake to S3
         t0 = time.time()
         input_files = copy_snowflake_to_s3(
             query=input_query,
-            warehouse=self.warehouse,
-            use_utc=self.use_utc,
+            warehouse=warehouse,
+            use_utc=use_utc,
         )
         t1 = time.time()
         print(f"✅ Exported {len(input_files)} files to S3 in {t1 - t0:.2f}s")
@@ -293,6 +295,68 @@ class BatchInferencePipeline:
         t1 = time.time()
 
         print(f"✅ Pipeline complete! Data written to {output_table_name} in {t1 - t0:.2f}s")
+
+    def run(  # noqa: PLR0913
+        self,
+        input_query: Union[str, Path],
+        output_table_name: str,
+        predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
+        query_variables: Optional[dict] = None,
+        output_table_definition: Optional[List[Tuple[str, str]]] = None,
+        batch_size_in_mb: int = 128,
+        timeout_per_file: int = 300,
+        auto_create_table: bool = True,
+        overwrite: bool = True,
+    ) -> None:
+        """Run the complete pipeline: query → process → publish in a single call.
+
+        This is a convenience method that combines query_and_batch(), process_batch(),
+        and publish_results() for cases where foreach parallelization is not needed.
+
+        Args:
+            input_query: SQL query string or file path to query
+            output_table_name: Name of the Snowflake table for predictions
+            predict_fn: Function that takes DataFrame and returns predictions DataFrame
+            query_variables: Dict of variable substitutions for SQL template
+            output_table_definition: Optional schema as list of (column, type) tuples
+            batch_size_in_mb: Target size for each batch in MB
+            timeout_per_file: Timeout in seconds for each file operation
+            auto_create_table: Whether to auto-create table if not exists
+            overwrite: Whether to overwrite existing data
+
+        Example::
+
+            pipeline = BatchInferencePipeline(pipeline_id="my_model")
+            pipeline.run(
+                input_query="SELECT * FROM my_table",
+                output_table_name="predictions_table",
+                predict_fn=my_model.predict,
+            )
+
+        """
+        # Step 1: Query and batch
+        worker_ids = self.query_and_batch(
+            input_query=input_query,
+            query_variables=query_variables,
+            parallel_workers=1,
+        )
+
+        # Step 2: Process all batches sequentially
+        for worker_id in worker_ids:
+            self.process_batch(
+                worker_id=worker_id,
+                predict_fn=predict_fn,
+                batch_size_in_mb=batch_size_in_mb,
+                timeout_per_file=timeout_per_file,
+            )
+
+        # Step 3: Publish results
+        self.publish_results(
+            output_table_name=output_table_name,
+            output_table_definition=output_table_definition,
+            auto_create_table=auto_create_table,
+            overwrite=overwrite,
+        )
 
     def _make_batches(self, file_paths: List[str], batch_size_in_mb: int) -> List[List[str]]:
         with s3._get_metaflow_s3_client() as s3_client:
