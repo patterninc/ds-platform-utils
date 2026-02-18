@@ -1,7 +1,7 @@
 import os
 import queue
-import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
@@ -235,17 +235,10 @@ def batch_inference_from_s3(
             with timer(f"Uploading predictions for batch {batch_id} to S3"):
                 s3._put_df_to_s3_file(predictions_df, s3_output_file)
 
-    # Start pipeline threads
-    t1 = threading.Thread(target=download_worker, args=(input_s3_path,))
-    t2 = threading.Thread(target=inference_worker)
-    t3 = threading.Thread(target=upload_worker)
-
-    t1.start()
-    t2.start()
-    t3.start()
-
-    t1.join()
-    t2.join()
-    t3.join()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Use .submit() for different functions with varying arguments
+        executor.submit(download_worker, input_s3_batches)
+        executor.submit(inference_worker)
+        executor.submit(upload_worker)
 
     print("✅ All batches processed successfully!")
