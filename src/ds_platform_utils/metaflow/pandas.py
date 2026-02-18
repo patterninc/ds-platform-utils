@@ -13,22 +13,25 @@ from snowflake.connector.pandas_tools import write_pandas
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow._consts import (
-    DEV_S3_BUCKET,
     DEV_SCHEMA,
-    DEV_SNOWFLAKE_STAGE,
-    PROD_S3_BUCKET,
     PROD_SCHEMA,
-    PROD_SNOWFLAKE_STAGE,
     S3_DATA_FOLDER,
 )
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.s3 import _get_df_from_s3_folder, _put_df_to_s3_folder
+from ds_platform_utils.metaflow.s3 import _get_df_from_s3_files, _put_df_to_s3_folder
+from ds_platform_utils.metaflow.s3_stage import (
+    _get_s3_config,
+    copy_s3_to_snowflake,
+    copy_snowflake_to_s3,
+)
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
     add_comment_to_each_sql_statement,
     get_select_dev_query_tags,
 )
 
+copy_s3_to_snowflake
+copy_snowflake_to_s3
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
@@ -45,124 +48,6 @@ TWarehouse = Literal[
 ]
 
 
-def _get_s3_config(is_production: bool) -> Tuple[str, str]:
-    """Return the appropriate S3 bucket and Snowflake stage based on the environment."""
-    if is_production:
-        s3_bucket = PROD_S3_BUCKET
-        snowflake_stage = PROD_SNOWFLAKE_STAGE
-    else:
-        s3_bucket = DEV_S3_BUCKET
-        snowflake_stage = DEV_SNOWFLAKE_STAGE
-
-    return s3_bucket, snowflake_stage
-
-
-def _generate_snowflake_to_s3_copy_query(
-    query: str,
-    snowflake_stage_path: str,
-    file_name: str = "data.parquet",
-    batch_size_in_mb: int = 16,
-) -> str:
-    """Generate SQL COPY INTO command to export Snowflake query results to S3.
-
-    :param query: SQL query to execute
-    :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
-    :param file_name: Output file name. Default 'data.parquet'
-    :return: COPY INTO SQL command
-    """
-    if query.count(";") > 1:
-        raise ValueError("Multiple SQL statements detected. Please provide a single query statement.")
-    query = query.replace(";", "")  # Remove trailing semicolon if present
-    copy_query = f"""
-    COPY INTO @{snowflake_stage_path}/
-    FROM (
-        {query}
-    )
-    OVERWRITE = TRUE
-    FILE_FORMAT = (TYPE = 'parquet')
-    MAX_FILE_SIZE = {batch_size_in_mb * 1024 * 1024}
-    HEADER = TRUE;
-    """
-    return copy_query
-
-
-def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
-    schema: str,
-    table_name: str,
-    snowflake_stage_path: str,
-    table_schema: Optional[List[Tuple[str, str]]] = None,
-    overwrite: bool = True,
-    auto_create_table: bool = True,
-    use_logical_type: bool = True,
-) -> str:
-    """Generate SQL commands to load data from S3 to Snowflake table.
-
-    This function generates a complete SQL script that includes:
-    1. DROP TABLE IF EXISTS (if overwrite=True)
-    2. CREATE TABLE IF NOT EXISTS (if auto_create_table=True or overwrite=True)
-    3. COPY INTO command to load data from S3
-
-    :param schema: Snowflake schema name (e.g., 'DATA_SCIENCE' or 'DATA_SCIENCE_STAGE')
-    :param table_name: Target table name
-    :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
-    :param table_schema: List of tuples with column names and types
-    :param overwrite: If True, drop and recreate the table. Default True
-    :param auto_create_table: If True, create the table if it doesn't exist. Default True
-    :param use_logical_type: Whether to use Parquet logical types when reading the parquet files. Default True.
-    :return: Complete SQL script with table management and COPY INTO commands
-    """
-    sql_statements = []
-
-    # Step 1: Drop table if overwrite is True
-    if overwrite:
-        sql_statements.append(f"DROP TABLE IF EXISTS PATTERN_DB.{schema}.{table_name};")
-
-    # Step 2: Create table if auto_create_table or overwrite
-    if auto_create_table or overwrite:
-        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_schema])
-        create_table_query = (
-            f"""CREATE OR REPLACE TABLE PATTERN_DB.{schema}.{table_name} ( {table_create_columns_str} );"""
-        )
-        sql_statements.append(create_table_query)
-
-    # Step 3: Generate COPY INTO command
-    columns_str = ",\n    ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_schema])
-
-    copy_query = f"""COPY INTO PATTERN_DB.{schema}.{table_name} FROM (
-        SELECT {columns_str}
-        FROM @{snowflake_stage_path} )
-        FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type});"""
-    sql_statements.append(copy_query)
-
-    # Combine all statements
-    return "\n\n".join(sql_statements)
-
-
-def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool) -> List[Tuple[str, str]]:
-    """Infer Snowflake table schema from Parquet files in a Snowflake stage.
-
-    :param snowflake_stage_path: The path to the Snowflake stage where the Parquet files are located. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
-    :return: List of tuples with column names and inferred Snowflake data types
-    """
-    _execute_sql(
-        conn,
-        f"CREATE OR REPLACE TEMP FILE FORMAT PQT_FILE_FORMAT TYPE = PARQUET USE_LOGICAL_TYPE = {use_logical_type};",
-    )
-    infer_schema_query = f"""
-        SELECT COLUMN_NAME, TYPE
-        FROM TABLE(
-            INFER_SCHEMA(
-                LOCATION => '@{snowflake_stage_path}',
-                FILE_FORMAT => 'PQT_FILE_FORMAT'
-        ));
-    """
-    cursor = _execute_sql(conn, infer_schema_query)
-    if cursor is None:
-        raise ValueError("Failed to infer schema: No cursor returned from Snowflake.")
-    result = cursor.fetch_pandas_all()
-    return list(zip(result["COLUMN_NAME"], result["TYPE"]))
-
-
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
     table_name: str,
     df: pd.DataFrame,
@@ -177,7 +62,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
     use_utc: bool = True,
     use_s3_stage: bool = False,
-    table_schema: Optional[List[Tuple[str, str]]] = None,
+    table_defination: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -248,10 +133,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if use_s3_stage:
-        s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+        s3_bucket, _ = _get_s3_config(current.is_production)
         data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
         s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
-        sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
 
         # Write DataFrame to S3 as Parquet
         # Upload DataFrame to S3 as parquet files
@@ -262,20 +146,16 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             compression=compression,
         )
 
-        if table_schema is None:
-            # Infer table schema from the Parquet files in the Snowflake stage
-            table_schema = _infer_table_schema(conn, sf_stage_path, use_logical_type)
-        # Generate and execute Snowflake SQL to load data from S3 to Snowflake
-        copy_query = _generate_s3_to_snowflake_copy_query(
-            schema=schema,
+        copy_s3_to_snowflake(
+            s3_path=s3_path,
             table_name=table_name,
-            snowflake_stage_path=sf_stage_path,
-            table_schema=table_schema,
-            overwrite=overwrite,
+            table_defination=table_defination,
+            warehouse=warehouse,
+            use_utc=use_utc,
             auto_create_table=auto_create_table,
+            overwrite=overwrite,
             use_logical_type=use_logical_type,
         )
-        _execute_sql(conn, copy_query)
 
     else:
         # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
@@ -358,20 +238,17 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     if use_s3_stage:
-        s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
-        data_folder = "query_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
-        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
-        sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
-
-        copy_query = _generate_snowflake_to_s3_copy_query(
+        s3_files = copy_snowflake_to_s3(
             query=query,
-            snowflake_stage_path=sf_stage_path,
+            warehouse=warehouse,
+            use_utc=use_utc,
         )
-        # Copy data to S3
-        _execute_sql(conn, copy_query)
-
-        df = _get_df_from_s3_folder(s3_path)
+        df = _get_df_from_s3_files(s3_files)
     else:
+        conn: SnowflakeConnection = get_snowflake_connection(use_utc)
+        if warehouse is not None:
+            _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+        _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
         cursor_result = _execute_sql(conn, query)
         if cursor_result is None:
             # No statements to execute, return empty DataFrame
@@ -380,7 +257,7 @@ def query_pandas_from_snowflake(
             # force_return_table=True -- returns a Pyarrow Table always even if the result is empty
             result: pyarrow.Table = cursor_result.fetch_arrow_all(force_return_table=True)
             df = result.to_pandas()
-    conn.close()
+        conn.close()
     df.columns = df.columns.str.lower()
     current.card.append(Markdown("### Query Result"))
     current.card.append(Table.from_dataframe(df.head()))
