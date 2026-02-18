@@ -38,7 +38,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
             auto_create_table=True,
             overwrite=True,
             use_s3_stage=True,
-            table_defination=[
+            table_definition=[
                 ("id", "INTEGER"),
                 ("name", "STRING"),
                 ("score", "FLOAT"),

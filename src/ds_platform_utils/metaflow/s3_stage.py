@@ -67,7 +67,7 @@ def _generate_snowflake_to_s3_copy_query(
 def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     snowflake_stage_path: str,
     table_name: str,
-    table_defination: List[Tuple[str, str]],
+    table_definition: List[Tuple[str, str]],
     overwrite: bool = True,
     auto_create_table: bool = True,
     use_logical_type: bool = True,
@@ -81,7 +81,7 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
 
     :param table_name: Target table name
     :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
-    :param table_defination: List of tuples with column names and types
+    :param table_definition: List of tuples with column names and types
     :param overwrite: If True, drop and recreate the table. Default True
     :param auto_create_table: If True, create the table if it doesn't exist. Default True
     :param use_logical_type: Whether to use Parquet logical types when reading the parquet files. Default True.
@@ -90,13 +90,13 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     sql_statements = []
 
     if auto_create_table and not overwrite:
-        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_defination])
+        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_definition])
         create_table_query = f"""CREATE TABLE IF NOT EXISTS {table_name} ( {table_create_columns_str} );"""
         print(f"Generated CREATE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
 
     if auto_create_table and overwrite:
-        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_defination])
+        table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_definition])
         create_table_query = f"""CREATE OR REPLACE TABLE {table_name} ( {table_create_columns_str} );"""
         print(f"Generated CREATE OR REPLACE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
@@ -105,7 +105,7 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
         print(f"Generated TRUNCATE TABLE query:\nTRUNCATE TABLE IF EXISTS {table_name};")
         sql_statements.append(f"TRUNCATE TABLE IF EXISTS {table_name};")
 
-    # columns_str = ",\n  ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_defination])
+    # columns_str = ",\n  ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_definition])
 
     copy_query = f"""COPY INTO {table_name} FROM '@{snowflake_stage_path}'
         FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type})
@@ -182,7 +182,7 @@ def copy_snowflake_to_s3(
 def copy_s3_to_snowflake(  # noqa: PLR0913
     s3_path: str,
     table_name: str,
-    table_defination: Optional[List[Tuple[str, str]]] = None,
+    table_definition: Optional[List[Tuple[str, str]]] = None,
     warehouse: Optional[str] = None,
     use_utc: bool = True,
     auto_create_table: bool = False,
@@ -198,7 +198,7 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
 
     :param s3_path: The S3 path where the data is located. This should include the bucket name and any necessary subfolders (e.g., 's3://my_bucket/my_folder').
     :param table_name: Target table name
-    :param table_defination: List of tuples with column names and types
+    :param table_definition: List of tuples with column names and types
     :param overwrite: If True, drop and recreate the table. Default True
     :param auto_create_table: If True, create the table if it doesn't exist. Default True
     :param use_logical_type: Whether to use Parquet logical types when reading the parquet files. Default True.
@@ -219,16 +219,16 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
-    if table_defination is None:
+    if table_definition is None:
         # Infer table schema from the Parquet files in the Snowflake stage
-        table_defination = _infer_table_schema(conn, sf_stage_path, use_logical_type)
-        print(f"Inferred table schema: {table_defination}")
+        table_definition = _infer_table_schema(conn, sf_stage_path, use_logical_type)
+        print(f"Inferred table schema: {table_definition}")
 
     print(f"Uploading data from S3 path: {s3_path}")
     copy_query = _generate_s3_to_snowflake_copy_query(
         table_name=table_name,
         snowflake_stage_path=sf_stage_path,
-        table_defination=table_defination,
+        table_definition=table_definition,
         overwrite=overwrite,
         auto_create_table=auto_create_table,
         use_logical_type=use_logical_type,

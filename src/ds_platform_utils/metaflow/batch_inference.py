@@ -149,7 +149,7 @@ def batch_inference_from_snowflake(  # noqa: PLR0913
     copy_s3_to_snowflake(
         s3_path=output_s3_path,
         table_name=output_table_name,
-        table_defination=output_table_definition,
+        table_definition=output_table_definition,
         warehouse=warehouse,
         use_utc=use_utc,
         auto_create_table=auto_create_table,

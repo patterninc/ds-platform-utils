@@ -60,7 +60,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
     use_utc: bool = True,
     use_s3_stage: bool = False,
-    table_defination: Optional[List[Tuple[str, str]]] = None,
+    table_definition: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -147,7 +147,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         copy_s3_to_snowflake(
             s3_path=s3_path,
             table_name=table_name,
-            table_defination=table_defination,
+            table_definition=table_definition,
             warehouse=warehouse,
             use_utc=use_utc,
             auto_create_table=auto_create_table,
