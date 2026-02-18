@@ -92,14 +92,17 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     if auto_create_table and not overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_defination])
         create_table_query = f"""CREATE TABLE IF NOT EXISTS {table_name} ( {table_create_columns_str} );"""
+        print(f"Generated CREATE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
 
     if auto_create_table and overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_defination])
         create_table_query = f"""CREATE OR REPLACE TABLE {table_name} ( {table_create_columns_str} );"""
+        print(f"Generated CREATE OR REPLACE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
 
     if not auto_create_table and overwrite:
+        print(f"Generated TRUNCATE TABLE query:\nTRUNCATE TABLE IF EXISTS {table_name};")
         sql_statements.append(f"TRUNCATE TABLE IF EXISTS {table_name};")
 
     # columns_str = ",\n  ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_defination])
