@@ -213,7 +213,7 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
         raise ValueError(f"In development environment, s3_path must start with s3://{DEV_S3_BUCKET}")
 
     s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
-    sf_stage_path = s3_path.replace(f"s3://{s3_bucket}", f"{snowflake_stage}")
+    sf_stage_path = s3_path.replace(f"{s3_bucket}", f"{snowflake_stage}")
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
