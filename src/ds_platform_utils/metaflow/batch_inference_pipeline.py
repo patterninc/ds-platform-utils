@@ -47,7 +47,7 @@ class BatchInferencePipeline:
     """Orchestrates batch inference across Metaflow steps with foreach parallelization.
 
     This class manages a 3-step pipeline:
-    1. `query_and_batch()` - Export data from Snowflake to S3, returns batch_ids for foreach
+    1. `query_and_batch()` - Export data from Snowflake to S3, returns worker_ids for foreach
     2. `process_batch()` - Run inference on a single batch (called in foreach step)
     3. `publish_results()` - Write all results back to Snowflake
 
@@ -62,18 +62,18 @@ class BatchInferencePipeline:
             def start(self):
                 # Initialize pipeline and export data to S3
                 self.pipeline = BatchInferencePipeline(pipeline_id="my_model")
-                self.batch_ids = self.pipeline.query_and_batch(
+                self.worker_ids = self.pipeline.query_and_batch(
                     input_query="SELECT * FROM my_table",
                     batch_size_in_mb=128,
                 )
-                self.next(self.predict, foreach='batch_ids')
+                self.next(self.predict, foreach='worker_ids')
 
             @step
             def predict(self):
                 # Process single batch (runs in parallel via foreach)
-                batch_id = self.input
+                worker_id = self.input
                 self.pipeline.process_batch(
-                    batch_id=batch_id,
+                    worker_id=worker_id,
                     predict_fn=my_model.predict,
                 )
                 self.next(self.join)
@@ -95,8 +95,8 @@ class BatchInferencePipeline:
         pipeline_id: Unique identifier for this pipeline (for multiple pipelines in same flow)
         warehouse: Snowflake warehouse to use
         use_utc: Whether to use UTC timezone for Snowflake
-        batch_ids: List of batch IDs after prepare() is called
-        batches: Mapping of batch_id -> list of S3 file paths
+        worker_ids: List of worker IDs after query_and_batch() is called
+        workers: Mapping of worker_id -> list of S3 file paths
 
     """
 
@@ -110,8 +110,8 @@ class BatchInferencePipeline:
     _input_path: str = field(default="", repr=False)
     _output_path: str = field(default="", repr=False)
     _schema: str = field(default="", repr=False)
-    batches: dict = field(default_factory=dict, repr=False)
-    batch_ids: List[int] = field(default_factory=list)
+    workers: dict = field(default_factory=dict, repr=False)
+    worker_ids: List[int] = field(default_factory=list)
 
     def __post_init__(self):
         """Initialize S3 paths based on Metaflow context."""
@@ -142,6 +142,7 @@ class BatchInferencePipeline:
         input_query: Union[str, Path],
         batch_size_in_mb: int = 128,
         query_variables: Optional[dict] = None,
+        parallel_workers: int = 1,
     ) -> List[int]:
         """Step 1: Export data from Snowflake to S3 and create batches for parallel processing.
 
@@ -149,9 +150,10 @@ class BatchInferencePipeline:
             input_query: SQL query string or file path to query
             batch_size_in_mb: Target size for each batch in MB
             query_variables: Dict of variable substitutions for SQL template
+            parallel_workers: Number of parallel workers to use for processing
 
         Returns:
-            List of batch_ids to use with foreach in next step
+            List of worker_ids to use with foreach in next step
 
         """
         print(f"🚀 Preparing batch inference pipeline: {self.pipeline_id}")
@@ -171,16 +173,16 @@ class BatchInferencePipeline:
         t1 = time.time()
         print(f"✅ Exported {len(input_files)} files to S3 in {t1 - t0:.2f}s")
 
-        # Create batches based on file sizes
-        self.batches = self._make_batches(input_files, batch_size_in_mb)
-        self.batch_ids = list(self.batches.keys())
+        # Create worker batches based on file sizes
+        self.workers = self._make_batches(input_files, batch_size_in_mb)
+        self.worker_ids = list(self.workers.keys())
 
-        print(f"📊 Created {len(self.batch_ids)} batches for parallel processing")
-        return self.batch_ids
+        print(f"📊 Created {len(self.worker_ids)} workers for parallel processing")
+        return self.worker_ids
 
     def process_batch(
         self,
-        batch_id: int,
+        worker_id: int,
         predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
         timeout_per_file: int = 300,
     ) -> str:
@@ -192,7 +194,7 @@ class BatchInferencePipeline:
         - Upload worker: Writes predictions back to S3
 
         Args:
-            batch_id: The batch ID to process (from self.input in foreach)
+            worker_id: The worker ID to process (from self.input in foreach)
             predict_fn: Function that takes DataFrame and returns predictions DataFrame
             timeout_per_file: Timeout in seconds for each file operation (default: 300)
 
@@ -200,11 +202,11 @@ class BatchInferencePipeline:
             S3 path where predictions were written
 
         """
-        if batch_id not in self.batches:
-            raise ValueError(f"Batch {batch_id} not found. Available: {list(self.batches.keys())}")
+        if worker_id not in self.workers:
+            raise ValueError(f"Worker {worker_id} not found. Available: {list(self.workers.keys())}")
 
-        file_paths = self.batches[batch_id]
-        print(f"🔄 Processing batch {batch_id} ({len(file_paths)} files)")
+        file_paths = self.workers[worker_id]
+        print(f"🔄 Processing worker {worker_id} ({len(file_paths)} files)")
 
         download_queue: queue.Queue = queue.Queue(maxsize=1)
         inference_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -235,7 +237,7 @@ class BatchInferencePipeline:
                 if item is None:
                     break
                 file_id, predictions_df = item
-                s3_output_file = f"{output_path}/predictions_{batch_id}_{file_id}.parquet"
+                s3_output_file = f"{output_path}/predictions_{worker_id}_{file_id}.parquet"
                 with _timer(f"Uploading predictions for file {file_id} to S3"):
                     s3._put_df_to_s3_file(predictions_df, s3_output_file)
 
@@ -246,7 +248,7 @@ class BatchInferencePipeline:
             executor.submit(upload_worker)
         t1 = time.time()
 
-        print(f"✅ Batch {batch_id} complete ({len(file_paths)} files processed in {t1 - t0:.2f}s)")
+        print(f"✅ Worker {worker_id} complete ({len(file_paths)} files processed in {t1 - t0:.2f}s)")
         return self._output_path
 
     def publish_results(
@@ -313,5 +315,5 @@ class BatchInferencePipeline:
         """Return string representation of the pipeline."""
         return (
             f"BatchInferencePipeline(pipeline_id='{self.pipeline_id}', "
-            f"batches={len(self.batches)}, batch_ids={self.batch_ids})"
+            f"workers={len(self.workers)}, worker_ids={self.worker_ids})"
         )
