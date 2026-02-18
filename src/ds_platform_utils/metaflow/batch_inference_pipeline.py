@@ -137,10 +137,17 @@ class BatchInferencePipeline:
         """S3 path where output predictions are stored."""
         return self._output_path
 
+    def _split_files_into_workers(self, files: List[str], parallel_workers: int) -> dict:
+        """Split list of files into batches for each worker."""
+        if len(files) < parallel_workers:
+            print("⚠️ Fewer files than workers. Assigning one file per worker until files run out.")
+            parallel_workers = len(files)
+
+        return {worker_id: files[worker_id::parallel_workers] for worker_id in range(parallel_workers)}
+
     def query_and_batch(
         self,
         input_query: Union[str, Path],
-        batch_size_in_mb: int = 128,
         query_variables: Optional[dict] = None,
         parallel_workers: int = 1,
     ) -> List[int]:
@@ -148,7 +155,7 @@ class BatchInferencePipeline:
 
         Args:
             input_query: SQL query string or file path to query
-            batch_size_in_mb: Target size for each batch in MB
+
             query_variables: Dict of variable substitutions for SQL template
             parallel_workers: Number of parallel workers to use for processing
 
@@ -174,16 +181,18 @@ class BatchInferencePipeline:
         print(f"✅ Exported {len(input_files)} files to S3 in {t1 - t0:.2f}s")
 
         # Create worker batches based on file sizes
-        self.workers = self._make_batches(input_files, batch_size_in_mb)
-        self.worker_ids = list(self.workers.keys())
+        self.worker_files = self._split_files_into_workers(input_files, parallel_workers)
+        self.worker_ids = list(self.worker_files.keys())
 
         print(f"📊 Created {len(self.worker_ids)} workers for parallel processing")
+
         return self.worker_ids
 
     def process_batch(
         self,
         worker_id: int,
         predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
+        batch_size_in_mb: int = 128,
         timeout_per_file: int = 300,
     ) -> str:
         """Step 2: Process a single batch using parallel download→inference→upload pipeline.
@@ -196,26 +205,28 @@ class BatchInferencePipeline:
         Args:
             worker_id: The worker ID to process (from self.input in foreach)
             predict_fn: Function that takes DataFrame and returns predictions DataFrame
+            batch_size_in_mb: Target size for each batch in MB
             timeout_per_file: Timeout in seconds for each file operation (default: 300)
 
         Returns:
             S3 path where predictions were written
 
         """
-        if worker_id not in self.workers:
-            raise ValueError(f"Worker {worker_id} not found. Available: {list(self.workers.keys())}")
+        if worker_id not in self.worker_files:
+            raise ValueError(f"Worker {worker_id} not found. Available: {list(self.worker_files.keys())}")
 
-        file_paths = self.workers[worker_id]
-        print(f"🔄 Processing worker {worker_id} ({len(file_paths)} files)")
+        file_paths = self.worker_files[worker_id]
+        file_batches = self._make_batches(file_paths, batch_size_in_mb=batch_size_in_mb)
+        print(f"🔄 Processing worker {worker_id} ({len(file_batches)} batches)")
 
         download_queue: queue.Queue = queue.Queue(maxsize=1)
         inference_queue: queue.Queue = queue.Queue(maxsize=1)
         output_path = self._output_path
 
-        def download_worker(files: List[str]):
-            for file_id, file_path in enumerate(files):
+        def download_worker(file_batches: List[List[str]]):
+            for file_id, file_batch in enumerate(file_batches):
                 with _timer(f"Downloading file {file_id} from S3"):
-                    df = s3._get_df_from_s3_files([file_path])
+                    df = s3._get_df_from_s3_files(file_batch)
                     df.columns = [col.lower() for col in df.columns]
                 download_queue.put((file_id, df), timeout=timeout_per_file)
             download_queue.put(None, timeout=timeout_per_file)
@@ -243,12 +254,12 @@ class BatchInferencePipeline:
 
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=3) as executor:
-            executor.submit(download_worker, file_paths)
+            executor.submit(download_worker, file_batches)
             executor.submit(inference_worker)
             executor.submit(upload_worker)
         t1 = time.time()
 
-        print(f"✅ Worker {worker_id} complete ({len(file_paths)} files processed in {t1 - t0:.2f}s)")
+        print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
         return self._output_path
 
     def publish_results(
@@ -273,7 +284,7 @@ class BatchInferencePipeline:
         copy_s3_to_snowflake(
             s3_path=self._output_path,
             table_name=output_table_name,
-            table_defination=output_table_definition,
+            table_definition=output_table_definition,
             warehouse=self.warehouse,
             use_utc=self.use_utc,
             auto_create_table=auto_create_table,
@@ -283,31 +294,30 @@ class BatchInferencePipeline:
 
         print(f"✅ Pipeline complete! Data written to {output_table_name} in {t1 - t0:.2f}s")
 
-    def _make_batches(self, file_paths: List[str], batch_size_in_mb: int) -> dict:
-        """Group files into batches based on size."""
+    def _make_batches(self, file_paths: List[str], batch_size_in_mb: int) -> List[List[str]]:
         with s3._get_metaflow_s3_client() as s3_client:
-            file_infos = [(f.key, f.size) for f in s3_client.info_many(file_paths)]
+            file_sizes = [(file.key, file.size) for file in s3_client.info_many(file_paths)]
 
-        batches = {}
+        batches = []
         current_batch = []
-        current_size = 0
-        batch_id = 0
-        batch_size_bytes = batch_size_in_mb * 1024 * 1024
+        current_batch_size = 0
+        warnings = False
 
-        for file_path, file_size in file_infos:
-            # Check if adding this file exceeds limit
-            if current_batch and (current_size + file_size) > batch_size_bytes:
-                batches[batch_id] = current_batch
-                batch_id += 1
+        batch_size_in_bytes = batch_size_in_mb * 1024 * 1024
+        for file_key, file_size in file_sizes:
+            current_batch.append(file_key)
+            current_batch_size += file_size
+            if current_batch_size > batch_size_in_bytes:
+                if len(current_batch) == 1:
+                    warnings = True
+                batches.append(current_batch)
                 current_batch = []
-                current_size = 0
+                current_batch_size = 0
 
-            current_batch.append(file_path)
-            current_size += file_size
-
-        # Don't forget last batch
         if current_batch:
-            batches[batch_id] = current_batch
+            batches.append(current_batch)
+        if warnings:
+            print("⚠️ Files larger than batch size detected. Increase batch size to avoid this warning.")
 
         return batches
 
