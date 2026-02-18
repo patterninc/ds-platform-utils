@@ -2,18 +2,18 @@ import os
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
 import pandas as pd
 from metaflow import current
-from metaflow.cards import Markdown, Table
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath, substitute_map_into_string
 from ds_platform_utils.metaflow import s3
 from ds_platform_utils.metaflow._consts import (
-    NON_PROD_SCHEMA,
+    DEV_SCHEMA,
     PROD_SCHEMA,
     S3_DATA_FOLDER,
 )
@@ -25,16 +25,45 @@ from ds_platform_utils.metaflow.pandas import (
     _infer_table_schema,
 )
 
-default_file_size_in_mb = 16
+default_file_size_in_mb = 10
 
 
-def debug(*args, **kwargs):
+def _debug(*args, **kwargs):
     if os.getenv("DEBUG"):
         print("DEBUG: ", end="")
         print(*args, **kwargs)
 
 
-def batch_inference(  # noqa: PLR0913, PLR0915
+@contextmanager
+def timer(message: str):
+    t0 = time.time()
+    yield
+    t1 = time.time()
+    _debug(f"{message}: Completed in {t1 - t0:.2f} seconds")
+
+
+def make_batches_of_files(files_list, batch_size_in_mb):
+    with s3._get_metaflow_s3_client() as s3_client:
+        file_sizes = [(file.key, file.size) for file in s3_client.info_many(files_list)]
+
+    batches = []
+    current_batch = []
+    current_batch_size = 0
+    for file_key, file_size in file_sizes:
+        if current_batch_size + file_size > batch_size_in_mb * 1024 * 1024:
+            batches.append(current_batch)
+            current_batch = []
+            current_batch_size = 0
+
+        current_batch.append(file_key)
+        current_batch_size += file_size
+
+    if current_batch:
+        batches.append(current_batch)
+    return batches
+
+
+def snowflake_batch_inference(  # noqa: PLR0913, PLR0915
     input_query: Union[str, Path],
     output_table_name: str,
     model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
@@ -43,6 +72,7 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     batch_size_in_mb: int = 128,
     warehouse: Optional[str] = None,
     ctx: Optional[dict] = None,
+    timeout_per_batch: int = 300,
 ):
     """Execute batch inference on data from Snowflake, process it through a model, and upload results back to Snowflake.
 
@@ -76,10 +106,12 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         - Displays input query, sample data, and progress messages via Metaflow cards.
 
     """
+    ## Define S3 paths and Snowflake schema based on environment
     is_production = current.is_production if hasattr(current, "is_production") else False
     s3_bucket, snowflake_stage = _get_s3_config(is_production)
-    schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+    schema = PROD_SCHEMA if is_production else DEV_SCHEMA
 
+    ## Create unique S3 paths for this batch inference run using timestamp
     timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
     upload_folder = f"publish_{timestamp}"
     download_folder = f"query_{timestamp}"
@@ -89,15 +121,10 @@ def batch_inference(  # noqa: PLR0913, PLR0915
     output_snowflake_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{upload_folder}"
 
     # Step 1: Build COPY INTO query to export data from Snowflake to S3
-
     input_query = get_query_from_string_or_fpath(input_query)
     input_query = substitute_map_into_string(input_query, {"schema": schema} | (ctx or {}))
 
     _debug_print_query(input_query)
-
-    current.card.append(Markdown("### Batch Predictions From Snowflake via S3 Stage"))
-    current.card.append(Markdown(input_query))
-    current.card.append(Markdown(f"#### Input S3 staging path: `{input_s3_path}`"))
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
@@ -108,78 +135,17 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         snowflake_stage_path=input_snowflake_stage_path,
         batch_size_in_mb=default_file_size_in_mb,
     )
-    t0 = time.time()
-    print("Exporting data from Snowflake to S3...")
-    _execute_sql(conn, copy_to_s3_query)
+
+    with timer("Exporting data from Snowflake to S3"):
+        _execute_sql(conn, copy_to_s3_query)
     conn.close()
-    t1 = time.time()
-    print(f"Data export completed in {t1 - t0:.2f} seconds. Starting batch inference...")
 
-    batch_size = max(1, batch_size_in_mb // default_file_size_in_mb)
-
-    input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
-    input_s3_batches = [input_s3_files[i : i + batch_size] for i in range(0, len(input_s3_files), batch_size)]
-    current.card.append(Markdown("#### Input query results"))
-    current.card.append(Table.from_dataframe(s3._get_df_from_s3_file(input_s3_files[0]).head(5)))
-
-    download_queue = queue.Queue(maxsize=1)  # Adjust maxsize per memory limits
-    inference_queue = queue.Queue(maxsize=1)
-
-    def download_worker(file_keys):
-        for batch_id, key in enumerate(file_keys):
-            debug(f"Processing batch {batch_id}")
-            debug(f"Reading input files for batch {batch_id} from S3...")
-            t1 = time.time()
-            df = s3._get_df_from_s3_files(key)
-            df.columns = [col.lower() for col in df.columns]  # Ensure columns are lowercase for consistent processing
-            t2 = time.time()
-            debug(f"Read file with {len(df)} rows in {t2 - t1:.2f} seconds.")
-            download_queue.put((batch_id, df))
-        download_queue.put(None)  # Sentinel for end
-
-    def inference_worker():
-        while True:
-            item = download_queue.get()
-            if item is None:
-                inference_queue.put(None)
-                break
-            batch_id, df = item
-            debug(f"Generating predictions for batch {batch_id}...")
-            t2 = time.time()
-            predictions_df = model_predictor_function(df)
-            t3 = time.time()
-            debug(f"Generated predictions for batch {batch_id} in {t3 - t2:.2f} seconds.")
-            inference_queue.put((batch_id, predictions_df))
-
-    def upload_worker():
-        while True:
-            item = inference_queue.get()
-            if item is None:
-                break
-            batch_id, predictions_df = item
-            t3 = time.time()
-            s3_output_file = f"{output_s3_path}/predictions_batch_{batch_id}.parquet"
-            s3._put_df_to_s3_file(predictions_df, s3_output_file)
-            t4 = time.time()
-            debug(f"Uploaded predictions for batch {batch_id} to S3 in {t4 - t3:.2f} seconds.")
-
-    debug("Starting batch inference...")
-    debug(f"Total files to process: {len(input_s3_batches)}")
-
-    # Start pipeline threads
-    t1 = threading.Thread(target=download_worker, args=(input_s3_batches,))
-    t2 = threading.Thread(target=inference_worker)
-    t3 = threading.Thread(target=upload_worker)
-
-    t1.start()
-    t2.start()
-    t3.start()
-
-    t1.join()
-    t2.join()
-    t3.join()
-
-    print("Batch inference completed. Uploading results to S3...")
+    batch_inference_from_s3(
+        input_s3_path=input_s3_path,
+        output_s3_folder_path=output_s3_path,
+        model_predictor_function=model_predictor_function,
+        timeout_per_batch=timeout_per_batch,
+    )
 
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:
@@ -198,10 +164,88 @@ def batch_inference(  # noqa: PLR0913, PLR0915
         auto_create_table=True,
         table_schema=output_table_schema,
     )
-    t0 = time.time()
-    print("Copying predictions from S3 to Snowflake...")
-    _execute_sql(conn, copy_from_s3_query)
-    t1 = time.time()
-    print(f"Data import completed in {t1 - t0:.2f} seconds.")
+
+    with timer("Uploading predictions from s3 to Snowflake"):
+        _execute_sql(conn, copy_from_s3_query)
 
     conn.close()
+
+    print("✅ Batch inference completed successfully!")
+
+
+def batch_inference_from_s3(
+    input_s3_path: str | List[str],
+    output_s3_folder_path: str,
+    model_predictor_function: Callable[[pd.DataFrame], pd.DataFrame],
+    timeout_per_batch: int = 300,
+    batch_size_in_mb: int = 128,
+):
+    if isinstance(input_s3_path, str):
+        if str.endswith(input_s3_path, ".parquet"):
+            input_s3_files = [input_s3_path]
+        else:
+            input_s3_files = s3._list_files_in_s3_folder(input_s3_path)
+
+    elif not isinstance(input_s3_path, list):
+        raise ValueError("input_s3_path must be a string or list of strings.")
+
+    else:
+        input_s3_files = input_s3_path
+
+    ## Check if all paths are valid S3 URIs
+    if any(not path.startswith("s3://") and path.endswith(".parquet") for path in input_s3_files):
+        raise ValueError("Invalid S3 URI. All paths or folder files must start with 's3://' and end with '.parquet'.")
+
+    input_s3_batches = make_batches_of_files(input_s3_files, batch_size_in_mb)
+
+    print(f"📊 Total Batches to process: {len(input_s3_batches)}")
+
+    download_queue = queue.Queue(maxsize=1)  # Adjust maxsize per memory limits
+    inference_queue = queue.Queue(maxsize=1)
+
+    def download_worker(file_keys):
+        for batch_id, key in enumerate(file_keys):
+            with timer(f"Downloading batch {batch_id} from S3"):
+                df = s3._get_df_from_s3_files(key)
+                df.columns = [
+                    col.lower() for col in df.columns
+                ]  # Ensure columns are lowercase for consistent processing
+            download_queue.put((batch_id, df), timeout=timeout_per_batch)
+        download_queue.put(None, timeout=timeout_per_batch)
+
+    def inference_worker():
+        while True:
+            item = download_queue.get(timeout=timeout_per_batch)
+            if item is None:
+                inference_queue.put(None, timeout=timeout_per_batch)
+                break
+            batch_id, df = item
+            _debug(f"Generating predictions for batch {batch_id}...")
+            with timer(f"Generating predictions for batch {batch_id}"):
+                predictions_df = model_predictor_function(df)
+            inference_queue.put((batch_id, predictions_df), timeout=timeout_per_batch)
+
+    def upload_worker():
+        while True:
+            item = inference_queue.get(timeout=timeout_per_batch)
+            if item is None:
+                break
+            batch_id, predictions_df = item
+            s3_output_file = f"{output_s3_folder_path}/predictions_{batch_id}.parquet"
+            with timer(f"Uploading predictions for batch {batch_id} to S3"):
+                s3._put_df_to_s3_file(predictions_df, s3_output_file)
+
+    # Start pipeline threads
+    t1 = threading.Thread(target=download_worker, args=(input_s3_path,))
+    t2 = threading.Thread(target=inference_worker)
+    t3 = threading.Thread(target=upload_worker)
+
+    t1.start()
+    t2.start()
+    t3.start()
+
+    t1.join()
+    t2.join()
+    t3.join()
+
+    print("✅ All batches processed successfully!")
