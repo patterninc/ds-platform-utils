@@ -30,8 +30,6 @@ from ds_platform_utils.metaflow.write_audit_publish import (
     get_select_dev_query_tags,
 )
 
-copy_s3_to_snowflake
-copy_snowflake_to_s3
 TWarehouse = Literal[
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
     "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
