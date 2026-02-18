@@ -18,7 +18,7 @@ from ds_platform_utils.metaflow._consts import (
     S3_DATA_FOLDER,
 )
 from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
-from ds_platform_utils.metaflow.pandas import (
+from ds_platform_utils.metaflow.s3_stage import (
     _generate_s3_to_snowflake_copy_query,
     _generate_snowflake_to_s3_copy_query,
     _get_s3_config,
