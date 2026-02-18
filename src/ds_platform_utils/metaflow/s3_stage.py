@@ -92,17 +92,14 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     if auto_create_table and not overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_definition])
         create_table_query = f"""CREATE TABLE IF NOT EXISTS {table_name} ( {table_create_columns_str} );"""
-        print(f"Generated CREATE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
 
     if auto_create_table and overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_definition])
         create_table_query = f"""CREATE OR REPLACE TABLE {table_name} ( {table_create_columns_str} );"""
-        print(f"Generated CREATE OR REPLACE TABLE query:\n{create_table_query}")
         sql_statements.append(create_table_query)
 
     if not auto_create_table and overwrite:
-        print(f"Generated TRUNCATE TABLE query:\nTRUNCATE TABLE IF EXISTS {table_name};")
         sql_statements.append(f"TRUNCATE TABLE IF EXISTS {table_name};")
 
     # columns_str = ",\n  ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_definition])
@@ -111,7 +108,6 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
         FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type})
         MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'
         ;"""
-    print(f"Generated COPY INTO query:\n{copy_query}")
     sql_statements.append(copy_query)
 
     # Combine all statements into a single SQL script
@@ -222,9 +218,11 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
     if table_definition is None:
         # Infer table schema from the Parquet files in the Snowflake stage
         table_definition = _infer_table_schema(conn, sf_stage_path, use_logical_type)
-        print(f"Inferred table schema: {table_definition}")
+    if table_definition is None or len(table_definition) == 0:
+        raise ValueError(
+            "Failed to determine table schema. Please provide a valid table_definition or ensure that the S3 path contains valid Parquet files."
+        )
 
-    print(f"Uploading data from S3 path: {s3_path}")
     copy_query = _generate_s3_to_snowflake_copy_query(
         table_name=table_name,
         snowflake_stage_path=sf_stage_path,
