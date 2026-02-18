@@ -215,7 +215,7 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
-    if table_defination:
+    if not table_defination:
         # Infer table schema from the Parquet files in the Snowflake stage
         table_defination = _infer_table_schema(conn, sf_stage_path, use_logical_type)
         print(f"Inferred table schema: {table_defination}")
