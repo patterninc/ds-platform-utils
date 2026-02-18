@@ -104,11 +104,12 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
 
     # columns_str = ",\n  ".join([f"PARSE_JSON($1):{col_name}::{col_type}" for col_name, col_type in table_defination])
 
-    # copy_query = f"""COPY INTO {table_name} FROM '@{snowflake_stage_path}'
-    #     FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type})
-    #     MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'
-    #     ;"""
-    # sql_statements.append(copy_query)
+    copy_query = f"""COPY INTO {table_name} FROM '@{snowflake_stage_path}'
+        FILE_FORMAT = (TYPE = 'parquet' USE_LOGICAL_TYPE = {use_logical_type})
+        MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'
+        ;"""
+    print(f"Generated COPY INTO query:\n{copy_query}")
+    sql_statements.append(copy_query)
 
     # Combine all statements into a single SQL script
     return "\n\n".join(sql_statements)
