@@ -218,7 +218,6 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
         table_defination = _infer_table_schema(conn, sf_stage_path, use_logical_type)
 
     copy_query = _generate_s3_to_snowflake_copy_query(
-        schema=schema,
         table_name=table_name,
         snowflake_stage_path=sf_stage_path,
         table_defination=table_defination,
