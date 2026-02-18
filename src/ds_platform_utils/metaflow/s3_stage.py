@@ -159,7 +159,7 @@ def copy_snowflake_to_s3(
 
     data_folder = "query_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
     s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
-    sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
+    sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}/"
     query = _generate_snowflake_to_s3_copy_query(
         query=query,
         snowflake_stage_path=sf_stage_path,
