@@ -207,9 +207,9 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
     table_name = table_name.upper()
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
     if current.is_production:
-        if not s3_path.startswith(f"s3://{PROD_S3_BUCKET}"):
+        if not s3_path.startswith(PROD_S3_BUCKET):
             raise ValueError(f"In production environment, s3_path must start with s3://{PROD_S3_BUCKET}")
-    elif not s3_path.startswith(f"s3://{DEV_S3_BUCKET}"):
+    elif not s3_path.startswith(DEV_S3_BUCKET):
         raise ValueError(f"In development environment, s3_path must start with s3://{DEV_S3_BUCKET}")
 
     s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
