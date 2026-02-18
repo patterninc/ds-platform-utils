@@ -206,21 +206,25 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
     """
     table_name = table_name.upper()
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
-    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
-    data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
-    sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}"
+    if current.is_production:
+        if not s3_path.startswith(f"s3://{PROD_S3_BUCKET}"):
+            raise ValueError(f"In production environment, s3_path must start with s3://{PROD_S3_BUCKET}")
+    elif not s3_path.startswith(f"s3://{DEV_S3_BUCKET}"):
+        raise ValueError(f"In development environment, s3_path must start with s3://{DEV_S3_BUCKET}")
 
+    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+    sf_stage_path = s3_path.replace(f"s3://{s3_bucket}", f"{snowflake_stage}")
     conn = get_snowflake_connection(use_utc)
     if warehouse is not None:
         _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
-    if not table_defination:
+    if table_defination is None:
         # Infer table schema from the Parquet files in the Snowflake stage
         table_defination = _infer_table_schema(conn, sf_stage_path, use_logical_type)
         print(f"Inferred table schema: {table_defination}")
 
-    print(f"Uploading data from S3 path: {s3_path} to Snowflake stage: @{sf_stage_path}")
+    print(f"Uploading data from S3 path: {s3_path}")
     copy_query = _generate_s3_to_snowflake_copy_query(
         table_name=table_name,
         snowflake_stage_path=sf_stage_path,
