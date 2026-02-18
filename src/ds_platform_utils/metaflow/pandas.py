@@ -14,8 +14,8 @@ from snowflake.connector.pandas_tools import write_pandas
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow._consts import (
     DEV_S3_BUCKET,
+    DEV_SCHEMA,
     DEV_SNOWFLAKE_STAGE,
-    NON_PROD_SCHEMA,
     PROD_S3_BUCKET,
     PROD_SCHEMA,
     PROD_SNOWFLAKE_STAGE,
@@ -168,7 +168,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     df: pd.DataFrame,
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
-    compression: Literal["snappy", "gzip"] = "gzip",
+    compression: Literal["snappy", "gzip"] = "snappy",
     warehouse: Optional[TWarehouse] = None,
     parallel: int = 4,
     quote_identifiers: bool = True,
@@ -234,7 +234,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         df["created_date"] = datetime.now().astimezone(pytz.utc)
 
     table_name = table_name.upper()
-    schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
+    schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
     # Preview the DataFrame in the Metaflow card
     if warehouse is not None:
@@ -335,7 +335,7 @@ def query_pandas_from_snowflake(
         substitute_map_into_string,
     )
 
-    schema = PROD_SCHEMA if current.is_production else NON_PROD_SCHEMA
+    schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
     # adding query tags comment in query for cost tracking in select.dev
     tags = get_select_dev_query_tags()
@@ -356,11 +356,6 @@ def query_pandas_from_snowflake(
         current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
     current.card.append(Markdown("## Querying Snowflake Table"))
     current.card.append(Markdown(f"```sql\n{query}\n```"))
-
-    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-    if warehouse is not None:
-        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
-    _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if use_s3_stage:
         s3_bucket, snowflake_stage = _get_s3_config(current.is_production)

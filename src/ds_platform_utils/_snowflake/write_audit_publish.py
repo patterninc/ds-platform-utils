@@ -8,7 +8,7 @@ from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
+from ds_platform_utils.metaflow._consts import DEV_SCHEMA, PROD_SCHEMA
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -29,7 +29,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         performed and the query is simply run against the final table.
     """
     # gather inputs
-    publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+    publish_schema = PROD_SCHEMA if is_production else DEV_SCHEMA
     query = get_query_from_string_or_fpath(query)
 
     audits = audits or []
@@ -119,8 +119,8 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
 
     This function assumes all inputs have been validated and formatted correctly.
     """
-    audit_schema = NON_PROD_SCHEMA
-    publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+    audit_schema = DEV_SCHEMA
+    publish_schema = PROD_SCHEMA if is_production else DEV_SCHEMA
 
     # Generate unique branch name
     branch_name = branch_name or str(uuid.uuid4())[:8]
