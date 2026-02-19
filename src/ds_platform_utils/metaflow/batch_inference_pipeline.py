@@ -212,7 +212,7 @@ class BatchInferencePipeline:
         output_path = self._output_path
 
         def download_worker(file_batches: List[List[str]]):
-            for file_id, file_batch in enumerate(file_batches):
+            for file_id, file_batch in enumerate(file_batches, 1):
                 with _timer(f"📥 Downloaded file {file_id} from S3"):
                     df = s3._get_df_from_s3_files(file_batch)
                     df.columns = [col.lower() for col in df.columns]
