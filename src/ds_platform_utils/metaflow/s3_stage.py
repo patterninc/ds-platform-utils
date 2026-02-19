@@ -15,7 +15,6 @@ from ds_platform_utils.metaflow._consts import (
     PROD_SNOWFLAKE_STAGE,
     S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.batch_inference_pipeline import _debug
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
 
 
