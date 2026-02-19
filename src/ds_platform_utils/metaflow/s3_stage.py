@@ -143,6 +143,7 @@ def copy_snowflake_to_s3(
     query: str,
     warehouse: Optional[str] = None,
     use_utc: bool = True,
+    s3_path: Optional[str] = None,
 ) -> List[str]:
     """Generate SQL COPY INTO command to export Snowflake query results to S3.
 
@@ -155,9 +156,18 @@ def copy_snowflake_to_s3(
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
     s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
 
-    data_folder = "query_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
-    s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
-    sf_stage_path = f"{snowflake_stage}/{S3_DATA_FOLDER}/{data_folder}/"
+    if s3_path is not None and not s3_path.startswith(s3_bucket):
+        raise ValueError(f"s3_path must start with {s3_bucket}")
+    if s3_path is None:
+        # Build paths: s3://bucket/data/{flow}/{run_id}/{pipeline_id}/
+        flow_name = current.flow_name if hasattr(current, "flow_name") else "local"
+        run_id = current.run_id if hasattr(current, "run_id") else "dev"
+
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
+        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
+
+    sf_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
+
     query = _generate_snowflake_to_s3_copy_query(
         query=query,
         snowflake_stage_path=sf_stage_path,

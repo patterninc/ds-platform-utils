@@ -5,7 +5,6 @@ import queue
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple, Union
 
@@ -42,7 +41,6 @@ def _timer(message: str):
     _debug(f"{message}: Completed in {t1 - t0:.2f} seconds")
 
 
-@dataclass
 class BatchInferencePipeline:
     """Orchestrates batch inference across Metaflow steps with foreach parallelization.
 
@@ -100,20 +98,7 @@ class BatchInferencePipeline:
 
     """
 
-    pipeline_id: str = "default"
-    warehouse: Optional[str] = None
-    use_utc: bool = True
-
-    # Internal state (populated after prepare())
-    _s3_bucket: str = field(default="", repr=False)
-    _base_path: str = field(default="", repr=False)
-    _input_path: str = field(default="", repr=False)
-    _output_path: str = field(default="", repr=False)
-    _schema: str = field(default="", repr=False)
-    workers: dict = field(default_factory=dict, repr=False)
-    worker_ids: List[int] = field(default_factory=list)
-
-    def __post_init__(self):
+    def __init__(self):
         """Initialize S3 paths based on Metaflow context."""
         is_production = current.is_production if hasattr(current, "is_production") else False
         self._s3_bucket, _ = _get_s3_config(is_production)
@@ -123,7 +108,8 @@ class BatchInferencePipeline:
         flow_name = current.flow_name if hasattr(current, "flow_name") else "local"
         run_id = current.run_id if hasattr(current, "run_id") else "dev"
 
-        self._base_path = f"{self._s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{self.pipeline_id}"
+        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._base_path = f"{self._s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
         self._input_path = f"{self._base_path}/input"
         self._output_path = f"{self._base_path}/output"
 
@@ -157,30 +143,28 @@ class BatchInferencePipeline:
 
         Args:
             input_query: SQL query string or file path to query
-
             ctx: Dict of variable substitutions for SQL template
+            warehouse: Snowflake warehouse to use
+            use_utc: Whether to use UTC timezone for Snowflake
             parallel_workers: Number of parallel workers to use for processing
 
         Returns:
             List of worker_ids to use with foreach in next step
 
         """
-        print(f"🚀 Preparing batch inference pipeline: {self.pipeline_id}")
-
+        print("🚀 Starting batch inference pipeline...")
         # Process input query
         input_query = get_query_from_string_or_fpath(input_query)
         input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
         _debug_print_query(input_query)
 
         # Export from Snowflake to S3
-        t0 = time.time()
         input_files = copy_snowflake_to_s3(
             query=input_query,
             warehouse=warehouse,
             use_utc=use_utc,
+            s3_path=self._input_path,
         )
-        t1 = time.time()
-        print(f"✅ Exported {len(input_files)} files to S3 in {t1 - t0:.2f}s")
 
         # Create worker batches based on file sizes
         self.worker_files = self._split_files_into_workers(input_files, parallel_workers)
@@ -227,7 +211,7 @@ class BatchInferencePipeline:
 
         def download_worker(file_batches: List[List[str]]):
             for file_id, file_batch in enumerate(file_batches):
-                with _timer(f"Downloading file {file_id} from S3"):
+                with _timer(f"📥 Downloaded file {file_id} from S3"):
                     df = s3._get_df_from_s3_files(file_batch)
                     df.columns = [col.lower() for col in df.columns]
                 download_queue.put((file_id, df), timeout=timeout_per_file)
@@ -240,9 +224,10 @@ class BatchInferencePipeline:
                     inference_queue.put(None, timeout=timeout_per_file)
                     break
                 file_id, df = item
-                with _timer(f"Generating predictions for file {file_id}"):
+                with _timer(f"🔹 Generated predictions for file {file_id}"):
                     predictions_df = predict_fn(df)
                 inference_queue.put((file_id, predictions_df), timeout=timeout_per_file)
+                print(f"🔘 Inference completed for batch {file_id}")
 
         def upload_worker():
             while True:
@@ -251,7 +236,7 @@ class BatchInferencePipeline:
                     break
                 file_id, predictions_df = item
                 s3_output_file = f"{output_path}/predictions_{worker_id}_{file_id}.parquet"
-                with _timer(f"Uploading predictions for file {file_id} to S3"):
+                with _timer(f"📤 Uploaded predictions for file {file_id} to S3"):
                     s3._put_df_to_s3_file(predictions_df, s3_output_file)
 
         t0 = time.time()
@@ -270,6 +255,8 @@ class BatchInferencePipeline:
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
         auto_create_table: bool = True,
         overwrite: bool = True,
+        warehouse: Optional[str] = None,
+        use_utc: bool = True,
     ) -> None:
         """Step 3: Write all predictions from S3 to Snowflake (call this in join step).
 
@@ -278,35 +265,35 @@ class BatchInferencePipeline:
             output_table_definition: Optional schema as list of (column, type) tuples
             auto_create_table: Whether to auto-create table if not exists
             overwrite: Whether to overwrite existing data
+            warehouse: Snowflake warehouse to use
+            use_utc: Whether to use UTC timezone for Snowflake
 
         """
         print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
 
-        t0 = time.time()
         copy_s3_to_snowflake(
             s3_path=self._output_path,
             table_name=output_table_name,
             table_definition=output_table_definition,
-            warehouse=self.warehouse,
-            use_utc=self.use_utc,
+            warehouse=warehouse,
+            use_utc=use_utc,
             auto_create_table=auto_create_table,
             overwrite=overwrite,
         )
-        t1 = time.time()
-
-        print(f"✅ Pipeline complete! Data written to {output_table_name} in {t1 - t0:.2f}s")
 
     def run(  # noqa: PLR0913
         self,
         input_query: Union[str, Path],
         output_table_name: str,
         predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
-        query_variables: Optional[dict] = None,
+        ctx: Optional[dict] = None,
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
         batch_size_in_mb: int = 128,
         timeout_per_file: int = 300,
         auto_create_table: bool = True,
         overwrite: bool = True,
+        warehouse: Optional[str] = None,
+        use_utc: bool = True,
     ) -> None:
         """Run the complete pipeline: query → process → publish in a single call.
 
@@ -317,12 +304,14 @@ class BatchInferencePipeline:
             input_query: SQL query string or file path to query
             output_table_name: Name of the Snowflake table for predictions
             predict_fn: Function that takes DataFrame and returns predictions DataFrame
-            query_variables: Dict of variable substitutions for SQL template
+            ctx: Dict of variable substitutions for SQL template
             output_table_definition: Optional schema as list of (column, type) tuples
             batch_size_in_mb: Target size for each batch in MB
             timeout_per_file: Timeout in seconds for each file operation
             auto_create_table: Whether to auto-create table if not exists
             overwrite: Whether to overwrite existing data
+            warehouse: Snowflake warehouse to use
+            use_utc: Whether to use UTC timezone for Snowflake
 
         Example::
 
@@ -337,8 +326,10 @@ class BatchInferencePipeline:
         # Step 1: Query and batch
         worker_ids = self.query_and_batch(
             input_query=input_query,
-            query_variables=query_variables,
+            ctx=ctx,
             parallel_workers=1,
+            use_utc=use_utc,
+            warehouse=warehouse,
         )
 
         # Step 2: Process all batches sequentially
@@ -356,6 +347,8 @@ class BatchInferencePipeline:
             output_table_definition=output_table_definition,
             auto_create_table=auto_create_table,
             overwrite=overwrite,
+            warehouse=warehouse,
+            use_utc=use_utc,
         )
 
     def _make_batches(self, file_paths: List[str], batch_size_in_mb: int) -> List[List[str]]:
@@ -387,7 +380,6 @@ class BatchInferencePipeline:
 
     def __repr__(self) -> str:
         """Return string representation of the pipeline."""
-        return (
-            f"BatchInferencePipeline(pipeline_id='{self.pipeline_id}', "
-            f"workers={len(self.workers)}, worker_ids={self.worker_ids})"
-        )
+        worker_ids = getattr(self, "worker_ids", [])
+        worker_count = len(getattr(self, "worker_files", {}))
+        return f"BatchInferencePipeline(worker_count={worker_count}, worker_ids={worker_ids})"
