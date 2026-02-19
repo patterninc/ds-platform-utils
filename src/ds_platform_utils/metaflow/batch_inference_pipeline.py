@@ -181,7 +181,7 @@ class BatchInferencePipeline:
         worker_id: int,
         predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
         batch_size_in_mb: int = 128,
-        timeout_per_file: int = 300,
+        timeout_per_batch: int = 300,
     ) -> str:
         """Step 2: Process a single batch using parallel download→inference→upload pipeline.
 
@@ -194,7 +194,7 @@ class BatchInferencePipeline:
             worker_id: The worker ID to process (from self.input in foreach)
             predict_fn: Function that takes DataFrame and returns predictions DataFrame
             batch_size_in_mb: Target size for each batch in MB
-            timeout_per_file: Timeout in seconds for each file operation (default: 300)
+            timeout_per_batch: Timeout in seconds for each batch operation (default: 300)
 
         Returns:
             S3 path where predictions were written
@@ -216,24 +216,24 @@ class BatchInferencePipeline:
                 with _timer(f"📥 Downloaded file {file_id} from S3"):
                     df = s3._get_df_from_s3_files(file_batch)
                     df.columns = [col.lower() for col in df.columns]
-                download_queue.put((file_id, df), timeout=timeout_per_file)
-            download_queue.put(None, timeout=timeout_per_file)
+                download_queue.put((file_id, df), timeout=timeout_per_batch)
+            download_queue.put(None, timeout=timeout_per_batch)
 
         def inference_worker():
             while True:
-                item = download_queue.get(timeout=timeout_per_file)
+                item = download_queue.get(timeout=timeout_per_batch)
                 if item is None:
-                    inference_queue.put(None, timeout=timeout_per_file)
+                    inference_queue.put(None, timeout=timeout_per_batch)
                     break
                 file_id, df = item
                 with _timer(f"🔹 Generated predictions for file {file_id}"):
                     predictions_df = predict_fn(df)
-                inference_queue.put((file_id, predictions_df), timeout=timeout_per_file)
+                inference_queue.put((file_id, predictions_df), timeout=timeout_per_batch)
                 print(f"🔘 Inference completed for batch {file_id}")
 
         def upload_worker():
             while True:
-                item = inference_queue.get(timeout=timeout_per_file)
+                item = inference_queue.get(timeout=timeout_per_batch)
                 if item is None:
                     break
                 file_id, predictions_df = item
@@ -340,7 +340,7 @@ class BatchInferencePipeline:
                 worker_id=worker_id,
                 predict_fn=predict_fn,
                 batch_size_in_mb=batch_size_in_mb,
-                timeout_per_file=timeout_per_file,
+                timeout_per_batch=timeout_per_file,
             )
 
         # Step 3: Publish results
