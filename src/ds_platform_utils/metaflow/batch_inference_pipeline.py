@@ -2,7 +2,6 @@
 
 import os
 import queue
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -25,6 +24,7 @@ from ds_platform_utils.metaflow.s3_stage import (
     copy_s3_to_snowflake,
     copy_snowflake_to_s3,
 )
+from ds_platform_utils.metaflow.shutdownable_queue import QueueShutdownError, ShutdownableQueue
 
 
 def _debug(*args, **kwargs):
@@ -40,175 +40,6 @@ def _timer(message: str):
     yield
     t1 = time.time()
     _debug(f"{message}: Completed in {t1 - t0:.2f} seconds")
-
-
-class QueueShutdownError(Exception):
-    """Raised when a ShutdownableQueue operation is attempted after shutdown."""
-
-    def __init__(self, message: str = "Queue has been shut down", cause: Optional[Exception] = None):
-        super().__init__(message)
-        self.cause = cause
-
-
-class ShutdownableQueue:
-    """A queue wrapper that can be shut down, causing all blocking operations to raise an exception.
-
-    This is useful for graceful shutdown of producer-consumer pipelines. When shutdown() is called,
-    any threads blocked on get() or put() will raise QueueShutdownError, and subsequent operations
-    will also raise immediately.
-
-    Example::
-
-        q = ShutdownableQueue(maxsize=1)
-
-        # In producer thread:
-        try:
-            q.put(data)
-        except QueueShutdownError:
-            return  # Graceful exit
-
-        # In consumer thread:
-        try:
-            data = q.get()
-        except QueueShutdownError:
-            return  # Graceful exit
-
-        # When error occurs in any thread:
-        q.shutdown(cause=exception)  # All threads will receive QueueShutdownError
-
-    """
-
-    def __init__(self, maxsize: int = 0):
-        """Initialize the queue.
-
-        Args:
-            maxsize: Maximum queue size (0 for unlimited)
-
-        """
-        self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
-        self._shutdown = False
-        self._cause: Optional[Exception] = None
-        self._lock = threading.Lock()
-        self._shutdown_event = threading.Event()
-
-    def shutdown(self, cause: Optional[Exception] = None) -> None:
-        """Shut down the queue, causing all operations to raise QueueShutdownError.
-
-        Args:
-            cause: Optional exception that caused the shutdown (will be attached to QueueShutdownError)
-
-        """
-        with self._lock:
-            if not self._shutdown:
-                self._shutdown = True
-                self._cause = cause
-                self._shutdown_event.set()
-                # Unblock any waiting threads by putting a sentinel
-                try:
-                    self._queue.put_nowait(None)
-                except queue.Full:
-                    pass
-
-    def _check_shutdown(self) -> None:
-        """Raise QueueShutdownError if queue is shut down."""
-        if self._shutdown:
-            raise QueueShutdownError(cause=self._cause)
-
-    def put(self, item, timeout: Optional[float] = None) -> None:
-        """Put an item into the queue.
-
-        Args:
-            item: Item to put
-            timeout: Timeout in seconds (None for infinite)
-
-        Raises:
-            QueueShutdownError: If queue is shut down
-
-        """
-        self._check_shutdown()
-        deadline = time.time() + timeout if timeout else None
-
-        while True:
-            self._check_shutdown()
-            try:
-                # Use short timeout to periodically check shutdown flag
-                wait_time = min(0.1, timeout) if timeout else 0.1
-                if deadline:
-                    remaining = deadline - time.time()
-                    if remaining <= 0:
-                        raise queue.Full
-                    wait_time = min(wait_time, remaining)
-                self._queue.put(item, timeout=wait_time)
-                return
-            except queue.Full:
-                if deadline and time.time() >= deadline:
-                    raise
-                continue
-
-    def get(self, timeout: Optional[float] = None):
-        """Get an item from the queue.
-
-        Args:
-            timeout: Timeout in seconds (None for infinite)
-
-        Returns:
-            Item from queue
-
-        Raises:
-            QueueShutdownError: If queue is shut down
-            queue.Empty: If timeout expires
-
-        """
-        self._check_shutdown()
-        deadline = time.time() + timeout if timeout else None
-
-        while True:
-            self._check_shutdown()
-            try:
-                # Use short timeout to periodically check shutdown flag
-                wait_time = min(0.1, timeout) if timeout else 0.1
-                if deadline:
-                    remaining = deadline - time.time()
-                    if remaining <= 0:
-                        raise queue.Empty
-                    wait_time = min(wait_time, remaining)
-                item = self._queue.get(timeout=wait_time)
-                # Re-check shutdown after getting item (might be sentinel from shutdown)
-                self._check_shutdown()
-                return item
-            except queue.Empty:
-                if deadline and time.time() >= deadline:
-                    raise
-                continue
-
-    def put_nowait(self, item) -> None:
-        """Put an item without blocking.
-
-        Raises:
-            QueueShutdownError: If queue is shut down
-            queue.Full: If queue is full
-
-        """
-        self._check_shutdown()
-        self._queue.put_nowait(item)
-
-    def get_nowait(self):
-        """Get an item without blocking.
-
-        Raises:
-            QueueShutdownError: If queue is shut down
-            queue.Empty: If queue is empty
-
-        """
-        self._check_shutdown()
-        item = self._queue.get_nowait()
-        self._check_shutdown()
-        return item
-
-    @property
-    def is_shutdown(self) -> bool:
-        """Return True if queue has been shut down."""
-        return self._shutdown
 
 
 class BatchInferencePipeline:
@@ -342,7 +173,7 @@ class BatchInferencePipeline:
         self.worker_files = self._split_files_into_workers(input_files, parallel_workers)
         self.worker_ids = list(self.worker_files.keys())
 
-        print(f"📊 Created {len(self.worker_ids)} workers for parallel processing")
+        print(f"📥 Created {len(self.worker_ids)} workers for parallel processing")
 
         return self.worker_ids
 
@@ -375,7 +206,7 @@ class BatchInferencePipeline:
 
         file_paths = self.worker_files[worker_id]
         file_batches = self._make_batches(file_paths, batch_size_in_mb=batch_size_in_mb)
-        print(f"🔄 Processing worker {worker_id} ({len(file_batches)} batches)")
+        print(f"▶️ Starting processing for worker {worker_id} with {len(file_batches)} batches...")
 
         download_queue: ShutdownableQueue = ShutdownableQueue(maxsize=1)
         inference_queue: ShutdownableQueue = ShutdownableQueue(maxsize=1)
@@ -385,6 +216,14 @@ class BatchInferencePipeline:
             """Shutdown all queues with the given cause."""
             download_queue.shutdown(cause)
             inference_queue.shutdown(cause)
+
+        def safe_put_sentinel(q: ShutdownableQueue, timeout: float = 5.0):
+            """Safely put termination sentinel, waiting for space if needed."""
+            if not q.is_shutdown:
+                try:
+                    q.put(None, timeout=timeout)
+                except (QueueShutdownError, queue.Full):
+                    pass  # Shutdown in progress or timed out
 
         def download_worker(file_batches: List[List[str]]):
             try:
@@ -399,11 +238,7 @@ class BatchInferencePipeline:
                 shutdown_all(e)
                 raise
             finally:
-                if not download_queue.is_shutdown:
-                    try:
-                        download_queue.put_nowait(None)
-                    except (QueueShutdownError, queue.Full):
-                        pass
+                safe_put_sentinel(download_queue)
 
         def inference_worker():
             try:
@@ -415,18 +250,18 @@ class BatchInferencePipeline:
                     with _timer(f"🔹 Generated predictions for file {file_id}"):
                         predictions_df = predict_fn(df)
                     inference_queue.put((file_id, predictions_df), timeout=timeout_per_batch)
-                    print(f"🔘 Inference completed for batch {file_id}")
+                    print(f"🔄 Inference completed for batch {file_id}")
             except QueueShutdownError:
                 _debug("🔹 Inference worker received shutdown signal")
+            except queue.Empty as e:
+                err = TimeoutError(f"Inference worker timed out after {timeout_per_batch}s")
+                shutdown_all(err)
+                raise err from e
             except Exception as e:
                 shutdown_all(e)
                 raise
             finally:
-                if not inference_queue.is_shutdown:
-                    try:
-                        inference_queue.put_nowait(None)
-                    except (QueueShutdownError, queue.Full):
-                        pass
+                safe_put_sentinel(inference_queue)
 
         def upload_worker():
             try:
@@ -440,6 +275,10 @@ class BatchInferencePipeline:
                         s3._put_df_to_s3_file(predictions_df, s3_output_file)
             except QueueShutdownError:
                 _debug("📤 Upload worker received shutdown signal")
+            except queue.Empty as e:
+                err = TimeoutError(f"Upload worker timed out after {timeout_per_batch}s")
+                shutdown_all(err)
+                raise err from e
             except Exception as e:
                 shutdown_all(e)
                 raise
@@ -490,7 +329,7 @@ class BatchInferencePipeline:
             use_utc: Whether to use UTC timezone for Snowflake
 
         """
-        print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
+        _debug(f"⏳ Writing predictions to Snowflake table: {output_table_name}")
 
         copy_s3_to_snowflake(
             s3_path=self._output_path,
@@ -501,6 +340,8 @@ class BatchInferencePipeline:
             auto_create_table=auto_create_table,
             overwrite=overwrite,
         )
+
+        _debug(f"✅ Published predictions to Snowflake table: {output_table_name}")
 
     def run(  # noqa: PLR0913
         self,
