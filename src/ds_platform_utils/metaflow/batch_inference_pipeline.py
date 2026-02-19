@@ -341,7 +341,7 @@ class BatchInferencePipeline:
             overwrite=overwrite,
         )
 
-        _debug(f"✅ Published predictions to Snowflake table: {output_table_name}")
+        print(f"✅ Published predictions to Snowflake table: {output_table_name}")
 
     def run(  # noqa: PLR0913
         self,

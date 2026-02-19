@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -14,7 +15,14 @@ from ds_platform_utils.metaflow._consts import (
     PROD_SNOWFLAKE_STAGE,
     S3_DATA_FOLDER,
 )
+from ds_platform_utils.metaflow.batch_inference_pipeline import _debug
 from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
+
+
+def _debug(*args, **kwargs):
+    if os.getenv("DEBUG"):
+        print("DEBUG: ", end="")
+        print(*args, **kwargs)
 
 
 def _get_s3_config(is_production: bool) -> Tuple[str, str]:
@@ -180,7 +188,7 @@ def copy_snowflake_to_s3(
 
     _execute_sql(conn, query)
 
-    print(f"✅ Data exported to S3 path: {s3_path}")
+    _debug(f"✅ Data exported to S3 path: {s3_path}")
 
     file_paths = s3._list_files_in_s3_folder(s3_path)
     return file_paths
@@ -244,4 +252,4 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
     )
     _execute_sql(conn, copy_query)
 
-    print(f"✅ Data loaded into Snowflake table: {schema}.{table_name}")
+    _debug(f"✅ Data loaded into Snowflake table: {schema}.{table_name} from S3 path: {s3_path}")
