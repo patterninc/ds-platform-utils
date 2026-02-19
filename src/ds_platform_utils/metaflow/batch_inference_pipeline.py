@@ -243,9 +243,14 @@ class BatchInferencePipeline:
 
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=3) as executor:
-            executor.submit(download_worker, file_batches)
-            executor.submit(inference_worker)
-            executor.submit(upload_worker)
+            futures = [
+                executor.submit(download_worker, file_batches),
+                executor.submit(inference_worker),
+                executor.submit(upload_worker),
+            ]
+            # Wait for all futures and propagate any exceptions
+            for future in futures:
+                future.result()  # Raises exception if worker failed
         t1 = time.time()
 
         print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
