@@ -2,6 +2,7 @@
 
 import os
 import queue
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -39,6 +40,175 @@ def _timer(message: str):
     yield
     t1 = time.time()
     _debug(f"{message}: Completed in {t1 - t0:.2f} seconds")
+
+
+class QueueShutdownError(Exception):
+    """Raised when a ShutdownableQueue operation is attempted after shutdown."""
+
+    def __init__(self, message: str = "Queue has been shut down", cause: Optional[Exception] = None):
+        super().__init__(message)
+        self.cause = cause
+
+
+class ShutdownableQueue:
+    """A queue wrapper that can be shut down, causing all blocking operations to raise an exception.
+
+    This is useful for graceful shutdown of producer-consumer pipelines. When shutdown() is called,
+    any threads blocked on get() or put() will raise QueueShutdownError, and subsequent operations
+    will also raise immediately.
+
+    Example::
+
+        q = ShutdownableQueue(maxsize=1)
+
+        # In producer thread:
+        try:
+            q.put(data)
+        except QueueShutdownError:
+            return  # Graceful exit
+
+        # In consumer thread:
+        try:
+            data = q.get()
+        except QueueShutdownError:
+            return  # Graceful exit
+
+        # When error occurs in any thread:
+        q.shutdown(cause=exception)  # All threads will receive QueueShutdownError
+
+    """
+
+    def __init__(self, maxsize: int = 0):
+        """Initialize the queue.
+
+        Args:
+            maxsize: Maximum queue size (0 for unlimited)
+
+        """
+        self._queue: queue.Queue = queue.Queue(maxsize=maxsize)
+        self._shutdown = False
+        self._cause: Optional[Exception] = None
+        self._lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+
+    def shutdown(self, cause: Optional[Exception] = None) -> None:
+        """Shut down the queue, causing all operations to raise QueueShutdownError.
+
+        Args:
+            cause: Optional exception that caused the shutdown (will be attached to QueueShutdownError)
+
+        """
+        with self._lock:
+            if not self._shutdown:
+                self._shutdown = True
+                self._cause = cause
+                self._shutdown_event.set()
+                # Unblock any waiting threads by putting a sentinel
+                try:
+                    self._queue.put_nowait(None)
+                except queue.Full:
+                    pass
+
+    def _check_shutdown(self) -> None:
+        """Raise QueueShutdownError if queue is shut down."""
+        if self._shutdown:
+            raise QueueShutdownError(cause=self._cause)
+
+    def put(self, item, timeout: Optional[float] = None) -> None:
+        """Put an item into the queue.
+
+        Args:
+            item: Item to put
+            timeout: Timeout in seconds (None for infinite)
+
+        Raises:
+            QueueShutdownError: If queue is shut down
+
+        """
+        self._check_shutdown()
+        deadline = time.time() + timeout if timeout else None
+
+        while True:
+            self._check_shutdown()
+            try:
+                # Use short timeout to periodically check shutdown flag
+                wait_time = min(0.1, timeout) if timeout else 0.1
+                if deadline:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise queue.Full
+                    wait_time = min(wait_time, remaining)
+                self._queue.put(item, timeout=wait_time)
+                return
+            except queue.Full:
+                if deadline and time.time() >= deadline:
+                    raise
+                continue
+
+    def get(self, timeout: Optional[float] = None):
+        """Get an item from the queue.
+
+        Args:
+            timeout: Timeout in seconds (None for infinite)
+
+        Returns:
+            Item from queue
+
+        Raises:
+            QueueShutdownError: If queue is shut down
+            queue.Empty: If timeout expires
+
+        """
+        self._check_shutdown()
+        deadline = time.time() + timeout if timeout else None
+
+        while True:
+            self._check_shutdown()
+            try:
+                # Use short timeout to periodically check shutdown flag
+                wait_time = min(0.1, timeout) if timeout else 0.1
+                if deadline:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    wait_time = min(wait_time, remaining)
+                item = self._queue.get(timeout=wait_time)
+                # Re-check shutdown after getting item (might be sentinel from shutdown)
+                self._check_shutdown()
+                return item
+            except queue.Empty:
+                if deadline and time.time() >= deadline:
+                    raise
+                continue
+
+    def put_nowait(self, item) -> None:
+        """Put an item without blocking.
+
+        Raises:
+            QueueShutdownError: If queue is shut down
+            queue.Full: If queue is full
+
+        """
+        self._check_shutdown()
+        self._queue.put_nowait(item)
+
+    def get_nowait(self):
+        """Get an item without blocking.
+
+        Raises:
+            QueueShutdownError: If queue is shut down
+            queue.Empty: If queue is empty
+
+        """
+        self._check_shutdown()
+        item = self._queue.get_nowait()
+        self._check_shutdown()
+        return item
+
+    @property
+    def is_shutdown(self) -> bool:
+        """Return True if queue has been shut down."""
+        return self._shutdown
 
 
 class BatchInferencePipeline:
@@ -207,39 +377,72 @@ class BatchInferencePipeline:
         file_batches = self._make_batches(file_paths, batch_size_in_mb=batch_size_in_mb)
         print(f"🔄 Processing worker {worker_id} ({len(file_batches)} batches)")
 
-        download_queue: queue.Queue = queue.Queue(maxsize=1)
-        inference_queue: queue.Queue = queue.Queue(maxsize=1)
+        download_queue: ShutdownableQueue = ShutdownableQueue(maxsize=1)
+        inference_queue: ShutdownableQueue = ShutdownableQueue(maxsize=1)
         output_path = self._output_path
 
+        def shutdown_all(cause: Exception):
+            """Shutdown all queues with the given cause."""
+            download_queue.shutdown(cause)
+            inference_queue.shutdown(cause)
+
         def download_worker(file_batches: List[List[str]]):
-            for file_id, file_batch in enumerate(file_batches, 1):
-                with _timer(f"📥 Downloaded file {file_id} from S3"):
-                    df = s3._get_df_from_s3_files(file_batch)
-                    df.columns = [col.lower() for col in df.columns]
-                download_queue.put((file_id, df), timeout=timeout_per_batch)
-            download_queue.put(None, timeout=timeout_per_batch)
+            try:
+                for file_id, file_batch in enumerate(file_batches, 1):
+                    with _timer(f"📥 Downloaded file {file_id} from S3"):
+                        df = s3._get_df_from_s3_files(file_batch)
+                        df.columns = [col.lower() for col in df.columns]
+                    download_queue.put((file_id, df), timeout=timeout_per_batch)
+            except QueueShutdownError:
+                _debug("📥 Download worker received shutdown signal")
+            except Exception as e:
+                shutdown_all(e)
+                raise
+            finally:
+                if not download_queue.is_shutdown:
+                    try:
+                        download_queue.put_nowait(None)
+                    except (QueueShutdownError, queue.Full):
+                        pass
 
         def inference_worker():
-            while True:
-                item = download_queue.get(timeout=timeout_per_batch)
-                if item is None:
-                    inference_queue.put(None, timeout=timeout_per_batch)
-                    break
-                file_id, df = item
-                with _timer(f"🔹 Generated predictions for file {file_id}"):
-                    predictions_df = predict_fn(df)
-                inference_queue.put((file_id, predictions_df), timeout=timeout_per_batch)
-                print(f"🔘 Inference completed for batch {file_id}")
+            try:
+                while True:
+                    item = download_queue.get(timeout=timeout_per_batch)
+                    if item is None:
+                        break
+                    file_id, df = item
+                    with _timer(f"🔹 Generated predictions for file {file_id}"):
+                        predictions_df = predict_fn(df)
+                    inference_queue.put((file_id, predictions_df), timeout=timeout_per_batch)
+                    print(f"🔘 Inference completed for batch {file_id}")
+            except QueueShutdownError:
+                _debug("🔹 Inference worker received shutdown signal")
+            except Exception as e:
+                shutdown_all(e)
+                raise
+            finally:
+                if not inference_queue.is_shutdown:
+                    try:
+                        inference_queue.put_nowait(None)
+                    except (QueueShutdownError, queue.Full):
+                        pass
 
         def upload_worker():
-            while True:
-                item = inference_queue.get(timeout=timeout_per_batch)
-                if item is None:
-                    break
-                file_id, predictions_df = item
-                s3_output_file = f"{output_path}/predictions_{worker_id}_{file_id}.parquet"
-                with _timer(f"📤 Uploaded predictions for file {file_id} to S3"):
-                    s3._put_df_to_s3_file(predictions_df, s3_output_file)
+            try:
+                while True:
+                    item = inference_queue.get(timeout=timeout_per_batch)
+                    if item is None:
+                        break
+                    file_id, predictions_df = item
+                    s3_output_file = f"{output_path}/predictions_{worker_id}_{file_id}.parquet"
+                    with _timer(f"📤 Uploaded predictions for file {file_id} to S3"):
+                        s3._put_df_to_s3_file(predictions_df, s3_output_file)
+            except QueueShutdownError:
+                _debug("📤 Upload worker received shutdown signal")
+            except Exception as e:
+                shutdown_all(e)
+                raise
 
         t0 = time.time()
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -248,9 +451,20 @@ class BatchInferencePipeline:
                 executor.submit(inference_worker),
                 executor.submit(upload_worker),
             ]
-            # Wait for all futures and propagate any exceptions
+
+            # Wait for all futures, re-raise first error
+            first_error = None
             for future in futures:
-                future.result()  # Raises exception if worker failed
+                try:
+                    future.result()
+                except QueueShutdownError:
+                    pass  # Expected during graceful shutdown
+                except Exception as e:
+                    if first_error is None:
+                        first_error = e
+
+            if first_error:
+                raise first_error
         t1 = time.time()
 
         print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
