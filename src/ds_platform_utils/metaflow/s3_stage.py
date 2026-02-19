@@ -46,6 +46,8 @@ def _generate_snowflake_to_s3_copy_query(
         single = "FALSE"
         max_file_size = 16 * 1024 * 1024  # 16 MB
 
+    snowflake_stage_path = snowflake_stage_path.strip("/") + "/"
+
     if query.count(";") > 1:
         raise ValueError("Multiple SQL statements detected. Please provide a single query statement.")
     query = query.replace(";", "")  # Remove trailing semicolon if present
@@ -162,7 +164,6 @@ def copy_snowflake_to_s3(
         # Build paths: s3://bucket/data/{flow}/{run_id}/{pipeline_id}/
         flow_name = current.flow_name if hasattr(current, "flow_name") else "local"
         run_id = current.run_id if hasattr(current, "run_id") else "dev"
-
         timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
         s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
 

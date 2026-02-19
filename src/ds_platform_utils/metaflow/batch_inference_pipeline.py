@@ -158,6 +158,7 @@ class BatchInferencePipeline:
         input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
         _debug_print_query(input_query)
 
+        _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
         # Export from Snowflake to S3
         input_files = copy_snowflake_to_s3(
             query=input_query,
@@ -165,6 +166,7 @@ class BatchInferencePipeline:
             use_utc=use_utc,
             s3_path=self._input_path,
         )
+        _debug(f"✅ Exported data to S3: {len(input_files)} files created.")
 
         # Create worker batches based on file sizes
         self.worker_files = self._split_files_into_workers(input_files, parallel_workers)
