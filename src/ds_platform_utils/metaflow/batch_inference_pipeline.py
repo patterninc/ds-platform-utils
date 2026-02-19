@@ -159,7 +159,7 @@ class BatchInferencePipeline:
         input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
         _debug_print_query(input_query)
 
-        _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
+        _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}")
         # Export from Snowflake to S3
         input_files = copy_snowflake_to_s3(
             query=input_query,
