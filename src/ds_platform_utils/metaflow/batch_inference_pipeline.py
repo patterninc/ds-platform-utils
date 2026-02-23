@@ -113,6 +113,11 @@ class BatchInferencePipeline:
         self._input_path = f"{self._base_path}/input"
         self._output_path = f"{self._base_path}/output"
 
+        # Execution state flags
+        self._query_executed = False
+        self._batch_processed = False
+        self._results_published = False
+
     @property
     def input_path(self) -> str:
         """S3 path where input data is stored."""
@@ -172,6 +177,10 @@ class BatchInferencePipeline:
         self.worker_files = self._split_files_into_workers(input_files, parallel_workers)
         self.worker_ids = list(self.worker_files.keys())
 
+        # Mark query as executed
+        self._query_executed = True
+        self._batch_processed = False
+
         print(f"📊 Created {len(self.worker_ids)} workers for parallel processing")
 
         return self.worker_ids
@@ -200,6 +209,13 @@ class BatchInferencePipeline:
             S3 path where predictions were written
 
         """
+        # Validate that query_and_batch was called first
+        if not self._query_executed:
+            raise RuntimeError(
+                "Cannot process batch: query_and_batch() must be called first. "
+                "Call query_and_batch() to export data from Snowflake before processing batches."
+            )
+
         if worker_id not in self.worker_files:
             raise ValueError(f"Worker {worker_id} not found. Available: {list(self.worker_files.keys())}")
 
@@ -253,6 +269,9 @@ class BatchInferencePipeline:
                 future.result()  # Raises exception if worker failed
         t1 = time.time()
 
+        # Mark that at least one batch was processed
+        self._batch_processed = True
+
         print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
         return self._output_path
 
@@ -276,6 +295,19 @@ class BatchInferencePipeline:
             use_utc: Whether to use UTC timezone for Snowflake
 
         """
+        # Validate that batches were processed
+        if not self._query_executed:
+            raise RuntimeError(
+                "Cannot publish results: query_and_batch() must be called first. "
+                "Call query_and_batch() to export data from Snowflake."
+            )
+
+        if not self._batch_processed:
+            raise RuntimeError(
+                "Cannot publish results: No batches have been processed. "
+                "Call process_batch() to process at least one batch before publishing."
+            )
+
         print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
 
         copy_s3_to_snowflake(
@@ -287,6 +319,9 @@ class BatchInferencePipeline:
             auto_create_table=auto_create_table,
             overwrite=overwrite,
         )
+
+        # Mark results as published
+        self._results_published = True
 
     def run(  # noqa: PLR0913
         self,
