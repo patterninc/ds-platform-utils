@@ -44,31 +44,27 @@ Query Snowflake and return a pandas DataFrame.
 **Signature:**
 ```python
 def query_pandas_from_snowflake(
-    query: Optional[str] = None,
-    query_fpath: Optional[str] = None,
-    ctx: Optional[Dict[str, Any]] = None,
+    query: Union[str, Path],
     warehouse: Optional[str] = None,
+    ctx: Optional[Dict[str, Any]] = None,
+    use_utc: bool = True,
     use_s3_stage: bool = False,
-    timeout_seconds: Optional[int] = None,
 ) -> pd.DataFrame
 ```
 
 **Parameters:**
-- `query` (str, optional): SQL query string. Mutually exclusive with `query_fpath`.
-- `query_fpath` (str, optional): Path to SQL file containing query. Mutually exclusive with `query`.
+- `query` (str | Path): SQL query string or path to a .sql file.
+- `warehouse` (str, optional): Snowflake warehouse name. Defaults to `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` in dev or `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` in production.
 - `ctx` (dict, optional): Template variables for query substitution using `{{variable}}` syntax.
-- `warehouse` (str, optional): Snowflake warehouse name. If not provided, uses default from connection.
-- `use_s3_stage` (bool, default=False): Use S3 staging for large results (recommended for > 1GB).
-- `timeout_seconds` (int, optional): Query timeout in seconds.
+- `use_utc` (bool, default=True): Whether to set Snowflake session to UTC timezone.
+- `use_s3_stage` (bool, default=False): Use S3 staging for large results (more efficient for > 1GB).
 
 **Returns:**
-- `pd.DataFrame`: Query results as pandas DataFrame
+- `pd.DataFrame`: Query results as pandas DataFrame (column names lowercased)
 
-**Raises:**
-- `ValueError`: If neither `query` nor `query_fpath` provided, or if both provided.
-- `FileNotFoundError`: If `query_fpath` does not exist.
-- `SnowflakeQueryError`: If query execution fails.
-- `TimeoutError`: If query exceeds timeout.
+**Notes:**
+- If the query contains `{{schema}}` placeholders, they will be replaced with the appropriate schema (prod or dev).
+- Query tags are automatically added for cost tracking in select.dev.
 
 **Example:**
 ```python
@@ -80,7 +76,7 @@ df = query_pandas_from_snowflake(
 
 # From SQL file with template variables
 df = query_pandas_from_snowflake(
-    query_fpath="sql/extract.sql",
+    query="sql/extract.sql",
     ctx={"start_date": "2024-01-01", "end_date": "2024-12-31"},
 )
 
@@ -109,52 +105,71 @@ Publish a pandas DataFrame to Snowflake.
 def publish_pandas(
     table_name: str,
     df: pd.DataFrame,
-    schema: Optional[str] = None,
-    mode: str = "replace",
+    add_created_date: bool = False,
+    chunk_size: Optional[int] = None,
+    compression: Literal["snappy", "gzip"] = "snappy",
     warehouse: Optional[str] = None,
-    comment: Optional[str] = None,
+    parallel: int = 4,
+    quote_identifiers: bool = True,
+    auto_create_table: bool = False,
+    overwrite: bool = False,
+    use_logical_type: bool = True,
+    use_utc: bool = True,
+    use_s3_stage: bool = False,
+    table_definition: Optional[List[Tuple[str, str]]] = None,
 ) -> None
 ```
 
 **Parameters:**
-- `table_name` (str): Target table name (without schema).
+- `table_name` (str): Name of the table to create (automatically uppercased).
 - `df` (pd.DataFrame): DataFrame to publish.
-- `schema` (str, optional): Target schema. If not provided, uses default dev schema.
-- `mode` (str, default="replace"): Write mode:
-  - `"replace"`: Drop and recreate table
-  - `"append"`: Append to existing table
-  - `"fail"`: Fail if table exists
+- `add_created_date` (bool, default=False): Add a `created_date` column with current UTC timestamp.
+- `chunk_size` (int, optional): Number of rows per insert batch. Default: all rows at once.
+- `compression` (str, default="snappy"): Parquet compression: `"snappy"` or `"gzip"`.
 - `warehouse` (str, optional): Snowflake warehouse name.
-- `comment` (str, optional): Table comment for documentation.
+- `parallel` (int, default=4): Number of threads for uploading chunks.
+- `quote_identifiers` (bool, default=True): Quote column/table names (preserve case).
+- `auto_create_table` (bool, default=False): Auto-create table if it doesn't exist.
+- `overwrite` (bool, default=False): Drop/truncate existing table before writing.
+- `use_logical_type` (bool, default=True): Use Parquet logical types for timestamps.
+- `use_utc` (bool, default=True): Set Snowflake session to UTC timezone.
+- `use_s3_stage` (bool, default=False): Use S3 staging (more efficient for large DataFrames).
+- `table_definition` (list, optional): Column schema as `[(col_name, col_type), ...]` for S3 staging.
 
 **Returns:** None
 
-**Raises:**
-- `ValueError`: If DataFrame is empty or invalid mode.
-- `SnowflakeError`: If publish operation fails.
-- `PermissionError`: If no write access to schema.
+**Notes:**
+- Schema is automatically selected: prod schema in production, dev schema otherwise.
+- Table name is automatically uppercased for Snowflake standardization.
 
 **Example:**
 ```python
-# Basic publish
+# Basic publish with auto-create
 publish_pandas(
     table_name="my_results",
     df=results_df,
-    schema="my_dev_schema",
+    auto_create_table=True,
+    overwrite=True,
 )
 
-# Append mode
+# Large DataFrame via S3 staging
 publish_pandas(
-    table_name="incremental_data",
-    df=new_data_df,
-    mode="append",
+    table_name="large_table",
+    df=large_df,
+    use_s3_stage=True,
+    table_definition=[
+        ("id", "NUMBER"),
+        ("name", "STRING"),
+        ("score", "FLOAT"),
+    ],
 )
 
-# With comment
+# With timestamp tracking
 publish_pandas(
     table_name="features",
     df=features_df,
-    comment="Daily feature refresh - 2024-01-15",
+    add_created_date=True,
+    auto_create_table=True,
 )
 ```
 
@@ -166,43 +181,53 @@ publish_pandas(
 
 ### `publish()`
 
-Query, optionally transform, and publish in one call.
+Publish a Snowflake table using the write-audit-publish (WAP) pattern.
 
 **Signature:**
 ```python
 def publish(
-    query_fpath: str,
-    ctx: Dict[str, Any],
-    publish_query_fpath: str,
-    transform_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
-    comment: Optional[str] = None,
+    table_name: str,
+    query: Union[str, Path],
+    audits: Optional[List[Union[str, Path]]] = None,
+    ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[str] = None,
+    use_utc: bool = True,
 ) -> None
 ```
 
 **Parameters:**
-- `query_fpath` (str): Path to SQL file for querying data.
-- `ctx` (dict): Template variables for both query and publish SQL.
-- `publish_query_fpath` (str): Path to SQL file for publishing.
-- `transform_fn` (callable, optional): Function to transform DataFrame between query and publish.
-- `comment` (str, optional): Table comment.
+- `table_name` (str): Name of the Snowflake table to publish (e.g., `"OUT_OF_STOCK_ADS"`).
+- `query` (str | Path): SQL query string or path to .sql file that generates the table data.
+- `audits` (list, optional): SQL audit scripts or file paths that validate data quality. Each script should return zero rows for success.
+- `ctx` (dict, optional): Template variables for SQL substitution.
 - `warehouse` (str, optional): Snowflake warehouse name.
+- `use_utc` (bool, default=True): Whether to use UTC timezone for the Snowflake connection.
 
 **Returns:** None
 
+**Notes:**
+- Uses the write-audit-publish pattern: write to temp table → run audits → promote to final table.
+- Query tags are automatically added for cost tracking in select.dev.
+- Schema is automatically selected based on production/dev environment.
+
 **Example:**
 ```python
-def add_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add engineered features."""
-    df['new_feature'] = df['value'] * 2
-    return df
-
+# Simple publish
 publish(
-    query_fpath="sql/extract.sql",
-    ctx={"start_date": "2024-01-01", "end_date": "2024-12-31"},
-    transform_fn=add_features,
-    publish_query_fpath="sql/publish.sql",
-    comment="Daily feature engineering",
+    table_name="OUT_OF_STOCK_ADS",
+    query="sql/create_training_data.sql",
+    warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
+)
+
+# With audits for data validation
+publish(
+    table_name="DAILY_FEATURES",
+    query="sql/create_features.sql",
+    audits=[
+        "sql/audit_row_count.sql",
+        "sql/audit_null_check.sql",
+    ],
+    ctx={"date": "2024-01-01"},
 )
 ```
 
@@ -230,35 +255,36 @@ Query input data and split into batches for parallel processing.
 ```python
 def query_and_batch(
     self,
-    input_query: str,
-    batch_size_in_mb: int = 256,
-    parallel_workers: int = 10,
-    warehouse: str = "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
+    input_query: Union[str, Path],
+    ctx: Optional[dict] = None,
+    warehouse: Optional[str] = None,
+    use_utc: bool = True,
+    parallel_workers: int = 1,
 ) -> List[int]
 ```
 
 **Parameters:**
-- `input_query` (str): SQL query to fetch input data
-- `batch_size_in_mb` (int, default=256): Target size per batch file in MB
-- `parallel_workers` (int, default=10): Number of parallel workers
-- `warehouse` (str): Snowflake warehouse name
+- `input_query` (str | Path): SQL query string or file path to query
+- `ctx` (dict, optional): Dict of variable substitutions for SQL template (e.g., `{{schema}}`)
+- `warehouse` (str, optional): Snowflake warehouse name
+- `use_utc` (bool, default=True): Whether to use UTC timezone for Snowflake
+- `parallel_workers` (int, default=1): Number of parallel workers to use for processing
 
 **Returns:**
-- `List[int]`: Worker IDs for use in `process_batch()`
+- `List[int]`: Worker IDs to use with `foreach` in next step
 
 **Example:**
 ```python
 pipeline = BatchInferencePipeline()
 worker_ids = pipeline.query_and_batch(
     input_query="SELECT * FROM large_input",
-    batch_size_in_mb=256,
-    parallel_workers=20,
+    parallel_workers=10,
 )
 ```
 
 ##### `process_batch()`
 
-Process a single batch with predictions.
+Process a single batch with predictions using a queue-based 3-thread pipeline.
 
 **Signature:**
 ```python
@@ -266,18 +292,19 @@ def process_batch(
     self,
     worker_id: int,
     predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
-    batch_size_in_mb: int = 64,
-    timeout_per_batch: int = 3600,
-) -> None
+    batch_size_in_mb: int = 128,
+    timeout_per_batch: int = 300,
+) -> str
 ```
 
 **Parameters:**
 - `worker_id` (int): Worker ID from `query_and_batch()`
-- `predict_fn` (callable): Function that takes DataFrame and returns predictions
-- `batch_size_in_mb` (int, default=64): Batch size for processing
-- `timeout_per_batch` (int, default=3600): Timeout per batch in seconds
+- `predict_fn` (callable): Function that takes DataFrame and returns predictions DataFrame
+- `batch_size_in_mb` (int, default=128): Target size for each batch in MB
+- `timeout_per_batch` (int, default=300): Timeout in seconds for each batch operation
 
-**Returns:** None
+**Returns:**
+- `str`: S3 path where predictions were written
 
 **Example:**
 ```python
@@ -294,22 +321,28 @@ pipeline.process_batch(
 
 ##### `publish_results()`
 
-Publish all processed results to Snowflake.
+Publish all processed results to Snowflake (call this in join step).
 
 **Signature:**
 ```python
 def publish_results(
     self,
-    output_table: str,
-    output_schema: str,
-    warehouse: str = "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
+    output_table_name: str,
+    output_table_definition: Optional[List[Tuple[str, str]]] = None,
+    auto_create_table: bool = True,
+    overwrite: bool = True,
+    warehouse: Optional[str] = None,
+    use_utc: bool = True,
 ) -> None
 ```
 
 **Parameters:**
-- `output_table` (str): Target table name
-- `output_schema` (str): Target schema
-- `warehouse` (str): Snowflake warehouse name
+- `output_table_name` (str): Name of the Snowflake table
+- `output_table_definition` (list, optional): Schema as list of `(column, type)` tuples
+- `auto_create_table` (bool, default=True): Whether to auto-create table if not exists
+- `overwrite` (bool, default=True): Whether to overwrite existing data
+- `warehouse` (str, optional): Snowflake warehouse name
+- `use_utc` (bool, default=True): Whether to use UTC timezone for Snowflake
 
 **Returns:** None
 
@@ -317,8 +350,17 @@ def publish_results(
 ```python
 pipeline = BatchInferencePipeline()
 pipeline.publish_results(
-    output_table="predictions",
-    output_schema="my_dev_schema",
+    output_table_name="predictions",
+)
+
+# With custom schema
+pipeline.publish_results(
+    output_table_name="predictions",
+    output_table_definition=[
+        ("id", "NUMBER"),
+        ("score", "FLOAT"),
+        ("prediction", "STRING"),
+    ],
 )
 ```
 
@@ -332,38 +374,48 @@ pipeline.publish_results(
 
 ### `make_pydantic_parser_fn()`
 
-Create a parser function for Pydantic model validation in Metaflow Parameters.
+Create a parser function for Pydantic model validation in Metaflow Config.
 
 **Signature:**
 ```python
 def make_pydantic_parser_fn(
-    model_class: Type[BaseModel]
-) -> Callable[[str], BaseModel]
+    pydantic_model: type[BaseModel]
+) -> Callable[[str], dict]
 ```
 
 **Parameters:**
-- `model_class` (Type[BaseModel]): Pydantic model class
+- `pydantic_model` (type[BaseModel]): Pydantic model class for validation
 
 **Returns:**
-- `Callable[[str], BaseModel]`: Parser function for Metaflow Parameter
+- `Callable[[str], dict]`: Parser function that validates and returns a dict
+
+**Notes:**
+- Supports JSON, TOML, and YAML config formats
+- YAML is preferred because it supports comments
+- Returns a dict with default values applied after validation
 
 **Example:**
 ```python
-from pydantic import BaseModel
-from metaflow import FlowSpec, Parameter
+from pydantic import BaseModel, Field
+from metaflow import FlowSpec, step, Config
 from ds_platform_utils.metaflow import make_pydantic_parser_fn
 
-class Config(BaseModel):
-    start_date: str
-    end_date: str
+class PydanticFlowConfig(BaseModel):
+    \"\"\"Validate and provide autocompletion for config values.\"\"\"
+    n_rows: int = Field(ge=1)
     threshold: float = 0.5
 
 class MyFlow(FlowSpec):
-    config = Parameter(
-        'config',
-        type=make_pydantic_parser_fn(Config),
-        default='{"start_date": "2024-01-01", "end_date": "2024-12-31"}',
-    )
+    config: PydanticFlowConfig = Config(
+        name="config",
+        default="./configs/default.yaml",
+        parser=make_pydantic_parser_fn(PydanticFlowConfig)
+    )  # type: ignore[assignment]
+
+    @step
+    def start(self):
+        print(f"{self.config.n_rows=}")
+        self.next(self.end)
 ```
 
 **See Also:**
@@ -436,7 +488,13 @@ result = process_data(self.df)
 
 ## Snowflake Utilities
 
-**Note:** The `ds_platform_utils._snowflake` module is private and not intended for direct use. All Snowflake operations should go through the public Metaflow utilities above.
+The `ds_platform_utils._snowflake` module contains lower-level utilities for Snowflake operations:
+- `_execute_sql()` - Execute SQL statements with batch support
+- `write_audit_publish()` - Implement write-audit-publish pattern
+
+**Note:** This module is marked as private (underscore prefix) because its APIs may change. Most users should use the high-level Metaflow utilities above.
+
+**For Advanced Users:** If you need direct access to these utilities for custom workflows, see the [Snowflake Utilities Documentation](../snowflake/README.md).
 
 ---
 
@@ -481,4 +539,5 @@ Raised when configuration validation fails (from Pydantic).
 - [Getting Started Guide](../guides/getting_started.md)
 - [Best Practices](../guides/best_practices.md)
 - [Common Patterns](../guides/common_patterns.md)
-- [Module-Specific Docs](../metaflow/README.md)
+- [Metaflow Utilities](../metaflow/README.md)
+- [Snowflake Utilities](../snowflake/README.md)

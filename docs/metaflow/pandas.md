@@ -37,7 +37,7 @@ df = query_pandas_from_snowflake(
 
 ```python
 df = query_pandas_from_snowflake(
-    query_fpath="sql/extract_data.sql",
+    query="sql/extract_data.sql",  # Pass file path as query parameter
     ctx={
         "start_date": "2024-01-01",
         "end_date": "2024-12-31",
@@ -80,12 +80,20 @@ df = query_pandas_from_snowflake(
 
 ### Custom Timeouts
 
+Note: Timeouts are managed by Metaflow decorators and Outerbounds, not the query function directly.
+
 ```python
-df = query_pandas_from_snowflake(
-    query="SELECT * FROM huge_table",
-    timeout_seconds=1800,  # 30 minutes
-    warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
-)
+from metaflow import FlowSpec, step, timeout
+
+class MyFlow(FlowSpec):
+    @timeout(seconds=1800)  # 30 minutes
+    @step
+    def query_large_data(self):
+        self.df = query_pandas_from_snowflake(
+            query="SELECT * FROM huge_table",
+            warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
+        )
+        self.next(self.end)
 ```
 
 ## Publishing Data
@@ -98,42 +106,39 @@ from ds_platform_utils.metaflow import publish_pandas
 publish_pandas(
     table_name="my_results",
     df=results_df,
-    schema="my_dev_schema",
+    auto_create_table=True,
+    overwrite=True,
 )
 ```
 
 ### Replace vs. Append
 
 ```python
-# Replace existing table (default)
+# Replace existing table (overwrite=True)
 publish_pandas(
     table_name="my_table",
     df=df,
-    mode="replace",
+    auto_create_table=True,
+    overwrite=True,  # Drops table first
 )
 
-# Append to existing table
+# Append to existing table (overwrite=False)
 publish_pandas(
     table_name="my_table",
     df=df,
-    mode="append",
-)
-
-# Fail if table exists
-publish_pandas(
-    table_name="my_table",
-    df=df,
-    mode="fail",
+    auto_create_table=False,  # Table must already exist
+    overwrite=False,  # Appends data
 )
 ```
 
-### Add Comments
+### Add Created Date
 
 ```python
 publish_pandas(
     table_name="my_table",
     df=df,
-    comment="Daily feature refresh - 2024-01-15",
+    add_created_date=True,  # Adds 'created_date' column with UTC timestamp
+    auto_create_table=True,
 )
 ```
 
@@ -144,29 +149,51 @@ publish_pandas(
     table_name="large_table",
     df=large_df,
     warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",  # Use larger warehouse
+    auto_create_table=True,
+    overwrite=True,
+)
+```
+
+### Large DataFrame via S3 Staging
+
+For very large DataFrames, use S3 staging for better performance:
+
+```python
+publish_pandas(
+    table_name="large_table",
+    df=large_df,
+    use_s3_stage=True,
+    table_definition=[
+        ("id", "NUMBER"),
+        ("name", "STRING"),
+        ("score", "FLOAT"),
+    ],
 )
 ```
 
 ## Using SQL Files
 
-### Query and Publish Pattern
+### Write-Audit-Publish Pattern
 
-The most common pattern: query data with one SQL file, transform in Python, publish with another SQL file.
+The `publish()` function implements the write-audit-publish pattern for data quality:
 
 ```python
 from ds_platform_utils.metaflow import publish
 
 publish(
-    query_fpath="sql/create_features.sql",
+    table_name="DAILY_FEATURES",
+    query="sql/create_features.sql",
+    audits=[
+        "sql/audit_row_count.sql",
+        "sql/audit_null_check.sql",
+    ],
     ctx={"start_date": "2024-01-01", "end_date": "2024-12-31"},
-    publish_query_fpath="sql/publish_features.sql",
-    comment="Daily feature engineering",
 )
 ```
 
 ```sql
 -- sql/create_features.sql
-CREATE OR REPLACE TEMPORARY TABLE temp_features AS
+CREATE OR REPLACE TABLE {{schema}}.{{table_name}} AS
 SELECT
     user_id,
     COUNT(*) as event_count,
@@ -179,29 +206,47 @@ GROUP BY user_id;
 ```
 
 ```sql
--- sql/publish_features.sql
-CREATE OR REPLACE TABLE my_dev_schema.user_features AS
-SELECT * FROM temp_features;
+-- sql/audit_row_count.sql (should return 0 rows if passing)
+SELECT 1 WHERE (SELECT COUNT(*) FROM {{schema}}.{{table_name}}) < 100;
 ```
 
-### Transform Function
+```sql
+-- sql/audit_null_check.sql (should return 0 rows if passing)
+SELECT 1 WHERE EXISTS (
+    SELECT 1 FROM {{schema}}.{{table_name}} WHERE user_id IS NULL
+);
+```
 
-Add Python transformation between query and publish:
+### Feature Engineering in Python
+
+For Python transformations, combine query and publish_pandas:
 
 ```python
-def transform_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add engineered features."""
+from ds_platform_utils.metaflow import query_pandas_from_snowflake, publish_pandas
+from datetime import datetime
+
+# Query raw data
+df = query_pandas_from_snowflake(
+    query="sql/create_features.sql",
+    ctx={"start_date": "2024-01-01", "end_date": "2024-12-31"},
+)
+
+# Transform in Python
+def transform_features(df):
     df['recency_days'] = (
         datetime.now() - pd.to_datetime(df['last_seen'])
     ).dt.days
     df['frequency_per_day'] = df['event_count'] / 30
     return df
 
-publish(
-    query_fpath="sql/create_features.sql",
-    ctx={"start_date": "2024-01-01", "end_date": "2024-12-31"},
-    transform_fn=transform_features,  # ← Add transformation
-    publish_query_fpath="sql/publish_features.sql",
+df = transform_features(df)
+
+# Publish
+publish_pandas(
+    table_name="user_features",
+    df=df,
+    auto_create_table=True,
+    overwrite=True,
 )
 ```
 
@@ -230,21 +275,30 @@ publish_pandas(table_name="user_events", df=result)
 
 ### Chunked Publishing
 
-For very large DataFrames:
+For very large DataFrames, use chunk_size parameter:
 
 ```python
-# Split into chunks
-chunk_size = 100000
-for i in range(0, len(large_df), chunk_size):
-    chunk = large_df.iloc[i:i+chunk_size]
-    
-    publish_pandas(
-        table_name="large_table",
-        df=chunk,
-        mode="append" if i > 0 else "replace",  # Replace first, append rest
-    )
-    
-    print(f"Published chunk {i//chunk_size + 1}")
+publish_pandas(
+    table_name="large_table",
+    df=large_df,
+    chunk_size=100000,  # Insert 100k rows at a time
+    auto_create_table=True,
+    overwrite=True,
+)
+```
+
+Or use S3 staging for even better performance:
+
+```python
+publish_pandas(
+    table_name="large_table",
+    df=large_df,
+    use_s3_stage=True,
+    table_definition=[
+        ("id", "NUMBER"),
+        ("value", "FLOAT"),
+    ],
+)
 ```
 
 ### Query with Date Range
@@ -293,14 +347,13 @@ df = query_with_retry()
 Query Snowflake and return a pandas DataFrame.
 
 **Parameters:**
-- `query` (str, optional): SQL query string
-- `query_fpath` (str, optional): Path to SQL file
-- `ctx` (dict, optional): Template variables for query
+- `query` (str | Path): SQL query string or path to .sql file
 - `warehouse` (str, optional): Snowflake warehouse name
+- `ctx` (dict, optional): Template variables for query substitution
+- `use_utc` (bool): Use UTC timezone (default: True)
 - `use_s3_stage` (bool): Use S3 staging for large results (default: False)
-- `timeout_seconds` (int, optional): Query timeout in seconds
 
-**Returns:** `pandas.DataFrame`
+**Returns:** `pandas.DataFrame` (column names lowercased)
 
 **Example:**
 ```python
@@ -315,12 +368,20 @@ df = query_pandas_from_snowflake(
 Publish a pandas DataFrame to Snowflake.
 
 **Parameters:**
-- `table_name` (str): Target table name
+- `table_name` (str): Target table name (auto-uppercased)
 - `df` (pd.DataFrame): DataFrame to publish
-- `schema` (str, optional): Target schema (default: dev schema)
-- `mode` (str): "replace", "append", or "fail" (default: "replace")
+- `add_created_date` (bool): Add created_date column (default: False)
+- `chunk_size` (int, optional): Rows per insert batch
+- `compression` (str): Parquet compression "snappy" or "gzip" (default: "snappy")
 - `warehouse` (str, optional): Snowflake warehouse name
-- `comment` (str, optional): Table comment
+- `parallel` (int): Upload threads (default: 4)
+- `quote_identifiers` (bool): Quote column names (default: True)
+- `auto_create_table` (bool): Create table if missing (default: False)
+- `overwrite` (bool): Drop/truncate before write (default: False)
+- `use_logical_type` (bool): Parquet logical types for timestamps (default: True)
+- `use_utc` (bool): Use UTC timezone (default: True)
+- `use_s3_stage` (bool): Use S3 staging (default: False)
+- `table_definition` (list, optional): Schema as [(col, type), ...] for S3 staging
 
 **Returns:** None
 
@@ -329,32 +390,32 @@ Publish a pandas DataFrame to Snowflake.
 publish_pandas(
     table_name="my_results",
     df=results_df,
-    schema="my_dev_schema",
-    mode="replace",
+    auto_create_table=True,
+    overwrite=True,
 )
 ```
 
 ### publish()
 
-Query, transform, and publish in one call.
+Publish a Snowflake table using the write-audit-publish pattern.
 
 **Parameters:**
-- `query_fpath` (str): Path to query SQL file
-- `ctx` (dict): Template variables
-- `publish_query_fpath` (str): Path to publish SQL file
-- `transform_fn` (callable, optional): Transformation function
-- `comment` (str, optional): Table comment
+- `table_name` (str): Name of the Snowflake table to publish
+- `query` (str | Path): SQL query string or path to .sql file
+- `audits` (list, optional): SQL audit scripts or file paths for validation
+- `ctx` (dict, optional): Template variables for SQL substitution
 - `warehouse` (str, optional): Snowflake warehouse name
+- `use_utc` (bool): Use UTC timezone (default: True)
 
 **Returns:** None
 
 **Example:**
 ```python
 publish(
-    query_fpath="sql/query.sql",
+    table_name="DAILY_FEATURES",
+    query="sql/create_features.sql",
+    audits=["sql/audit_row_count.sql"],
     ctx={"date": "2024-01-01"},
-    publish_query_fpath="sql/publish.sql",
-    comment="Daily update",
 )
 ```
 

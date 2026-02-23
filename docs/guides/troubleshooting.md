@@ -61,13 +61,13 @@ df = query_pandas_from_snowflake(
 ```python
 # ❌ Bad - missing variable
 query_pandas_from_snowflake(
-    query_fpath="sql/query.sql",  # Uses {{start_date}}
+    query="sql/query.sql",  # Uses {{start_date}}
     ctx={"end_date": "2024-12-31"},  # Missing start_date!
 )
 
 # ✅ Good - all variables provided
 query_pandas_from_snowflake(
-    query_fpath="sql/query.sql",
+    query="sql/query.sql",
     ctx={
         "start_date": "2024-01-01",
         "end_date": "2024-12-31",
@@ -285,10 +285,9 @@ def process_batches(self):
 @step
 def join(self, inputs):
     """Now safe to publish."""
-    pipeline = BatchInferencePipeline()
-    pipeline.publish_results(
-        output_table="predictions",
-        output_schema="my_dev_schema",
+    self.pipeline = inputs[0].pipeline
+    self.pipeline.publish_results(
+        output_table_name="predictions",
     )
     self.next(self.end)
 ```
@@ -407,15 +406,16 @@ class Config(BaseModel):
 
 ### Error: "Table already exists"
 
-**Cause**: Table exists and mode is not specified.
+**Cause**: Table exists and overwrite is not enabled.
 
-**Solution**: Specify mode:
+**Solution**: Enable overwrite or auto_create_table:
 
 ```python
 publish_pandas(
     table_name="my_table",
     df=df,
-    mode="replace",  # or "append" or "fail"
+    auto_create_table=True,
+    overwrite=True,  # Drops table first then creates new
 )
 ```
 
@@ -423,21 +423,18 @@ publish_pandas(
 
 **Cause**: No write access to schema.
 
-**Solution**: Use your dev schema:
+**Note**: The schema is automatically selected based on production/dev environment:
+- In production: writes to PROD_SCHEMA
+- In dev: writes to DEV_SCHEMA
+
+**Solution**: Ensure you're running in the correct environment:
 
 ```python
-# ✅ Use your dev schema
+# Schema is automatically selected
 publish_pandas(
     table_name="my_table",
     df=df,
-    schema="my_dev_schema",  # You have access here
-)
-
-# ❌ Don't write to production without permission
-publish_pandas(
-    table_name="my_table",
-    df=df,
-    schema="production_schema",  # No access!
+    auto_create_table=True,
 )
 ```
 

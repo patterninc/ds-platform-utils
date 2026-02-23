@@ -10,6 +10,12 @@ Comprehensive documentation for Pattern's data science platform utilities.
 
 ### Core Modules
 
+**[Snowflake Utilities](snowflake/README.md)**
+- Query execution and connection management
+- Write-audit-publish pattern for data quality
+- Schema management (dev/prod separation)
+- Integrated with Outerbounds for automatic authentication
+
 **[Metaflow Utilities](metaflow/README.md)**
 - [BatchInferencePipeline](metaflow/batch_inference_pipeline.md) - Scalable batch inference orchestration
 - [Pandas Integration](metaflow/pandas.md) - Query and publish functions for Snowflake
@@ -91,8 +97,8 @@ from ds_platform_utils.metaflow import publish_pandas
 publish_pandas(
     table_name="my_results_table",
     df=results_df,
-    schema="my_dev_schema",
-    mode="replace",
+    auto_create_table=True,
+    overwrite=True,
 )
 ```
 
@@ -105,8 +111,8 @@ from ds_platform_utils.metaflow import BatchInferencePipeline
 class PredictionFlow(FlowSpec):
     @step
     def start(self):
-        pipeline = BatchInferencePipeline()
-        self.worker_ids = pipeline.query_and_batch(
+        self.pipeline = BatchInferencePipeline()
+        self.worker_ids = self.pipeline.query_and_batch(
             input_query="SELECT * FROM features_table",
             parallel_workers=10,
         )
@@ -115,8 +121,7 @@ class PredictionFlow(FlowSpec):
     @step
     def predict(self):
         worker_id = self.input
-        pipeline = BatchInferencePipeline()
-        pipeline.process_batch(
+        self.pipeline.process_batch(
             worker_id=worker_id,
             predict_fn=my_model.predict,
         )
@@ -124,10 +129,9 @@ class PredictionFlow(FlowSpec):
     
     @step
     def join(self, inputs):
-        pipeline = BatchInferencePipeline()
-        pipeline.publish_results(
-            output_table="predictions",
-            output_schema="my_dev_schema",
+        self.pipeline = inputs[0].pipeline
+        self.pipeline.publish_results(
+            output_table_name="predictions",
         )
         self.next(self.end)
     
@@ -142,12 +146,21 @@ class PredictionFlow(FlowSpec):
 ┌─────────────────────────────────────────────────────────┐
 │              ds-platform-utils Library                   │
 │                                                          │
-│  Public API (ds_platform_utils.metaflow)                │
-│  • BatchInferencePipeline                               │
-│  • query_pandas_from_snowflake / publish_pandas         │
-│  • publish (query + transform + publish)                │
-│  • make_pydantic_parser_fn                              │
-│  • restore_step_state                                   │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │ Public API (ds_platform_utils.metaflow)         │   │
+│  │  • BatchInferencePipeline                       │   │
+│  │  • query_pandas_from_snowflake / publish_pandas │   │
+│  │  • publish (query + transform + publish)        │   │
+│  │  • make_pydantic_parser_fn                      │   │
+│  │  • restore_step_state                           │   │
+│  └─────────────────────────────────────────────────┘   │
+│                                                          │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │ Snowflake Utilities (_snowflake)                │   │
+│  │  • Query execution (_execute_sql)               │   │
+│  │  • Write-audit-publish pattern                  │   │
+│  │  • Schema management (dev/prod)                 │   │
+│  └─────────────────────────────────────────────────┘   │
 └─────────────────┬───────────────────────────────────────┘
                   │
                   ▼

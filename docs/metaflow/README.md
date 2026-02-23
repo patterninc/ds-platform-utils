@@ -99,9 +99,10 @@ publish_pandas(
 from ds_platform_utils.metaflow import publish
 
 publish(
-    query_fpath="queries/create_aggregates.sql",
+    table_name="aggregates",
+    query="queries/create_aggregates.sql",
+    audits=["queries/audit_row_count.sql"],
     ctx={"start_date": "2024-01-01"},
-    publish_query_fpath="queries/publish_results.sql",
     warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",
 )
 ```
@@ -257,12 +258,13 @@ class DataPipelineFlow(FlowSpec):
     @step
     def start(self):
         publish(
-            query_fpath="sql/transform_data.sql",
+            table_name="processed_results",
+            query="sql/transform_data.sql",
+            audits=["sql/audit_row_count.sql"],
             ctx={
                 "start_date": self.start_date,
                 "end_date": self.end_date,
             },
-            publish_query_fpath="sql/publish_results.sql",
         )
         self.next(self.end)
 ```
@@ -297,3 +299,13 @@ class DataPipelineFlow(FlowSpec):
 - 🎯 Check out [Common Patterns](../guides/common_patterns.md)
 - 🔧 Review [Best Practices](../guides/best_practices.md)
 - 🐛 See [Troubleshooting](../guides/troubleshooting.md)
+
+## Related Modules
+
+### [Snowflake Utilities](../snowflake/README.md)
+Lower-level utilities for direct Snowflake operations:
+- SQL query execution
+- Write-audit-publish pattern
+- Schema management
+
+The Metaflow utilities build on top of these Snowflake utilities to provide higher-level abstractions. Most users should use the Metaflow API, but the Snowflake utilities are available for custom use cases.

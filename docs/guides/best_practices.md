@@ -44,9 +44,10 @@ class MyFlow(FlowSpec):
 ```python
 # ✅ Good - SQL in separate file
 publish(
-    query_fpath="sql/create_features.sql",
+    table_name="ml_features",
+    query="sql/create_features.sql",
+    audits=["sql/audit_row_count.sql"],
     ctx={"start_date": self.config.start_date},
-    publish_query_fpath="sql/publish_features.sql",
 )
 
 # ❌ Bad - SQL in Python strings
@@ -223,11 +224,11 @@ df = query_pandas_from_snowflake(
 ```python
 # ✅ Good - prevents SQL injection
 ctx = {
-    "table_name": "my_table",
     "start_date": user_input_date,
 }
 publish(
-    query_fpath="sql/query.sql",  # Uses {{table_name}}, {{start_date}}
+    table_name="my_results",
+    query="sql/query.sql",  # Uses {{start_date}}
     ctx=ctx,
 )
 

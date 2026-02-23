@@ -73,8 +73,8 @@ class SimplePipeline(FlowSpec):
         publish_pandas(
             table_name="user_monthly_spending",
             df=self.results,
-            schema="my_dev_schema",
-            comment="Monthly user spending aggregates",
+            auto_create_table=True,
+            overwrite=True,
         )
         print("✅ Done!")
         self.next(self.end)
@@ -165,7 +165,7 @@ class FeaturePipeline(FlowSpec):
         print(f"Extracting features from {self.config.start_date} to {self.config.end_date}")
         
         self.df = query_pandas_from_snowflake(
-            query_fpath="sql/extract_raw_features.sql",
+            query="sql/extract_raw_features.sql",
             ctx={
                 "start_date": self.config.start_date,
                 "end_date": self.config.end_date,
@@ -208,8 +208,8 @@ class FeaturePipeline(FlowSpec):
         publish_pandas(
             table_name="ml_features",
             df=self.df,
-            schema="my_dev_schema",
-            comment=f"Features for {self.config.start_date} to {self.config.end_date}",
+            auto_create_table=True,
+            overwrite=True,
         )
         print(f"✅ Published {len(self.df):,} rows with {len(self.df.columns)} columns")
         self.next(self.end)
@@ -324,10 +324,9 @@ class LargeScaleInference(FlowSpec):
         """Collect results and publish."""
         print(f"All {len(inputs)} batches processed, publishing results...")
         
-        pipeline = BatchInferencePipeline()
-        pipeline.publish_results(
-            output_table="user_predictions",
-            output_schema="my_dev_schema",
+        self.pipeline = inputs[0].pipeline
+        self.pipeline.publish_results(
+            output_table_name="user_predictions",
             warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
         )
         
@@ -421,9 +420,8 @@ class IncrementalPipeline(FlowSpec):
             publish_pandas(
                 table_name="processed_events",
                 df=self.df,
-                schema="my_dev_schema",
-                mode="append",  # ← Append instead of replace
-                comment=f"Incremental load for {self.date}",
+                auto_create_table=False,  # Table must exist
+                overwrite=False,  # Append instead of replace
             )
             
             print(f"✅ Appended {len(self.df):,} rows for {self.date}")
@@ -545,8 +543,8 @@ class MultiTableJoin(FlowSpec):
         publish_pandas(
             table_name="enriched_user_data",
             df=self.enriched_df,
-            schema="my_dev_schema",
-            comment="Enriched user data from multiple sources",
+            auto_create_table=True,
+            overwrite=True,
         )
         print(f"✅ Published {len(self.enriched_df):,} rows")
         self.next(self.end)

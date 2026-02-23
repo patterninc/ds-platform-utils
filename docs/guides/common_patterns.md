@@ -46,7 +46,8 @@ class SimpleFlow(FlowSpec):
         publish_pandas(
             table_name="output_table",
             df=self.df,
-            schema="my_dev_schema",
+            auto_create_table=True,
+            overwrite=True,
         )
         self.next(self.end)
     
@@ -84,7 +85,7 @@ class ParameterizedFlow(FlowSpec):
     def start(self):
         """Query with parameters."""
         self.df = query_pandas_from_snowflake(
-            query_fpath="sql/extract_data.sql",
+            query="sql/extract_data.sql",
             ctx={
                 "start_date": self.config.start_date,
                 "end_date": self.config.end_date,
@@ -138,10 +139,10 @@ class FeatureEngineeringFlow(FlowSpec):
     def start(self):
         """Create features and publish."""
         publish(
-            query_fpath="sql/create_features.sql",
+            table_name="user_features",
+            query="sql/create_features.sql",
+            audits=["sql/audit_feature_count.sql"],
             ctx={"lookback_days": 30},
-            publish_query_fpath="sql/publish_features.sql",
-            comment="Daily feature refresh",
         )
         self.next(self.end)
     
@@ -152,7 +153,7 @@ class FeatureEngineeringFlow(FlowSpec):
 
 ```sql
 -- sql/create_features.sql
-CREATE OR REPLACE TEMPORARY TABLE temp_features AS
+CREATE OR REPLACE TABLE {{schema}}.{{table_name}} AS
 SELECT
     user_id,
     COUNT(*) as event_count_30d,
@@ -166,7 +167,7 @@ GROUP BY user_id;
 ```
 
 ```sql
--- sql/publish_features.sql
+-- sql/audit_feature_count.sql
 CREATE OR REPLACE TABLE my_dev_schema.user_features AS
 SELECT * FROM temp_features;
 ```
@@ -300,10 +301,9 @@ class LargeScaleScoringFlow(FlowSpec):
     @step
     def join(self, inputs):
         """Collect all predictions."""
-        pipeline = BatchInferencePipeline()
-        pipeline.publish_results(
-            output_table="predictions",
-            output_schema="my_dev_schema",
+        self.pipeline = inputs[0].pipeline
+        self.pipeline.publish_results(
+            output_table_name="predictions",
         )
         self.next(self.end)
     
@@ -382,7 +382,8 @@ class IncrementalFlow(FlowSpec):
         publish_pandas(
             table_name="incremental_results",
             df=self.results,
-            mode="append",  # ← Append instead of replace
+            auto_create_table=False,  # Table must exist
+            overwrite=False,  # Append instead of replace
         )
         self.next(self.end)
     
@@ -435,7 +436,8 @@ class BackfillFlow(FlowSpec):
         publish_pandas(
             table_name="backfill_results",
             df=result,
-            mode="append",
+            auto_create_table=False,
+            overwrite=False,  # Append mode
         )
         
         self.rows_processed = len(result)
@@ -499,7 +501,8 @@ def process_with_checkpoints(self):
                 publish_pandas(
                     table_name="checkpoint_results",
                     df=checkpoint_df,
-                    mode="replace",
+                    auto_create_table=True,
+                    overwrite=True,  # Replace mode
                 )
                 print(f"✅ Checkpoint saved at chunk {i}")
                 
