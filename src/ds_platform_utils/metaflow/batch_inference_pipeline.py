@@ -159,7 +159,11 @@ class BatchInferencePipeline:
         """
         # Warn if re-executing query_and_batch after processing
         if self._query_executed and self._batch_processed:
-            print("⚠️ Warning: Re-executing query_and_batch() will reset batch processing state.")
+            raise RuntimeError(
+                "Cannot re-execute query_and_batch(): Batches have already been processed. "
+                "This would reset the state of the pipeline. "
+                "If you need to re-run the query, create a new instance of BatchInferencePipeline."
+            )
 
         print("🚀 Starting batch inference pipeline...")
         # Process input query
