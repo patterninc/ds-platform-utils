@@ -59,10 +59,10 @@ class BatchInferencePipeline:
             @step
             def start(self):
                 # Initialize pipeline and export data to S3
-                self.pipeline = BatchInferencePipeline(pipeline_id="my_model")
+                self.pipeline = BatchInferencePipeline()
                 self.worker_ids = self.pipeline.query_and_batch(
                     input_query="SELECT * FROM my_table",
-                    batch_size_in_mb=128,
+                    parallel_workers=4,
                 )
                 self.next(self.predict, foreach='worker_ids')
 
@@ -128,7 +128,7 @@ class BatchInferencePipeline:
         """S3 path where output predictions are stored."""
         return self._output_path
 
-    def _split_files_into_workers(self, files: List[str], parallel_workers: int) -> dict:
+    def _split_files_into_workers(self, files: List[str], parallel_workers: int) -> dict[int, List[str]]:
         """Split list of files into batches for each worker."""
         if len(files) < parallel_workers:
             print("⚠️ Fewer files than workers. Assigning one file per worker until files run out.")
@@ -157,6 +157,10 @@ class BatchInferencePipeline:
             List of worker_ids to use with foreach in next step
 
         """
+        # Warn if re-executing query_and_batch after processing
+        if self._query_executed and self._batch_processed:
+            print("⚠️ Warning: Re-executing query_and_batch() will reset batch processing state.")
+
         print("🚀 Starting batch inference pipeline...")
         # Process input query
         input_query = get_query_from_string_or_fpath(input_query)
@@ -308,6 +312,9 @@ class BatchInferencePipeline:
                 "Call process_batch() to process at least one batch before publishing."
             )
 
+        if self._results_published:
+            print("⚠️ Warning: Results have already been published. Publishing again may cause duplicate data.")
+
         print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
 
         copy_s3_to_snowflake(
@@ -357,7 +364,7 @@ class BatchInferencePipeline:
 
         Example::
 
-            pipeline = BatchInferencePipeline(pipeline_id="my_model")
+            pipeline = BatchInferencePipeline()
             pipeline.run(
                 input_query="SELECT * FROM my_table",
                 output_table_name="predictions_table",
