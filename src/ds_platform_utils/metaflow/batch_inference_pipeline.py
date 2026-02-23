@@ -275,7 +275,7 @@ class BatchInferencePipeline:
         print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
         return self._output_path
 
-    def publish_results(
+    def publish_results(  # noqa: PLR0913
         self,
         output_table_name: str,
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
@@ -331,7 +331,7 @@ class BatchInferencePipeline:
         ctx: Optional[dict] = None,
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
         batch_size_in_mb: int = 128,
-        timeout_per_file: int = 300,
+        timeout_per_batch: int = 300,
         auto_create_table: bool = True,
         overwrite: bool = True,
         warehouse: Optional[str] = None,
@@ -349,7 +349,7 @@ class BatchInferencePipeline:
             ctx: Dict of variable substitutions for SQL template
             output_table_definition: Optional schema as list of (column, type) tuples
             batch_size_in_mb: Target size for each batch in MB
-            timeout_per_file: Timeout in seconds for each file operation
+            timeout_per_batch: Timeout in seconds for each batch operation
             auto_create_table: Whether to auto-create table if not exists
             overwrite: Whether to overwrite existing data
             warehouse: Snowflake warehouse to use
@@ -380,7 +380,7 @@ class BatchInferencePipeline:
                 worker_id=worker_id,
                 predict_fn=predict_fn,
                 batch_size_in_mb=batch_size_in_mb,
-                timeout_per_batch=timeout_per_file,
+                timeout_per_batch=timeout_per_batch,
             )
 
         # Step 3: Publish results
