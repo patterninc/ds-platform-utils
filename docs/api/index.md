@@ -90,7 +90,6 @@ df = query_pandas_from_snowflake(
 
 **See Also:**
 - [Pandas Integration Guide](../metaflow/pandas.md)
-- [Performance Tuning](../guides/performance_tuning.md)
 
 ---
 
@@ -175,7 +174,6 @@ publish_pandas(
 
 **See Also:**
 - [Pandas Integration Guide](../metaflow/pandas.md)
-- [Common Patterns](../guides/common_patterns.md)
 
 ---
 
@@ -366,7 +364,6 @@ pipeline.publish_results(
 
 **See Also:**
 - [BatchInferencePipeline Guide](../metaflow/batch_inference_pipeline.md)
-- [Common Patterns - Batch Inference](../guides/common_patterns.md#batch-inference)
 
 ---
 
@@ -482,7 +479,7 @@ result = process_data(self.df)
 - 🔄 **Development**: Iterate on step logic quickly
 
 **See Also:**
-- [Common Patterns](../guides/common_patterns.md)
+- [Examples](../examples/README.md)
 
 ---
 
@@ -536,8 +533,5 @@ Raised when configuration validation fails (from Pydantic).
 
 ## Related Documentation
 
-- [Getting Started Guide](../guides/getting_started.md)
-- [Best Practices](../guides/best_practices.md)
-- [Common Patterns](../guides/common_patterns.md)
 - [Metaflow Utilities](../metaflow/README.md)
 - [Snowflake Utilities](../snowflake/README.md)

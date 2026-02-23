@@ -427,14 +427,6 @@ publish(
 4. **Choose right warehouse**: Larger warehouse for larger datasets
 5. **Optimize data types**: Use `int32`, `float32`, `category` to reduce memory
 
-## Common Patterns
-
-See [Common Patterns Guide](../guides/common_patterns.md) for more examples.
-
-## Troubleshooting
-
-See [Troubleshooting Guide](../guides/troubleshooting.md) for solutions to common issues.
-
 ## Related Documentation
 
 - [BatchInferencePipeline](batch_inference_pipeline.md) - For very large datasets

@@ -295,10 +295,8 @@ class DataPipelineFlow(FlowSpec):
 
 ## Next Steps
 
-- 📖 Read the [Getting Started Guide](../guides/getting_started.md)
-- 🎯 Check out [Common Patterns](../guides/common_patterns.md)
-- 🔧 Review [Best Practices](../guides/best_practices.md)
-- 🐛 See [Troubleshooting](../guides/troubleshooting.md)
+- 📖 Check the [API Reference](../api/index.md)
+- 🎯 See the [Examples](../examples/README.md)
 
 ## Related Modules
 

@@ -281,11 +281,8 @@ class MyFlow(FlowSpec):
 
 - [Metaflow Pandas Integration](../metaflow/pandas.md) - High-level query/publish functions
 - [API Reference](../api/index.md) - Complete function signatures
-- [Troubleshooting](../guides/troubleshooting.md) - Common Snowflake issues
-- [Best Practices](../guides/best_practices.md) - Production patterns
 
 ## See Also
 
-- [Getting Started Guide](../guides/getting_started.md)
 - [Write-Audit-Publish Examples](../examples/README.md)
 - [Snowflake Official Docs](https://docs.snowflake.com/)

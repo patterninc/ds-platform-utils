@@ -21,14 +21,6 @@ Comprehensive documentation for Pattern's data science platform utilities.
 - [Pandas Integration](metaflow/pandas.md) - Query and publish functions for Snowflake
 - [Config Validation](metaflow/validate_config.md) - Pydantic-based configuration validation
 
-### Guides
-
-- [Getting Started](guides/getting_started.md)
-- [Best Practices](guides/best_practices.md)
-- [Performance Tuning](guides/performance_tuning.md)
-- [Common Patterns](guides/common_patterns.md)
-- [Troubleshooting](guides/troubleshooting.md)
-
 ### Examples
 
 - [Practical Examples](examples/README.md) - Complete working examples for common scenarios
@@ -44,8 +36,6 @@ Comprehensive documentation for Pattern's data science platform utilities.
 
 ## Quick Links
 
-- [Getting Started →](guides/getting_started.md)
-- [Best Practices →](guides/best_practices.md)
 - [API Reference →](api/index.md)
 - [Practical Examples →](examples/README.md)
 - [Installation](#installation)
@@ -223,6 +213,4 @@ Internal use only - Pattern Inc.
 
 For questions or issues:
 - Create an issue in the [GitHub repository](https://github.com/patterninc/ds-platform-utils)
-- Check the [Troubleshooting Guide](guides/troubleshooting.md)
 - Contact the Data Science Platform team
-- Check the [Troubleshooting Guide](guides/troubleshooting.md)

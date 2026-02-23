@@ -571,7 +571,4 @@ snowsql -q "SELECT * FROM my_dev_schema.enriched_user_data LIMIT 10;"
 
 ## Additional Resources
 
-- [Getting Started Guide](../guides/getting_started.md)
-- [Best Practices](../guides/best_practices.md)
-- [Common Patterns](../guides/common_patterns.md)
 - [API Reference](../api/index.md)

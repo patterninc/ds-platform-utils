@@ -474,6 +474,4 @@ config = Config(threshold=0.5)  # Float
 
 ## Related Documentation
 
-- [Best Practices](../guides/best_practices.md)
-- [Common Patterns](../guides/common_patterns.md)
 - [Pydantic Documentation](https://docs.pydantic.dev/)
