@@ -4,18 +4,40 @@
 
 Complete API documentation for `ds-platform-utils`.
 
+## Public API
+
+All public functions are exported from `ds_platform_utils.metaflow`:
+
+```python
+from ds_platform_utils.metaflow import (
+    BatchInferencePipeline,      # Scalable batch inference
+    make_pydantic_parser_fn,      # Config validation
+    publish,                      # Query, transform, and publish
+    publish_pandas,               # Publish DataFrame to Snowflake
+    query_pandas_from_snowflake,  # Query from Snowflake to DataFrame
+    restore_step_state,           # Restore flow state for debugging
+)
+```
+
 ## Table of Contents
 
-- [Metaflow Utilities](#metaflow-utilities)
-- [Snowflake Utilities](#snowflake-utilities)
+- [Query Functions](#query-functions)
+  - [query_pandas_from_snowflake()](#query_pandas_from_snowflake)
+- [Publish Functions](#publish-functions)
+  - [publish_pandas()](#publish_pandas)
+  - [publish()](#publish)
+- [Batch Processing](#batch-processing)
+  - [BatchInferencePipeline](#batchinferencepipeline)
+- [Configuration](#configuration)
+  - [make_pydantic_parser_fn()](#make_pydantic_parser_fn)
+- [State Management](#state-management)
+  - [restore_step_state()](#restore_step_state)
 
-## Metaflow Utilities
+---
 
-Located in `ds_platform_utils.metaflow`
+## Query Functions
 
-### Query Functions
-
-#### `query_pandas_from_snowflake()`
+### `query_pandas_from_snowflake()`
 
 Query Snowflake and return a pandas DataFrame.
 
@@ -76,9 +98,9 @@ df = query_pandas_from_snowflake(
 
 ---
 
-### Publish Functions
+## Publish Functions
 
-#### `publish_pandas()`
+### `publish_pandas()`
 
 Publish a pandas DataFrame to Snowflake.
 
@@ -142,7 +164,7 @@ publish_pandas(
 
 ---
 
-#### `publish()`
+### `publish()`
 
 Query, optionally transform, and publish in one call.
 
@@ -185,6 +207,8 @@ publish(
 ```
 
 ---
+
+## Batch Processing
 
 ### BatchInferencePipeline
 
@@ -304,9 +328,9 @@ pipeline.publish_results(
 
 ---
 
-### Configuration Validation
+## Configuration
 
-#### `make_pydantic_parser_fn()`
+### `make_pydantic_parser_fn()`
 
 Create a parser function for Pydantic model validation in Metaflow Parameters.
 
@@ -347,131 +371,72 @@ class MyFlow(FlowSpec):
 
 ---
 
-### Utility Functions
+## State Management
 
-#### `add_query_tags()`
+### `restore_step_state()`
 
-Add metadata tags to SQL queries for tracking.
+Restore Metaflow step state for debugging and development.
 
 **Signature:**
 ```python
-def add_query_tags(
-    query: str,
-    flow_name: str,
-    step_name: str,
-) -> str
+def restore_step_state(
+    flow_class: Optional[type[FlowSpec]] = None,
+    flow_name: Optional[str] = None,
+    step_name: str = "end",
+    flow_run_id: Union[Literal["latest_successful_run", "latest"], str] = "latest_successful_run",
+    secrets: Optional[list[str]] = None,
+    namespace: Optional[str] = None,
+) -> FlowSpec
 ```
 
 **Parameters:**
-- `query` (str): SQL query
-- `flow_name` (str): Metaflow flow name
-- `step_name` (str): Metaflow step name
+- `flow_class` (type[FlowSpec], optional): Flow class for type hints and autocompletion
+- `flow_name` (str, optional): Flow name (defaults to flow_class name if provided)
+- `step_name` (str, default="end"): Step to restore state from (restores from step before this)
+- `flow_run_id` (str, default="latest_successful_run"): Run ID to restore:
+  - `"latest_successful_run"`: Latest successful run
+  - `"latest"`: Latest run (even if failed)
+  - Or specific run ID
+- `secrets` (list[str], optional): Secrets to export as environment variables
+- `namespace` (str, optional): Metaflow namespace to filter runs
 
 **Returns:**
-- `str`: Query with tags prepended
-
-**Example:**
-```python
-tagged_query = add_query_tags(
-    query="SELECT * FROM my_table",
-    flow_name="MyFlow",
-    step_name="query_data",
-)
-```
-
-#### `restore_step_state()`
-
-Restore Metaflow step state for debugging.
-
-**Signature:**
-```python
-@contextmanager
-def restore_step_state(
-    flow_name: str,
-    run_id: str,
-    step: str,
-) -> Generator[None, None, None]
-```
-
-**Parameters:**
-- `flow_name` (str): Flow name
-- `run_id` (str): Run ID
-- `step` (str): Step name
-
-**Yields:** Context with restored step state
+- `FlowSpec`: Restored flow state with access to all step artifacts
 
 **Example:**
 ```python
 from ds_platform_utils.metaflow import restore_step_state
+from my_flows import MyPredictionFlow
 
-with restore_step_state("MyFlow", run_id="123", step="process"):
-    # Access self.df from that step
-    print(self.df.head())
+# Restore state from latest successful run
+self = restore_step_state(
+    MyPredictionFlow,
+    step_name="process",
+    secrets=["outerbounds.my-secret"],
+)
+
+# Now you can access step artifacts
+print(self.df.head())
+print(self.config)
+
+# Debug or test step logic
+result = process_data(self.df)
 ```
+
+**Use Cases:**
+- 🐛 **Debugging**: Inspect data and artifacts from failed runs
+- 🧪 **Testing**: Test step logic without running entire flow
+- 📊 **Analysis**: Explore intermediate results
+- 🔄 **Development**: Iterate on step logic quickly
+
+**See Also:**
+- [Common Patterns](../guides/common_patterns.md)
 
 ---
 
 ## Snowflake Utilities
 
-Located in `ds_platform_utils._snowflake`
-
-### Connection Management
-
-#### `get_snowflake_connection()`
-
-Get a Snowflake connection cursor.
-
-**Signature:**
-```python
-def get_snowflake_connection() -> snowflake.connector.cursor.SnowflakeCursor
-```
-
-**Returns:**
-- `SnowflakeCursor`: Snowflake cursor for executing queries
-
-**Example:**
-```python
-from ds_platform_utils._snowflake import get_snowflake_connection
-
-cursor = get_snowflake_connection()
-cursor.execute("SELECT * FROM my_table")
-results = cursor.fetchall()
-```
-
----
-
-### Write Audit Publish
-
-#### `write_audit_publish()`
-
-Execute SQL with audit logging and publish to target table.
-
-**Signature:**
-```python
-def write_audit_publish(
-    sql: str,
-    warehouse: Optional[str] = None,
-    comment: Optional[str] = None,
-) -> None
-```
-
-**Parameters:**
-- `sql` (str): SQL statement to execute
-- `warehouse` (str, optional): Snowflake warehouse
-- `comment` (str, optional): Audit comment
-
-**Returns:** None
-
-**Example:**
-```python
-from ds_platform_utils._snowflake import write_audit_publish
-
-write_audit_publish(
-    sql="CREATE OR REPLACE TABLE my_table AS SELECT * FROM source",
-    warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
-    comment="Daily refresh",
-)
-```
+**Note:** The `ds_platform_utils._snowflake` module is private and not intended for direct use. All Snowflake operations should go through the public Metaflow utilities above.
 
 ---
 

@@ -16,53 +16,24 @@ Solutions to common issues and error messages.
 
 ## Snowflake Connection Issues
 
-### Error: "Snowflake connector not configured"
-
-**Cause**: Metaflow's Snowflake connector is not set up.
-
-**Solution**: Use Metaflow's built-in Snowflake integration:
-
-```python
-from metaflow import FlowSpec, step
-from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
-
-class MyFlow(FlowSpec):
-    
-    @step
-    def start(self):
-        # Use Metaflow's connection
-        cursor = get_snowflake_connection()
-        # Your code...
-```
-
-### Error: "Authentication failed"
-
-**Cause**: Snowflake credentials not available or expired.
-
-**Solution**:
-```bash
-# Check your Snowflake connection
-snowsql -c my_connection
-
-# If using SSO, re-authenticate
-snowsql -a <account> -u <username> --authenticator externalbrowser
-```
+**Note:** Outerbounds automatically handles all Snowflake authentication and connections. If you're seeing connection issues, contact your platform team.
 
 ### Error: "Warehouse does not exist"
 
 **Cause**: Wrong warehouse name or no access.
 
-**Solution**: Verify warehouse name:
-```python
-# Check available warehouses
-cursor = get_snowflake_connection()
-cursor.execute("SHOW WAREHOUSES")
-print(cursor.fetchall())
+**Solution**: Use one of the standard warehouse names:
 
-# Use correct warehouse name (case-sensitive!)
+```python
+# Development warehouses
+"OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH"   # Extra small
+"OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH"  # Medium (default)
+"OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH"   # Extra large
+
+# Example usage
 query_pandas_from_snowflake(
     query="SELECT * FROM table",
-    warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",  # Correct name
+    warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
 )
 ```
 
@@ -72,21 +43,14 @@ query_pandas_from_snowflake(
 
 **Cause**: Table/view not found or no access.
 
-**Solution**:
+**Solution**: Verify table path and permissions:
 
 ```python
-# Check table exists
-cursor = get_snowflake_connection()
-cursor.execute("""
-    SHOW TABLES LIKE 'my_table' IN SCHEMA my_database.my_schema
-""")
-print(cursor.fetchall())
-
-# Check you have access
-cursor.execute("""
-    SELECT * FROM my_database.my_schema.my_table
-    LIMIT 1
-""")
+# Check table exists in Snowflake UI or verify the full path
+# Format: database.schema.table_name
+df = query_pandas_from_snowflake(
+    query="SELECT * FROM pattern_db.data_science.my_table LIMIT 10"
+)
 ```
 
 ### Error: "Template variable not provided"
@@ -242,19 +206,16 @@ def process(self):
 
 ## S3 Staging Issues
 
+**Note:** Outerbounds automatically handles all S3 access and permissions.
+
 ### Error: "S3 upload failed"
 
-**Cause**: No S3 access or wrong permissions.
+**Cause**: Temporary S3 issue or permissions problem.
 
-**Solution**: Check S3 configuration:
-
-```bash
-# Check AWS credentials
-aws sts get-caller-identity
-
-# Test S3 access
-aws s3 ls s3://your-bucket/
-```
+**Solution**: 
+1. Retry the operation - transient S3 issues usually resolve
+2. If persistent, contact your platform team
+3. Check Metaflow logs for specific error details
 
 ### Error: "Slow performance with S3 staging"
 
@@ -582,7 +543,7 @@ If you're still stuck:
 | Error Message                       | Likely Cause            | Solution                     |
 | ----------------------------------- | ----------------------- | ---------------------------- |
 | "Object does not exist"             | Table/schema name wrong | Check table path             |
-| "Authentication failed"             | Credentials expired     | Re-authenticate              |
+| "Warehouse does not exist"          | Wrong warehouse name    | Use standard warehouse names |
 | "MemoryError"                       | DataFrame too large     | Use S3 staging or chunks     |
 | "Timeout exceeded"                  | Query too slow          | Optimize query or warehouse  |
 | "Permission denied"                 | No write access         | Use dev schema               |

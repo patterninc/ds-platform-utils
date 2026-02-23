@@ -6,19 +6,13 @@ This guide will help you get started with `ds-platform-utils` for building ML wo
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+**Metaflow with Outerbounds** - That's it! Outerbounds automatically handles:
+- ✅ Snowflake authentication and connections
+- ✅ AWS credentials and S3 access
+- ✅ Warehouse management
+- ✅ Query tagging for cost tracking
 
-1. **Metaflow installed and configured**
-   ```bash
-   pip install metaflow
-   metaflow configure aws
-   ```
-
-2. **Access to Pattern's Snowflake account**
-   - You should be able to connect through Metaflow's Snowflake integration
-   
-3. **AWS credentials configured**
-   - Metaflow will handle S3 access through your configured AWS profile
+No manual configuration required.
 
 ## Installation
 

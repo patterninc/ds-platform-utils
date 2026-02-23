@@ -252,15 +252,7 @@ def validate_date(date_str: str) -> str:
 start_date = validate_date(self.config.start_date)
 ```
 
-### ❌ DON'T: Hard-code Credentials
-
-```python
-# ❌ Bad - credentials in code
-SNOWFLAKE_PASSWORD = "my_password"
-
-# ✅ Good - use Metaflow's integration
-# Credentials are automatically handled by Metaflow
-```
+**Note:** Outerbounds automatically handles all credentials and authentication, so you never need to manage Snowflake passwords or AWS keys. Just use the library functions directly.
 
 ## Testing
 
