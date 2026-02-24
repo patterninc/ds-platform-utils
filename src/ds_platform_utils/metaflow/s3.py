@@ -29,11 +29,9 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
     if any(not path.startswith("s3://") for path in paths):
         raise ValueError("Invalid S3 URI. All paths must start with 's3://'.")
 
-    dfs = []
     with _get_metaflow_s3_client() as s3:
-        for obj in s3.get_many(paths):
-            dfs.append(pd.read_parquet(obj.path))
-    return pd.concat(dfs, ignore_index=True)
+        df_paths = [obj.path for obj in s3.get_many(paths)]
+        return pd.read_parquet(df_paths)
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
