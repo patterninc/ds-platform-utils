@@ -22,7 +22,7 @@ def _get_df_from_s3_file(path: str) -> pd.DataFrame:
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     with _get_metaflow_s3_client() as s3:
-        return pd.read_parquet(s3.get(path).path, engine="pyarrow")
+        return pd.read_parquet(s3.get(path).path, engine="fastparquet")
 
 
 def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
@@ -31,7 +31,7 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
 
     with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
-        return pd.read_parquet(df_paths, engine="pyarrow")
+        return pd.read_parquet(df_paths, engine="fastparquet")
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
