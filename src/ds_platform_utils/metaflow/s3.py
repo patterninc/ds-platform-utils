@@ -2,7 +2,6 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
-import polars as pl
 from metaflow import S3, current
 
 
@@ -23,7 +22,7 @@ def _get_df_from_s3_file(path: str) -> pd.DataFrame:
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     with _get_metaflow_s3_client() as s3:
-        return pl.read_parquet(s3.get(path).path).to_pandas()
+        return pd.read_parquet(s3.get(path).path, engine="pyarrow")
 
 
 def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
@@ -32,7 +31,7 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
 
     with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
-        return pl.read_parquet(df_paths).to_pandas()
+        return pd.read_parquet(df_paths, engine="pyarrow")
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
