@@ -32,7 +32,7 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
 
     with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
-        return pd.read_parquet(df_paths)
+        return pl.read_parquet(df_paths).to_pandas()
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
