@@ -34,9 +34,13 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
         df_paths = [obj.path for obj in s3.get_many(paths)]
         df = pl.read_parquet(df_paths)
         # Cast decimal columns to float before converting to pandas
-
+        print("Casting decimal columns to float64 for pandas compatibility...")
+        print(df.dtypes)
         decimal_cols = [col for col in df.columns if df[col].dtype == pl.Decimal]
+        print(f"Found decimal columns: {decimal_cols}")
         df_casted = df.with_columns([pl.col(col).cast(pl.Float64) for col in decimal_cols])
+        print("Casting complete. Converting to pandas DataFrame...")
+        print(df_casted.dtypes)
         return df_casted.to_pandas(use_pyarrow_extension_array=False)
 
 
