@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 from metaflow import S3, current
 
 
@@ -31,7 +32,12 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
 
     with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
-        return pd.read_parquet(df_paths)
+        df = pl.read_parquet(df_paths)
+        # Cast decimal columns to float before converting to pandas
+
+        decimal_cols = [col for col in df.columns if df[col].dtype == pl.Decimal]
+        df_casted = df.with_columns([pl.col(col).cast(pl.Float64) for col in decimal_cols])
+        return df_casted.to_pandas(use_pyarrow_extension_array=False)
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
