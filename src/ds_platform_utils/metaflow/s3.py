@@ -6,6 +6,18 @@ import polars as pl
 from metaflow import S3, current
 
 
+def correct_type_mapping(dtype):
+    try:
+        if dtype == pl.Decimal:
+            if dtype.scale == 0:
+                return pl.Int64
+            else:
+                return pl.Float64
+        return dtype
+    except Exception:
+        return dtype
+
+
 def _get_metaflow_s3_client():
     return S3(role="arn:aws:iam::209479263910:role/outerbounds_iam_role")
 
@@ -23,7 +35,8 @@ def _get_df_from_s3_file(path: str) -> pd.DataFrame:
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     with _get_metaflow_s3_client() as s3:
-        return pd.read_parquet(s3.get(path).path)
+        dl = pl.read_parquet(s3.get(path).path)
+        return dl.with_columns([pl.col(i).cast(correct_type_mapping(dl[i].dtype)) for i in dl.columns]).to_pandas()
 
 
 def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
@@ -32,16 +45,8 @@ def _get_df_from_s3_files(paths: list[str]) -> pd.DataFrame:
 
     with _get_metaflow_s3_client() as s3:
         df_paths = [obj.path for obj in s3.get_many(paths)]
-        df = pl.read_parquet(df_paths)
-        # Cast decimal columns to float before converting to pandas
-        print("Casting decimal columns to float64 for pandas compatibility...")
-        print(df.dtypes)
-        decimal_cols = [col for col in df.columns if df[col].dtype == pl.Decimal]
-        print(f"Found decimal columns: {decimal_cols}")
-        df_casted = df.with_columns([pl.col(col).cast(pl.Float64) for col in decimal_cols])
-        print("Casting complete. Converting to pandas DataFrame...")
-        print(df_casted.dtypes)
-        return df_casted.to_pandas(use_pyarrow_extension_array=False)
+        dl = pl.read_parquet(df_paths)
+        return dl.with_columns([pl.col(i).cast(correct_type_mapping(dl[i].dtype)) for i in dl.columns]).to_pandas()
 
 
 def _get_df_from_s3_folder(path: str) -> pd.DataFrame:
