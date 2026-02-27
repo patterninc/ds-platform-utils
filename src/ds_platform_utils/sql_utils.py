@@ -101,18 +101,19 @@ def add_comment_to_each_sql_statement(sql_text: str, comment: str) -> str:
     The comment is inserted immediately before the terminating semicolon of each statement,
     preserving whether the original statement had one.
     """
-    statements = [s.strip() for s in sqlparse.format(sql_text, strip_comments=True).split(";") if s.strip()]
+    statements = [s.strip() for s in sqlparse.split(sqlparse.format(sql_text, strip_comments=True)) if s.strip()]
     annotated = []
     for stmt in statements:
-        if stmt.strip():
-            annotated.append(f"{stmt} \n/* {comment} */\n;")
+        stmt = stmt.rstrip(";").strip()
+        if stmt:
+            annotated.append(f"{stmt}\n/* {comment} */\n;")
         else:
             print(
                 "Warning: encountered empty SQL statement after parsing. This may indicate an issue with the SQL formatting."
             )
     if not annotated:
         raise ValueError("No valid SQL statements found in the provided SQL text.")
-    return "\n".join(annotated) + "\n"
+    return "\n".join(annotated)
 
 
 def add_select_dev_query_tags_to_sql(sql_text: str, current_obj: Optional[Any] = None) -> str:
