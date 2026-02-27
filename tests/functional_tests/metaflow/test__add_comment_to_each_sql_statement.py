@@ -1,4 +1,4 @@
-from src.ds_platform_utils.metaflow.write_audit_publish import add_comment_to_each_sql_statement
+from src.ds_platform_utils._snowflake.run_query import add_comment_to_each_sql_statement
 
 
 def test_add_comment_to_each_sql_statement():
