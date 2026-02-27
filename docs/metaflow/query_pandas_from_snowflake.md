@@ -22,3 +22,15 @@ query_pandas_from_snowflake(
 - Substitutes template values, including `{schema}`.
 - Runs query directly or through Snowflake → S3 path.
 - Normalizes resulting columns to lowercase.
+
+## Parameters
+
+| Parameter      | Type                                 | Required | Description                                                                             |
+| -------------- | ------------------------------------ | -------: | --------------------------------------------------------------------------------------- |
+| `query`        | `str \| Path`                        |      Yes | SQL query text or path to a `.sql` file.                                                |
+| `warehouse`    | `Literal["XS", "MED", "XL"] \| None` |       No | Snowflake warehouse override for this query.                                            |
+| `ctx`          | `dict[str, Any] \| None`             |       No | Optional substitutions for SQL templating (merged with internal `{schema}` resolution). |
+| `use_utc`      | `bool`                               |       No | If `True`, uses UTC timezone for Snowflake session.                                     |
+| `use_s3_stage` | `bool`                               |       No | If `True`, executes Snowflake → S3 → pandas path for large-query handling.              |
+
+**Returns:** `pd.DataFrame` query results with lowercase column names.

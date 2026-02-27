@@ -18,6 +18,14 @@ make_pydantic_parser_fn(
 - Validates and normalizes with Pydantic.
 - Returns a dict with applied defaults from the model.
 
+## Parameters
+
+| Parameter        | Type              | Required | Description                                                         |
+| ---------------- | ----------------- | -------: | ------------------------------------------------------------------- |
+| `pydantic_model` | `type[BaseModel]` |      Yes | Pydantic model class used to validate and normalize config content. |
+
+**Returns:** `Callable[[str], dict]` parser function for Metaflow `Config(..., parser=...)`.
+
 ## Typical usage
 
 ```python

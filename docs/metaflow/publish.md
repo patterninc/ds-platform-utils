@@ -23,6 +23,19 @@ publish(
 - Runs write/audit/publish operations through Snowflake.
 - Adds operation details and table links to the Metaflow card when available.
 
+## Parameters
+
+| Parameter    | Type                                 | Required | Description                                                                |
+| ------------ | ------------------------------------ | -------: | -------------------------------------------------------------------------- |
+| `table_name` | `str`                                |      Yes | Destination Snowflake table name for the publish operation.                |
+| `query`      | `str \| Path`                        |      Yes | SQL query text or path to SQL file that produces the table data.           |
+| `audits`     | `list[str \| Path] \| None`          |       No | Optional SQL audits (strings or file paths) executed as validation checks. |
+| `ctx`        | `dict[str, Any] \| None`             |       No | Optional template substitution context for SQL operations.                 |
+| `warehouse`  | `Literal["XS", "MED", "XL"] \| None` |       No | Snowflake warehouse override for this operation.                           |
+| `use_utc`    | `bool`                               |       No | If `True`, uses UTC timezone for Snowflake session.                        |
+
+**Returns:** `None`
+
 ## Typical usage
 
 ```python

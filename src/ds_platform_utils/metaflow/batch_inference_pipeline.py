@@ -285,8 +285,8 @@ class BatchInferencePipeline:
         self,
         output_table_name: str,
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
-        auto_create_table: bool = True,
-        overwrite: bool = True,
+        auto_create_table: bool = False,
+        overwrite: bool = False,
         warehouse: Optional[str] = None,
         use_utc: bool = True,
     ) -> None:
