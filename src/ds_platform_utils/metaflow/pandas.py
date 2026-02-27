@@ -37,7 +37,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     compression: Literal["snappy", "gzip"] = "snappy",
     warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
     parallel: int = 4,
-    quote_identifiers: bool = True,
+    quote_identifiers: bool = False,
     auto_create_table: bool = False,
     overwrite: bool = False,
     use_logical_type: bool = True,  # prevent date times with timezone from being written incorrectly
