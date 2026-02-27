@@ -8,6 +8,7 @@ import pytest
 from metaflow import FlowSpec, project, step
 
 from ds_platform_utils.metaflow import BatchInferencePipeline
+from ds_platform_utils.metaflow.pandas import query_pandas_from_snowflake
 
 
 @project(name="test_batch_inference_pipeline")
@@ -23,8 +24,8 @@ class TestBatchInferencePipeline(FlowSpec):
     def query_and_batch(self):
         """Run the query and batch step."""
         os.environ["DEBUG_QUERY"] = "1"
-        n = 10000000
-        query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) F1 , UNIFORM(0::INT, 1000::INT, RANDOM()) F2 FROM TABLE(GENERATOR(ROWCOUNT => {n}));"
+        self.n = 10000000
+        query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) F1 , UNIFORM(0::INT, 1000::INT, RANDOM()) F2 FROM TABLE(GENERATOR(ROWCOUNT => {self.n}));"
         self.pipeline = BatchInferencePipeline()
         self.worker_ids = self.pipeline.query_and_batch(
             input_query=query,
@@ -58,6 +59,13 @@ class TestBatchInferencePipeline(FlowSpec):
             overwrite=True,
             auto_create_table=True,
         )
+
+        df = query_pandas_from_snowflake(
+            query="SELECT * FROM DS_PLATFORM_UTILS_TEST_BATCH_INFERENCE_OUTPUT", warehouse="XS"
+        )
+        if len(df) != inputs[0].n:
+            raise ValueError(f"Expected {inputs[0].n} rows but got {len(df)}")
+
         self.next(self.end)
 
     @step
