@@ -24,6 +24,11 @@ class TestWarehouseFlow(FlowSpec):
         # Publish a simple query to Snowflake with a specific warehouse
         warehouse_map = [
             {
+                "size": None,
+                "domain": "content",
+                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+            },
+            {
                 "size": "XS",
                 "domain": "content",
                 "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
