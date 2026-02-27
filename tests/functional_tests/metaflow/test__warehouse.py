@@ -24,29 +24,29 @@ class TestWarehouseFlow(FlowSpec):
         # Publish a simple query to Snowflake with a specific warehouse
         warehouse_map = [
             {
-                "size": None,
+                "warehouse": None,
                 "domain": "content",
-                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+                "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
             },
             {
-                "size": "XS",
+                "warehouse": "XS",
                 "domain": "content",
-                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+                "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
             },
             {
-                "size": "MED",
+                "warehouse": "MED",
                 "domain": "advertising",
-                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
+                "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
             },
             {
-                "size": "XL",
+                "warehouse": "XL",
                 "domain": "reference",
-                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
+                "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
             },
             {
-                "size": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+                "warehouse": "XS",
                 "domain": "content",
-                "warehouse": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
+                "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
             },
         ]
 
@@ -60,7 +60,9 @@ class TestWarehouseFlow(FlowSpec):
             )
             current.tags.pop()  # Clean up tag after query
             df_warehouse = df_warehouse.iloc[0, 0]
-            assert df_warehouse == item["warehouse"], f"Expected warehouse {item['warehouse']}, got {df_warehouse}"
+            assert df_warehouse == item["warehouse_out"], (
+                f"Expected warehouse {item['warehouse_out']}, got {df_warehouse}"
+            )
 
             print(f"Successfully queried warehouse: {df_warehouse}")
 

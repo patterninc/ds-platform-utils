@@ -211,8 +211,6 @@ def query_pandas_from_snowflake(
         df = _get_df_from_s3_files(s3_files)
     else:
         conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
-        if warehouse is not None:
-            _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
         _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
         cursor_result = _execute_sql(conn, query)
         if cursor_result is None:
