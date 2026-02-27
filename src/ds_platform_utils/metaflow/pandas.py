@@ -26,6 +26,7 @@ from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connec
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
 )
+from ds_platform_utils.pandas_utils import estimate_chunk_size
 from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
 
@@ -99,6 +100,12 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     if add_created_date:
         df["created_date"] = datetime.now().astimezone(pytz.utc)
 
+    if chunk_size is not None and chunk_size <= 0:
+        raise ValueError("chunk_size must be a positive integer.")
+
+    if chunk_size is None:
+        chunk_size = estimate_chunk_size(df)
+
     table_name = table_name.upper()
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
@@ -116,7 +123,6 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
         s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
 
-        # Write DataFrame to S3 as Parquet
         # Upload DataFrame to S3 as parquet files
         _put_df_to_s3_folder(
             df=df,

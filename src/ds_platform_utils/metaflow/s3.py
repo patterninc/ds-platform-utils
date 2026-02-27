@@ -72,26 +72,11 @@ def _put_df_to_s3_file(df: pd.DataFrame, path: str) -> None:
             s3.put_files(key_paths=[[path, tmp_file.name]])
 
 
-def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size=None, compression="snappy") -> None:
+def _put_df_to_s3_folder(df: pd.DataFrame, path: str, chunk_size: int, compression="snappy") -> None:
     if not path.startswith("s3://"):
         raise ValueError("Invalid S3 URI. Must start with 's3://'.")
 
     path = path.rstrip("/")  # Remove trailing slash if present
-
-    target_chunk_size_mb = 50
-    target_chunk_size_bytes = target_chunk_size_mb * 1024 * 1024
-
-    if len(df) == 0:
-        raise ValueError("DataFrame is empty. Cannot write empty DataFrame to S3.")
-
-    def estimate_bytes_per_row(df_sample):
-        return df_sample.memory_usage(deep=True).sum() / len(df_sample)
-
-    if chunk_size is None:
-        sample = df.head(10000)
-        bytes_per_row = estimate_bytes_per_row(sample)
-        chunk_size = int(target_chunk_size_bytes / bytes_per_row)
-        chunk_size = max(1, chunk_size)
 
     with tempfile.TemporaryDirectory(prefix=str(Path(current.tempdir).absolute()) + "/") as temp_dir:  # type: ignore
         with _get_metaflow_s3_client() as s3:
