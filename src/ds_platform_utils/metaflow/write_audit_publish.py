@@ -8,6 +8,7 @@ from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
+from ds_platform_utils.sql_utils import get_query_from_string_or_fpath
 
 if TYPE_CHECKING:
     from ds_platform_utils._snowflake.write_audit_publish import (
@@ -59,10 +60,7 @@ def publish(  # noqa: PLR0913, D417
     ```
 
     """
-    from ds_platform_utils._snowflake.write_audit_publish import (
-        get_query_from_string_or_fpath,
-        write_audit_publish,
-    )
+    from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
 
     conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     query = get_query_from_string_or_fpath(query)

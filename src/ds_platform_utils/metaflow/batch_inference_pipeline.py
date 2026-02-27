@@ -22,7 +22,7 @@ from ds_platform_utils.metaflow.s3_stage import (
     copy_s3_to_snowflake,
     copy_snowflake_to_s3,
 )
-from ds_platform_utils.metaflow.snowflake_connection import _debug_print_query
+from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
 
 def _debug(*args, **kwargs):
@@ -156,11 +156,6 @@ class BatchInferencePipeline:
             List of worker_ids to use with foreach in next step
 
         """
-        from ds_platform_utils._snowflake.write_audit_publish import (
-            get_query_from_string_or_fpath,
-            substitute_map_into_string,
-        )
-
         # Warn if re-executing query_and_batch after processing
         if self._query_executed and self._batch_processed:
             raise RuntimeError(
@@ -173,7 +168,6 @@ class BatchInferencePipeline:
         # Process input query
         input_query = get_query_from_string_or_fpath(input_query)
         input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
-        _debug_print_query(input_query)
 
         _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
         # Export from Snowflake to S3

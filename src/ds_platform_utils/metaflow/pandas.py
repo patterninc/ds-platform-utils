@@ -22,10 +22,11 @@ from ds_platform_utils.metaflow.s3_stage import (
     copy_s3_to_snowflake,
     copy_snowflake_to_s3,
 )
-from ds_platform_utils.metaflow.snowflake_connection import _debug_print_query, get_snowflake_connection
+from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
 )
+from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -188,11 +189,6 @@ def query_pandas_from_snowflake(
     If the `ctx` dictionary is provided, it will be used to substitute values into the query string.
     The keys in the `ctx` dictionary should match the placeholders in the query string.
     """
-    from ds_platform_utils._snowflake.write_audit_publish import (
-        get_query_from_string_or_fpath,
-        substitute_map_into_string,
-    )
-
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
     # adding query tags comment in query for cost tracking in select.dev
@@ -200,9 +196,6 @@ def query_pandas_from_snowflake(
     query = get_query_from_string_or_fpath(query)
 
     query = substitute_map_into_string(query, {"schema": schema} | (ctx or {}))
-
-    # print query if DEBUG_QUERY env var is set
-    _debug_print_query(query)
 
     if warehouse is not None:
         current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
