@@ -21,7 +21,7 @@ class TestBatchInferencePipeline(FlowSpec):
     @step
     def query_and_batch(self):
         """Run the query and batch step."""
-        n = 10000
+        n = 10000000
         query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) , UNIFORM(0::INT, 1000::INT, RANDOM()) FROM TABLE(GENERATOR(ROWCOUNT => {n}));"
         self.pipeline = BatchInferencePipeline()
         self.worker_ids = self.pipeline.query_and_batch(
