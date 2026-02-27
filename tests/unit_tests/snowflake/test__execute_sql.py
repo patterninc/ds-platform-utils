@@ -1,16 +1,46 @@
 """Functional test for _execute_sql."""
 
+import types
 from typing import Generator
 
 import pytest
 from snowflake.connector import SnowflakeConnection
 
+import ds_platform_utils._snowflake.run_query as run_query_module
+import ds_platform_utils.metaflow.snowflake_connection as snowflake_connection_module
 from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 
 
+def _make_dummy_current(*, tags):
+    """Use SimpleNamespace so we can quickly mock a Metaflow's `current` object attributes used by the `get_select_dev_query_tags()` function."""
+    cur = types.SimpleNamespace()
+    cur.tags = tags
+    cur.flow_name = "DummyFlow"
+    cur.project_name = "dummy-project"
+    cur.step_name = "dummy-step"
+    cur.run_id = "123"
+    cur.username = "tester"
+    cur.namespace = "user:tester"
+    cur.is_production = False
+    cur.is_running_flow = True
+    cur.card = None
+    return cur
+
+
 @pytest.fixture(scope="module")
-def snowflake_conn() -> Generator[SnowflakeConnection, None, None]:
+def patched_current() -> Generator[None, None, None]:
+    """Patch Metaflow `current` object for modules used in this test file."""
+    dummy_current = _make_dummy_current(tags=["ds.domain:operations", "ds.project:test-project"])
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(run_query_module, "current", dummy_current)
+    monkeypatch.setattr(snowflake_connection_module, "current", dummy_current)
+    yield
+    monkeypatch.undo()
+
+
+@pytest.fixture(scope="module")
+def snowflake_conn(patched_current) -> Generator[SnowflakeConnection, None, None]:
     """Get a Snowflake connection for testing."""
     yield get_snowflake_connection(use_utc=True)
 
