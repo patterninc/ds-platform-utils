@@ -30,6 +30,7 @@ class TestBatchInferencePipeline(FlowSpec):
             input_query=query,
             ctx={"extra": "value"},
             warehouse="XS",
+            parallel_workers=2,
         )
 
         self.next(self.process_batch, foreach="worker_ids")
