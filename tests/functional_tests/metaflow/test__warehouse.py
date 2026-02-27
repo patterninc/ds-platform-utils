@@ -54,12 +54,17 @@ class TestWarehouseFlow(FlowSpec):
         for item in self.warehouse_map:
             from metaflow import current
 
+            for i in list(current.tags):
+                if i.startswith("ds.domain:"):
+                    current.tags.remove(i)
+
             current.tags.add(f"ds.domain:{item['domain']}")
+
             df_warehouse = query_pandas_from_snowflake(
                 query="SELECT CURRENT_WAREHOUSE();",
                 warehouse=item["warehouse"],
             )
-            current.tags.pop()  # Clean up tag after query
+            current.tags.remove(f"ds.domain:{item['domain']}")  # Clean up tag after publish
             df_warehouse = df_warehouse.iloc[0, 0]
             assert df_warehouse == item["warehouse_out"], (
                 f"Expected warehouse {item['warehouse_out']}, got {df_warehouse}"
@@ -79,6 +84,9 @@ class TestWarehouseFlow(FlowSpec):
         for item in self.warehouse_map:
             from metaflow import current
 
+            for i in list(current.tags):
+                if i.startswith("ds.domain:"):
+                    current.tags.remove(i)
             current.tags.add(f"ds.domain:{item['domain']}")
 
             publish(
@@ -86,7 +94,7 @@ class TestWarehouseFlow(FlowSpec):
                 table_name="DS_PLATFORM_UTILS_TEST_WAREHOUSE_PUBLISH",
                 warehouse=item["warehouse"],
             )
-            current.tags.pop()  # Clean up tag after publish
+            current.tags.remove(f"ds.domain:{item['domain']}")  # Clean up tag after publish
             df_warehouse = query_pandas_from_snowflake(
                 query="SELECT WAREHOUSE FROM DS_PLATFORM_UTILS_TEST_WAREHOUSE_PUBLISH;",
                 warehouse=item["warehouse"],
