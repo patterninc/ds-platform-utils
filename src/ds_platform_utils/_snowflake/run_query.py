@@ -12,8 +12,6 @@ from snowflake.connector import SnowflakeConnection
 from snowflake.connector.cursor import SnowflakeCursor
 from snowflake.connector.errors import ProgrammingError
 
-from ds_platform_utils._snowflake.run_query import _execute_sql
-
 
 def get_select_dev_query_tags() -> Dict[str, Optional[str]]:
     """Return tags for the current Metaflow flow run.
