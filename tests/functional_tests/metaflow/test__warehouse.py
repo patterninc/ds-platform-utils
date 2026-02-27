@@ -10,7 +10,7 @@ from ds_platform_utils.metaflow import query_pandas_from_snowflake
 from ds_platform_utils.metaflow.write_audit_publish import publish
 
 
-@project(name="test_warehouse_flow")
+@project(name="ds_platform_utils_tests")
 class TestWarehouseFlow(FlowSpec):
     """A sample flow."""
 

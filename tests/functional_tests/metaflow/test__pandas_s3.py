@@ -7,7 +7,7 @@ import pytest
 from metaflow import FlowSpec, project, step
 
 
-@project(name="test_pandas_read_write_flow_via_s3")
+@project(name="ds_platform_utils_tests")
 class TestPandasReadWriteFlowViaS3(FlowSpec):
     """A sample flow."""
 

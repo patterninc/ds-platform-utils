@@ -7,7 +7,7 @@ import pytest
 from metaflow import FlowSpec, project, step
 
 
-@project(name="test_pandas_read_write_utc_flow")
+@project(name="ds_platform_utils_tests")
 class TestPandasReadWriteUTCFlow(FlowSpec):
     """A sample flow."""
 

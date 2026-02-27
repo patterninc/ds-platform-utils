@@ -11,7 +11,7 @@ from ds_platform_utils.metaflow import BatchInferencePipeline
 from ds_platform_utils.metaflow.pandas import query_pandas_from_snowflake
 
 
-@project(name="test_batch_inference_pipeline")
+@project(name="ds_platform_utils_tests")
 class TestBatchInferencePipeline(FlowSpec):
     """A sample flow."""
 

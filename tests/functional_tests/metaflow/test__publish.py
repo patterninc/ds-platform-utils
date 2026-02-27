@@ -23,7 +23,7 @@ FROM PATTERN_DB.{{schema}}.{{table_name}}
 """
 
 
-@project(name="test_publish_flow")
+@project(name="ds_platform_utils_tests")
 class TestPublishFlow(FlowSpec):
     """A sample flow."""
 
