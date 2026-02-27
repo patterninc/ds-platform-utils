@@ -164,7 +164,7 @@ def batch_inference_step(self):
 
 **Returns:** `None`
 
----
+**Recommended**: Tune `batch_size_in_mb` for Outerbounds Small tasks (3 CPU, 15 GB memory), which are about 6x more cost-effective than Medium tasks.
 
 ### `publish_results(...)`
 
@@ -200,4 +200,5 @@ Runs `query_and_batch()` → `process_batch()` → `publish_results()` in a sing
 | `use_utc`                 | `bool`                                   |       No | Use UTC-based timestamps/paths.                              |
 
 **Returns:** `None`
-<!-- ...existing code... -->
+
+**Recommended**: Tune `batch_size_in_mb` for Outerbounds Small tasks (3 CPU, 15 GB memory), which are about 6x more cost-effective than Medium tasks.
