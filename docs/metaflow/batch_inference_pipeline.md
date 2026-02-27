@@ -185,19 +185,19 @@ def batch_inference_step(self):
 
 Runs `query_and_batch()` → `process_batch()` → `publish_results()` in a single sequential call.
 
-| Parameter                 | Type                                     | Required | Description                                                  |
-| ------------------------- | ---------------------------------------- | -------: | ------------------------------------------------------------ |
-| `input_query`             | `str \| Path`                            |      Yes | Source query (or SQL file path) used to retrieve input rows. |
-| `output_table_name`       | `str`                                    |      Yes | Destination Snowflake table name.                            |
-| `predict_fn`              | `Callable[[pd.DataFrame], pd.DataFrame]` |      Yes | Inference function.                                          |
-| `ctx`                     | `dict`                                   |       No | Optional substitution map for templated SQL.                 |
-| `output_table_definition` | `list[tuple[str, str]] \| None`          |       No | Optional output table schema definition.                     |
-| `batch_size_in_mb`        | `int`                                    |       No | Processing chunk size.                                       |
-| `timeout_per_batch`       | `int`                                    |       No | Timeout per processing chunk (seconds).                      |
-| `auto_create_table`       | `bool`                                   |       No | Auto-create destination table if needed.                     |
-| `overwrite`               | `bool`                                   |       No | Replace destination table data before load.                  |
-| `warehouse`               | `str`                                    |       No | Snowflake warehouse used in query/load operations.           |
-| `use_utc`                 | `bool`                                   |       No | Use UTC-based timestamps/paths.                              |
+| Parameter                 | Type                                     | Required | Description                                                                                                             |
+| ------------------------- | ---------------------------------------- | -------: | ----------------------------------------------------------------------------------------------------------------------- |
+| `input_query`             | `str \| Path`                            |      Yes | SQL query string or SQL file path used to fetch source rows. `{schema}` placeholder is resolved by `ds_platform_utils`. |
+| `output_table_name`       | `str`                                    |      Yes | Destination Snowflake table for predictions.                                                                            |
+| `predict_fn`              | `Callable[[pd.DataFrame], pd.DataFrame]` |      Yes | Inference function applied to each input chunk. Must return a DataFrame matching expected output schema.                |
+| `ctx`                     | `dict`                                   |       No | Optional substitution map for templated SQL; merged with the internal `{"schema": ...}` mapping before query execution. |
+| `output_table_definition` | `list[tuple[str, str]] \| None`          |       No | Optional output schema as `(column_name, snowflake_type)` tuples.                                                       |
+| `batch_size_in_mb`        | `int`                                    |       No | Target chunk size for reading/processing batch files.                                                                   |
+| `timeout_per_batch`       | `int`                                    |       No | Processing time for each batch in seconds. (Used for Queuing operations)                                                |
+| `auto_create_table`       | `bool`                                   |       No | If `True`, creates destination table when missing.                                                                      |
+| `overwrite`               | `bool`                                   |       No | If `True`, replaces existing table data before loading results.                                                         |
+| `warehouse`               | `str`                                    |       No | Snowflake warehouse used for load/publish operations.                                                                   |
+| `use_utc`                 | `bool`                                   |       No | If `True`, uses UTC for load metadata/time handling.                                                                    |
 
 **Returns:** `None`
 
