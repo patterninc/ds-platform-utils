@@ -64,8 +64,9 @@ def _generate_snowflake_to_s3_copy_query(
     snowflake_stage_path = snowflake_stage_path.strip("/") + "/"
     max_file_size = 16 * 1024 * 1024  # 16 MB
 
-    if sqlparse.split(query) != 1:
+    if len(sqlparse.split(query)) != 1:
         raise ValueError("Only single SQL statements are allowed in the query.")
+
     query = sqlparse.format(query, strip_comments=True).strip().rstrip(";")
     copy_query = f"""
     COPY INTO @{snowflake_stage_path}
