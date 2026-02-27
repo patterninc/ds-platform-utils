@@ -169,7 +169,7 @@ def _copy_snowflake_to_s3(
     :param warehouse: Snowflake warehouse to use
     :param use_utc: Whether to use UTC time
 
-    :return: S3 path where the data was exported
+    :return: List of S3 file paths where the data was exported
     """
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
