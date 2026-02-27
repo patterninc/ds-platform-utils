@@ -9,7 +9,7 @@ Utility class to orchestrate batch inference with Snowflake + S3 in Metaflow ste
 - `query_and_batch(...)`: export source data to S3 and create worker batches.
 - `process_batch(...)`: run download → inference → upload for one worker.
 - `publish_results(...)`: copy prediction outputs from S3 to Snowflake.
-  
+
   Or
 - `run(...)`: convenience method to execute full flow sequentially.
 
@@ -110,7 +110,7 @@ from ds_platform_utils.metaflow import BatchInferencePipeline
 import pandas as pd
 
 
-@step 
+@step
 def batch_inference_step(self):
 	def predict_fn(df: pd.DataFrame) -> pd.DataFrame:
 		return pd.DataFrame(
