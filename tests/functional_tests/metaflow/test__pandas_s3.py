@@ -33,7 +33,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
 
         # Publish the DataFrame to Snowflake
         publish_pandas(
-            table_name="pandas_test_table_via_s3",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3",
             df=df,
             auto_create_table=True,
             overwrite=True,
@@ -64,7 +64,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
 
         # Publish the DataFrame to Snowflake with a specific warehouse
         publish_pandas(
-            table_name="pandas_test_table_via_s3",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3",
             df=df,
             auto_create_table=True,
             overwrite=True,
@@ -79,7 +79,7 @@ class TestPandasReadWriteFlowViaS3(FlowSpec):
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         # Query to retrieve the data we just published
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_VIA_S3;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3;"
 
         # Query the data back
         result_df = query_pandas_from_snowflake(query, use_s3_stage=True)

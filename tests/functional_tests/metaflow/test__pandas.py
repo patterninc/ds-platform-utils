@@ -33,7 +33,7 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the DataFrame to Snowflake
         publish_pandas(
-            table_name="pandas_test_table",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS",
             df=df,
             auto_create_table=True,
             overwrite=True,
@@ -58,7 +58,7 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the DataFrame to Snowflake with a specific warehouse
         publish_pandas(
-            table_name="pandas_test_table",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS",
             df=df,
             auto_create_table=True,
             overwrite=True,
