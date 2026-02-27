@@ -86,8 +86,8 @@ def test_warehouse_flow():
         "--environment=local",
         "--with=card",
         "run",
-        "--tag ds.domain:ml-platform",
-        "--tag ds.project:ds-platform-utils-tests",
+        "--tag=ds.domain:ml-platform",
+        "--tag=ds.project:ds-platform-utils-tests",
     ]
 
     print("\n=== Metaflow Output ===")
