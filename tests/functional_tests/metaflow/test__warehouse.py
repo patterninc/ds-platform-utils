@@ -19,7 +19,7 @@ class TestWarehouseFlow(FlowSpec):
         self.next(self.test_publish_with_warehouse)
 
     @step
-    def test_publish_with_warehouse_xs(self):
+    def test_publish_with_warehouse(self):
         """Test the publish function with warehouse parameter."""
         # Publish a simple query to Snowflake with a specific warehouse
         warehouse_map = [
