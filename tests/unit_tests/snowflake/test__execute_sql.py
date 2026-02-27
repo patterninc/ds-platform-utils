@@ -73,3 +73,17 @@ def test_execute_sql_multi_statement(snowflake_conn):
     print(rows)
     assert len(rows) == 1
     assert rows[0][0] == 2  # Last statement result
+
+
+def test_execute_sql_multi_statement_with_comments(snowflake_conn):
+    """Multi-statement with comments returns cursor for last statement only."""
+    cursor = _execute_sql(
+        snowflake_conn,
+        """SELECT 1 AS x; -- {comment} 
+            SELECT 2 AS x;""",
+    )
+    assert cursor is not None
+    rows = cursor.fetchall()
+    print(rows)
+    assert len(rows) == 1
+    assert rows[0][0] == 2  # Last statement result
