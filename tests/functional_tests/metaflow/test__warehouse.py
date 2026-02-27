@@ -74,7 +74,7 @@ class TestWarehouseFlow(FlowSpec):
         """Test the publish function with warehouse parameter."""
         # Publish a simple dataframe to Snowflake with a specific warehouse
         query = """
-            CREATE OR REPLACE TABLE {{table_name}} AS ( SELECT CURRENT_WAREHOUSE() AS WAREHOUSE );
+            CREATE OR REPLACE TABLE PATTERN_DB.{{schema}}.{{table_name}} AS ( SELECT CURRENT_WAREHOUSE() AS WAREHOUSE );
         """
         for item in self.warehouse_map:
             from metaflow import current
