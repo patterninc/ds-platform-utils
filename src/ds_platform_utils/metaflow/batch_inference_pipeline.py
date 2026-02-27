@@ -11,7 +11,6 @@ from typing import Callable, List, Optional, Tuple, Union
 import pandas as pd
 from metaflow import current
 
-from ds_platform_utils._snowflake.write_audit_publish import get_query_from_string_or_fpath, substitute_map_into_string
 from ds_platform_utils.metaflow import s3
 from ds_platform_utils.metaflow._consts import (
     DEV_SCHEMA,
@@ -157,6 +156,11 @@ class BatchInferencePipeline:
             List of worker_ids to use with foreach in next step
 
         """
+        from ds_platform_utils._snowflake.write_audit_publish import (
+            get_query_from_string_or_fpath,
+            substitute_map_into_string,
+        )
+
         # Warn if re-executing query_and_batch after processing
         if self._query_executed and self._batch_processed:
             raise RuntimeError(
