@@ -18,12 +18,12 @@ from ds_platform_utils.metaflow._consts import (
     PROD_SCHEMA,
     S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query
 from ds_platform_utils.metaflow.s3_stage import (
     _get_s3_config,
     copy_s3_to_snowflake,
     copy_snowflake_to_s3,
 )
+from ds_platform_utils.metaflow.snowflake_connection import _debug_print_query
 
 
 def _debug(*args, **kwargs):

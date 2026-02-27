@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
@@ -17,33 +16,16 @@ from ds_platform_utils.metaflow._consts import (
     PROD_SCHEMA,
     S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.get_snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.s3 import _get_df_from_s3_files, _put_df_to_s3_folder
 from ds_platform_utils.metaflow.s3_stage import (
     _get_s3_config,
     copy_s3_to_snowflake,
     copy_snowflake_to_s3,
 )
+from ds_platform_utils.metaflow.snowflake_connection import _debug_print_query, get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
     _make_snowflake_table_url,
-    add_comment_to_each_sql_statement,
-    get_select_dev_query_tags,
 )
-
-TWarehouse = Literal[
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_PROD_XL_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XL_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_XL_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
-    "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
-]
 
 
 def publish_pandas(  # noqa: PLR0913 (too many arguments)
@@ -52,7 +34,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "snappy",
-    warehouse: Optional[TWarehouse] = None,
+    warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
     parallel: int = 4,
     quote_identifiers: bool = True,
     auto_create_table: bool = False,
@@ -125,9 +107,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
-    conn: SnowflakeConnection = get_snowflake_connection(use_utc)
-    if warehouse is not None:
-        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+    conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if use_s3_stage:
@@ -182,7 +162,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
 def query_pandas_from_snowflake(
     query: Union[str, Path],
-    warehouse: Optional[TWarehouse] = None,
+    warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
     ctx: Optional[Dict[str, Any]] = None,
     use_utc: bool = True,
     use_s3_stage: bool = False,
@@ -216,16 +196,10 @@ def query_pandas_from_snowflake(
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
     # adding query tags comment in query for cost tracking in select.dev
-    tags = get_select_dev_query_tags()
-    query_comment_str = f"\n\n/* {json.dumps(tags)} */"
+
     query = get_query_from_string_or_fpath(query)
-    query = add_comment_to_each_sql_statement(query, query_comment_str)
 
-    if "{{schema}}" in query or "{{ schema }}" in query:
-        query = substitute_map_into_string(query, {"schema": schema})
-
-    if ctx:
-        query = substitute_map_into_string(query, ctx)
+    query = substitute_map_into_string(query, {"schema": schema} | (ctx or {}))
 
     # print query if DEBUG_QUERY env var is set
     _debug_print_query(query)

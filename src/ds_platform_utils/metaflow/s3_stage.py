@@ -14,7 +14,7 @@ from ds_platform_utils.metaflow._consts import (
     PROD_SNOWFLAKE_STAGE,
     S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
+from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 
 
 def _get_s3_config(is_production: bool) -> Tuple[str, str]:
@@ -173,11 +173,8 @@ def copy_snowflake_to_s3(
         query=query,
         snowflake_stage_path=sf_stage_path,
     )
-    conn = get_snowflake_connection(use_utc)
-    if warehouse is not None:
-        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+    conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
-
     _execute_sql(conn, query)
 
     print(f"✅ Data exported to S3 path: {s3_path}")
@@ -221,9 +218,7 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
 
     s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
     sf_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
-    conn = get_snowflake_connection(use_utc)
-    if warehouse is not None:
-        _execute_sql(conn, f"USE WAREHOUSE {warehouse};")
+    conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if table_definition is None:

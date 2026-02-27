@@ -6,7 +6,7 @@ import pytest
 from snowflake.connector import SnowflakeConnection
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow.get_snowflake_connection import get_snowflake_connection
+from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 
 
 @pytest.fixture(scope="module")
