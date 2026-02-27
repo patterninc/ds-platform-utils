@@ -33,21 +33,21 @@ publish_pandas(
 
 ## Parameters
 
-| Parameter           | Type                                 | Required | Description                                                                                     |
-| ------------------- | ------------------------------------ | -------: | ----------------------------------------------------------------------------------------------- |
-| `table_name`        | `str`                                |      Yes | Destination Snowflake table name.                                                               |
-| `df`                | `pd.DataFrame`                       |      Yes | DataFrame to publish.                                                                           |
-| `add_created_date`  | `bool`                               |       No | If `True`, adds a `created_date` UTC timestamp column before publish.                           |
-| `chunk_size`        | `int \| None`                        |       No | Number of rows per uploaded chunk. If not provided, defaults to Snowflake's default chunk size. |
-| `compression`       | `Literal["snappy", "gzip"]`          |       No | Compression codec used for staged parquet files.                                                |
-| `warehouse`         | `Literal["XS", "MED", "XL"] \| None` |       No | Snowflake warehouse override for this operation.                                                |
-| `parallel`          | `int`                                |       No | Number of upload threads used by `write_pandas` path.                                           |
-| `quote_identifiers` | `bool`                               |       No | If `False`, passes identifiers unquoted so Snowflake applies uppercase coercion.                |
-| `auto_create_table` | `bool`                               |       No | If `True`, creates destination table when missing.                                              |
-| `overwrite`         | `bool`                               |       No | If `True`, replaces existing table contents.                                                    |
-| `use_logical_type`  | `bool`                               |       No | Controls parquet logical type handling when loading data.                                       |
-| `use_utc`           | `bool`                               |       No | If `True`, uses UTC timezone for Snowflake session.                                             |
-| `use_s3_stage`      | `bool`                               |       No | If `True`, publishes via S3 stage flow; otherwise uses direct `write_pandas`.                   |
-| `table_definition`  | `list[tuple[str, str]] \| None`      |       No | Optional Snowflake table schema; used by S3 stage flow when table creation is needed.           |
+| Parameter           | Type                                 | Required | Description                                                                            |
+| ------------------- | ------------------------------------ | -------: | -------------------------------------------------------------------------------------- |
+| `table_name`        | `str`                                |      Yes | Destination Snowflake table name.                                                      |
+| `df`                | `pd.DataFrame`                       |      Yes | DataFrame to publish.                                                                  |
+| `add_created_date`  | `bool`                               |       No | If `True`, adds a `created_date` UTC timestamp column before publish.                  |
+| `chunk_size`        | `int \| None`                        |       No | Number of rows per uploaded chunk. If not provided, calculate based on DataFrame size. |
+| `compression`       | `Literal["snappy", "gzip"]`          |       No | Compression codec used for staged parquet files.                                       |
+| `warehouse`         | `Literal["XS", "MED", "XL"] \| None` |       No | Snowflake warehouse override for this operation.                                       |
+| `parallel`          | `int`                                |       No | Number of upload threads used by `write_pandas` path.                                  |
+| `quote_identifiers` | `bool`                               |       No | If `False`, passes identifiers unquoted so Snowflake applies uppercase coercion.       |
+| `auto_create_table` | `bool`                               |       No | If `True`, creates destination table when missing.                                     |
+| `overwrite`         | `bool`                               |       No | If `True`, replaces existing table contents.                                           |
+| `use_logical_type`  | `bool`                               |       No | Controls parquet logical type handling when loading data.                              |
+| `use_utc`           | `bool`                               |       No | If `True`, uses UTC timezone for Snowflake session.                                    |
+| `use_s3_stage`      | `bool`                               |       No | If `True`, publishes via S3 stage flow; otherwise uses direct `write_pandas`.          |
+| `table_definition`  | `list[tuple[str, str]] \| None`      |       No | Optional Snowflake table schema; used by S3 stage flow when table creation is needed.  |
 
 **Returns:** `None`
