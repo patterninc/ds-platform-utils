@@ -167,7 +167,7 @@ class BatchInferencePipeline:
         print("🚀 Starting batch inference pipeline...")
         # Process input query
         input_query = get_query_from_string_or_fpath(input_query)
-        input_query = substitute_map_into_string(input_query, {"schema": self._schema} | (ctx or {}))
+        input_query = substitute_map_into_string(input_query, (ctx or {}) | {"schema": self._schema})
 
         _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
         # Export from Snowflake to S3

@@ -195,7 +195,7 @@ def query_pandas_from_snowflake(
 
     query = get_query_from_string_or_fpath(query)
 
-    query = substitute_map_into_string(query, {"schema": schema} | (ctx or {}))
+    query = substitute_map_into_string(query, (ctx or {}) | {"schema": schema})
 
     if warehouse is not None:
         current.card.append(Markdown(f"## Using Snowflake Warehouse: `{warehouse}`"))
