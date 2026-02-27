@@ -18,9 +18,9 @@ from ds_platform_utils.metaflow._consts import (
     S3_DATA_FOLDER,
 )
 from ds_platform_utils.metaflow.s3_stage import (
+    _copy_s3_to_snowflake,
+    _copy_snowflake_to_s3,
     _get_s3_config,
-    copy_s3_to_snowflake,
-    copy_snowflake_to_s3,
 )
 from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
@@ -171,7 +171,7 @@ class BatchInferencePipeline:
 
         _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
         # Export from Snowflake to S3
-        input_files = copy_snowflake_to_s3(
+        input_files = _copy_snowflake_to_s3(
             query=input_query,
             warehouse=warehouse,
             use_utc=use_utc,
@@ -319,7 +319,7 @@ class BatchInferencePipeline:
 
         print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
 
-        copy_s3_to_snowflake(
+        _copy_s3_to_snowflake(
             s3_path=self._output_path,
             table_name=output_table_name,
             table_definition=output_table_definition,

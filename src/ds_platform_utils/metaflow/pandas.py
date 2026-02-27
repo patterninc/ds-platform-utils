@@ -18,9 +18,9 @@ from ds_platform_utils.metaflow._consts import (
 )
 from ds_platform_utils.metaflow.s3 import _get_df_from_s3_files, _put_df_to_s3_folder
 from ds_platform_utils.metaflow.s3_stage import (
+    _copy_s3_to_snowflake,
+    _copy_snowflake_to_s3,
     _get_s3_config,
-    copy_s3_to_snowflake,
-    copy_snowflake_to_s3,
 )
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
@@ -131,7 +131,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             compression=compression,
         )
 
-        copy_s3_to_snowflake(
+        _copy_s3_to_snowflake(
             s3_path=s3_path,
             table_name=table_name,
             table_definition=table_definition,
@@ -209,7 +209,7 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     if use_s3_stage:
-        s3_files = copy_snowflake_to_s3(
+        s3_files = _copy_snowflake_to_s3(
             query=query,
             warehouse=warehouse,
             use_utc=use_utc,

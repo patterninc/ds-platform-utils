@@ -1,6 +1,7 @@
 from typing import List, Optional, Tuple
 
 import pandas as pd
+import sqlparse
 from metaflow import current
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
@@ -29,6 +30,28 @@ def _get_s3_config(is_production: bool) -> Tuple[str, str]:
     return s3_bucket, snowflake_stage
 
 
+def _generate_s3_stage_path():
+    """Generate a unique S3 stage path based on the current flow and run context."""
+    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+    flow_name = current.flow_name if hasattr(current, "flow_name") else "unknown"
+    run_id = current.run_id if hasattr(current, "run_id") else "unknown"
+    timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
+
+    s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
+    snowflake_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
+
+    return s3_path, snowflake_stage_path
+
+
+def _get_snowflake_stage_path(s3_path: str) -> str:
+    """Convert an S3 path to the corresponding Snowflake stage path."""
+    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
+    if not s3_path.startswith(s3_bucket + "/"):
+        raise ValueError(f"s3_path must start with {s3_bucket}")
+    snowflake_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
+    return snowflake_stage_path
+
+
 def _generate_snowflake_to_s3_copy_query(
     query: str,
     snowflake_stage_path: str,
@@ -39,18 +62,12 @@ def _generate_snowflake_to_s3_copy_query(
     :param snowflake_stage_path: The path to the Snowflake stage where the data will be exported. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
     :return: COPY INTO SQL command
     """
-    if snowflake_stage_path.endswith(".parquet"):
-        single = "TRUE"
-        max_file_size = 100 * 1024 * 1024 * 1024  # 100 GB
-    else:
-        single = "FALSE"
-        max_file_size = 16 * 1024 * 1024  # 16 MB
-
     snowflake_stage_path = snowflake_stage_path.strip("/") + "/"
+    max_file_size = 16 * 1024 * 1024  # 16 MB
 
-    if query.count(";") > 1:
-        raise ValueError("Multiple SQL statements detected. Please provide a single query statement.")
-    query = query.replace(";", "")  # Remove trailing semicolon if present
+    if sqlparse.split(query) != 1:
+        raise ValueError("Only single SQL statements are allowed in the query.")
+    query = sqlparse.format(query, strip_comments=True).strip().rstrip(";")
     copy_query = f"""
     COPY INTO @{snowflake_stage_path}
     FROM (
@@ -59,7 +76,6 @@ def _generate_snowflake_to_s3_copy_query(
     OVERWRITE = TRUE
     FILE_FORMAT = (TYPE = 'parquet')
     MAX_FILE_SIZE = {max_file_size}
-    SINGLE = {single}
     HEADER = TRUE
     DETAILED_OUTPUT = TRUE;
     """
@@ -90,7 +106,7 @@ def _generate_s3_to_snowflake_copy_query(  # noqa: PLR0913
     :return: Complete SQL script with table management and COPY INTO commands
     """
     sql_statements = []
-
+    snowflake_stage_path = snowflake_stage_path.strip("/") + "/"
     if auto_create_table and not overwrite:
         table_create_columns_str = ",\n ".join([f"{col_name} {col_type}" for col_name, col_type in table_definition])
         create_table_query = f"""CREATE TABLE IF NOT EXISTS {table_name} ( {table_create_columns_str} );"""
@@ -122,6 +138,7 @@ def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool)
     :param snowflake_stage_path: The path to the Snowflake stage where the Parquet files are located. This should include the stage name and any necessary subfolders (e.g., 'my_snowflake_stage/my_folder').
     :return: List of tuples with column names and inferred Snowflake data types
     """
+    snowflake_stage_path = snowflake_stage_path.strip("/") + "/"
     _execute_sql(
         conn,
         f"CREATE OR REPLACE TEMP FILE FORMAT PQT_FILE_FORMAT TYPE = PARQUET USE_LOGICAL_TYPE = {use_logical_type};",
@@ -141,7 +158,7 @@ def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool)
     return list(zip(result["COLUMN_NAME"], result["TYPE"]))
 
 
-def copy_snowflake_to_s3(
+def _copy_snowflake_to_s3(
     query: str,
     warehouse: Optional[str] = None,
     use_utc: bool = True,
@@ -156,18 +173,11 @@ def copy_snowflake_to_s3(
     :return: List of S3 file paths where the data was exported
     """
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
-    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
 
-    if s3_path is not None and not s3_path.startswith(s3_bucket):
-        raise ValueError(f"s3_path must start with {s3_bucket}")
     if s3_path is None:
-        # Build paths: s3://bucket/data/{flow}/{run_id}/{pipeline_id}/
-        flow_name = current.flow_name if hasattr(current, "flow_name") else "local"
-        run_id = current.run_id if hasattr(current, "run_id") else "dev"
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
-        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
-
-    sf_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
+        s3_path, sf_stage_path = _generate_s3_stage_path()
+    else:
+        sf_stage_path = _get_snowflake_stage_path(s3_path)
 
     query = _generate_snowflake_to_s3_copy_query(
         query=query,
@@ -183,7 +193,7 @@ def copy_snowflake_to_s3(
     return file_paths
 
 
-def copy_s3_to_snowflake(  # noqa: PLR0913
+def _copy_s3_to_snowflake(  # noqa: PLR0913
     s3_path: str,
     table_name: str,
     table_definition: Optional[List[Tuple[str, str]]] = None,
@@ -210,20 +220,15 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
     """
     table_name = table_name.upper()
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
-    if current.is_production:
-        if not s3_path.startswith(PROD_S3_BUCKET):
-            raise ValueError(f"In production environment, s3_path must start with s3://{PROD_S3_BUCKET}")
-    elif not s3_path.startswith(DEV_S3_BUCKET):
-        raise ValueError(f"In development environment, s3_path must start with s3://{DEV_S3_BUCKET}")
+    snowflake_stage_path = _get_snowflake_stage_path(s3_path)
 
-    s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
-    sf_stage_path = s3_path.replace(s3_bucket, snowflake_stage)
     conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
 
     if table_definition is None:
         # Infer table schema from the Parquet files in the Snowflake stage
-        table_definition = _infer_table_schema(conn, sf_stage_path, use_logical_type)
+        table_definition = _infer_table_schema(conn, snowflake_stage_path, use_logical_type)
+
     if table_definition is None or len(table_definition) == 0:
         raise ValueError(
             "Failed to determine table schema. Please provide a valid table_definition or ensure that the S3 path contains valid Parquet files."
@@ -231,7 +236,7 @@ def copy_s3_to_snowflake(  # noqa: PLR0913
 
     copy_query = _generate_s3_to_snowflake_copy_query(
         table_name=table_name,
-        snowflake_stage_path=sf_stage_path,
+        snowflake_stage_path=snowflake_stage_path,
         table_definition=table_definition,
         overwrite=overwrite,
         auto_create_table=auto_create_table,
