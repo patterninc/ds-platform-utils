@@ -29,7 +29,7 @@ class TestWarehouseFlow(FlowSpec):
                 "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH",
             },
             {
-                "warehouse": "MED",
+                "warehouse": "med",
                 "domain": "advertising",
                 "warehouse_out": "OUTERBOUNDS_DATA_SCIENCE_ADS_DEV_MED_WH",
             },
