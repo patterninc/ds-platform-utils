@@ -1,14 +1,11 @@
-## ds-platform-utils
+# ds-platform-utils
 
-Utility library to support Pattern's [data-science-projects](https://github.com/patterninc/data-science-projects/).
+## Metaflow API Docs
 
-## 📚 Documentation
+- [BatchInferencePipeline](docs/metaflow/batch_inference_pipeline.md)
+- [make_pydantic_parser_fn](docs/metaflow/make_pydantic_parser_fn.md)
+- [publish](docs/metaflow/publish.md)
+- [publish_pandas](docs/metaflow/publish_pandas.md)
+- [query_pandas_from_snowflake](docs/metaflow/query_pandas_from_snowflake.md)
+- [restore_step_state](docs/metaflow/restore_step_state.md)
 
-For comprehensive documentation, guides, and examples:
-
-- **[📖 Full Documentation](docs/README.md)** - Complete documentation hub
-- **[🚀 Getting Started](docs/guides/getting_started.md)** - Quick start guide
-- **[✨ Best Practices](docs/guides/best_practices.md)** - Production-ready patterns
-- **[⚡ Performance Tuning](docs/guides/performance_tuning.md)** - Optimization guide
-- **[🔧 API Reference](docs/api/index.md)** - Complete API documentation
-- **[🛠️ Troubleshooting](docs/guides/troubleshooting.md)** - Common issues & solutions
