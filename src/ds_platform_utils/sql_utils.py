@@ -2,7 +2,6 @@
 
 import json
 import os
-import warnings
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Optional, Union
@@ -42,7 +41,7 @@ def get_select_dev_query_tags(current_obj: Optional[Any] = None) -> dict[str, Op
         tag.startswith("ds.domain") for tag in fetched_tags
     )
     if not required_tags_are_present:
-        warnings.warn(
+        print(
             dedent("""
         Warning: ds-platform-utils attempted to add query tags to a Snowflake query
         for cost tracking in select.dev, but one or both required Metaflow user tags
@@ -61,8 +60,7 @@ def get_select_dev_query_tags(current_obj: Optional[Any] = None) -> dict[str, Op
 
         Note: in the monorepo, these tags are applied automatically in CI and when using
         the standard poe commands for running flows.
-    """),
-            stacklevel=2,
+    """)
         )
 
     def _extract(prefix: str, default: str = "unknown") -> str:
@@ -91,22 +89,30 @@ def get_select_dev_query_tags(current_obj: Optional[Any] = None) -> dict[str, Op
 
 
 def add_comment_to_each_sql_statement(sql_text: str, comment: str) -> str:
-    """Append a comment string to each SQL statement in a SQL script."""
-    statements = [s.strip() for s in sqlparse.split(sql_text) if s.strip()]
-    if not statements:
-        return sql_text
+    """Append `comment` (e.g., /* {...} */) to every SQL statement in `sql_text`.
 
+    Purpose:
+        Some SQL files contain multiple statements separated by semicolons.
+        Snowflake only associates query-level metadata (like select.dev cost-tracking tags)
+        with individual statements, not entire batches. This helper ensures that the
+        JSON-style comment containing query tags is added to each statement separately,
+        so every query executed can be properly attributed and tracked.
+
+    The comment is inserted immediately before the terminating semicolon of each statement,
+    preserving whether the original statement had one.
+    """
+    statements = [s.strip() for s in sqlparse.format(sql_text, strip_comments=True).split(";") if s.strip()]
     annotated = []
     for stmt in statements:
-        has_semicolon = stmt.rstrip().endswith(";")
-        trimmed = stmt.rstrip()
-        if has_semicolon:
-            trimmed = trimmed[:-1].rstrip()
-            annotated.append(f"{trimmed} {comment};")
+        if stmt.strip():
+            annotated.append(f"{stmt} \n/* {comment} */\n;")
         else:
-            annotated.append(f"{trimmed} {comment}")
-
-    return "\n".join(annotated)
+            print(
+                "Warning: encountered empty SQL statement after parsing. This may indicate an issue with the SQL formatting."
+            )
+    if not annotated:
+        raise ValueError("No valid SQL statements found in the provided SQL text.")
+    return "\n".join(annotated) + "\n"
 
 
 def add_select_dev_query_tags_to_sql(sql_text: str, current_obj: Optional[Any] = None) -> str:
