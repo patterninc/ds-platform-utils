@@ -48,7 +48,7 @@ class TestBatchInferencePipeline(FlowSpec):
     def publish_results(self, inputs):
         """Join the parallel branches."""
         print("Joining results from all workers...")
-        self.pipeline.publish_results(
+        inputs[0].pipeline.publish_results(
             output_table_name="DS_PLATFORM_UTILS_TEST_BATCH_INFERENCE_OUTPUT",
             overwrite=True,
             auto_create_table=True,
