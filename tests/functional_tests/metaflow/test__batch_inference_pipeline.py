@@ -24,7 +24,7 @@ class TestBatchInferencePipeline(FlowSpec):
         """Run the query and batch step."""
         os.environ["DEBUG_QUERY"] = "1"
         n = 10000000
-        query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) , UNIFORM(0::INT, 1000::INT, RANDOM()) FROM TABLE(GENERATOR(ROWCOUNT => {n}));"
+        query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) F1 , UNIFORM(0::INT, 1000::INT, RANDOM()) F2 FROM TABLE(GENERATOR(ROWCOUNT => {n}));"
         self.pipeline = BatchInferencePipeline()
         self.worker_ids = self.pipeline.query_and_batch(
             input_query=query,
