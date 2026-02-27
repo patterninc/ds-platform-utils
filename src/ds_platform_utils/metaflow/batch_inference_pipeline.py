@@ -15,13 +15,8 @@ from ds_platform_utils.metaflow import s3
 from ds_platform_utils.metaflow._consts import (
     DEV_SCHEMA,
     PROD_SCHEMA,
-    S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.s3_stage import (
-    _copy_s3_to_snowflake,
-    _copy_snowflake_to_s3,
-    _get_s3_config,
-)
+from ds_platform_utils.metaflow.s3_stage import _copy_s3_to_snowflake, _copy_snowflake_to_s3, _generate_s3_stage_paths
 from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
 
@@ -100,32 +95,15 @@ class BatchInferencePipeline:
     def __init__(self):
         """Initialize S3 paths based on Metaflow context."""
         is_production = current.is_production if hasattr(current, "is_production") else False
-        self._s3_bucket, _ = _get_s3_config(is_production)
         self._schema = PROD_SCHEMA if is_production else DEV_SCHEMA
 
-        # Build paths: s3://bucket/data/{flow}/{run_id}/{pipeline_id}/
-        flow_name = current.flow_name if hasattr(current, "flow_name") else "local"
-        run_id = current.run_id if hasattr(current, "run_id") else "dev"
-
-        timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f")
-        self._base_path = f"{self._s3_bucket}/{S3_DATA_FOLDER}/{flow_name}/{run_id}/{timestamp}"
-        self._input_path = f"{self._base_path}/input"
-        self._output_path = f"{self._base_path}/output"
+        self._input_s3_path, _ = _generate_s3_stage_paths()
+        self._output_s3_path, _ = _generate_s3_stage_paths()
 
         # Execution state flags
         self._query_executed = False
         self._batch_processed = False
         self._results_published = False
-
-    @property
-    def input_path(self) -> str:
-        """S3 path where input data is stored."""
-        return self._input_path
-
-    @property
-    def output_path(self) -> str:
-        """S3 path where output predictions are stored."""
-        return self._output_path
 
     def _split_files_into_workers(self, files: List[str], parallel_workers: int) -> dict[int, List[str]]:
         """Split list of files into batches for each worker."""
@@ -157,7 +135,7 @@ class BatchInferencePipeline:
 
         """
         # Warn if re-executing query_and_batch after processing
-        if self._query_executed and self._batch_processed:
+        if self._query_executed or self._batch_processed:
             raise RuntimeError(
                 "Cannot re-execute query_and_batch(): Batches have already been processed. "
                 "This would reset the state of the pipeline. "
@@ -169,14 +147,15 @@ class BatchInferencePipeline:
         input_query = get_query_from_string_or_fpath(input_query)
         input_query = substitute_map_into_string(input_query, (ctx or {}) | {"schema": self._schema})
 
-        _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_path}...")
+        _debug(f"⏳ Exporting data from Snowflake to S3 to {self._input_s3_path}...")
         # Export from Snowflake to S3
-        input_files = _copy_snowflake_to_s3(
+        _copy_snowflake_to_s3(
             query=input_query,
             warehouse=warehouse,
             use_utc=use_utc,
-            s3_path=self._input_path,
+            s3_path=self._input_s3_path,
         )
+        input_files = s3._list_files_in_s3_folder(self._input_s3_path)
         _debug(f"✅ Exported data to S3: {len(input_files)} files created.")
 
         # Create worker batches based on file sizes
@@ -185,10 +164,8 @@ class BatchInferencePipeline:
 
         # Mark query as executed
         self._query_executed = True
-        self._batch_processed = False
 
         print(f"📊 Created {len(self.worker_ids)} workers for parallel processing")
-
         return self.worker_ids
 
     def process_batch(
@@ -197,7 +174,7 @@ class BatchInferencePipeline:
         predict_fn: Callable[[pd.DataFrame], pd.DataFrame],
         batch_size_in_mb: int = 128,
         timeout_per_batch: int = 300,
-    ) -> str:
+    ) -> None:
         """Step 2: Process a single batch using parallel download→inference→upload pipeline.
 
         Uses a queue-based 3-thread pipeline for efficient processing:
@@ -212,7 +189,7 @@ class BatchInferencePipeline:
             timeout_per_batch: Timeout in seconds for each batch operation (default: 300)
 
         Returns:
-            S3 path where predictions were written
+            None
 
         """
         # Validate that query_and_batch was called first
@@ -221,9 +198,15 @@ class BatchInferencePipeline:
                 "Cannot process batch: query_and_batch() must be called first. "
                 "Call query_and_batch() to export data from Snowflake before processing batches."
             )
+        if self._batch_processed:
+            raise RuntimeError(
+                "Cannot process batch: A batch has already been processed. "
+                "This would reset the state of the pipeline. "
+                "If you need to re-run the batch processing, create a new instance of BatchInferencePipeline."
+            )
 
         if worker_id not in self.worker_files:
-            raise ValueError(f"Worker {worker_id} not found. Available: {list(self.worker_files.keys())}")
+            raise ValueError(f"Worker {worker_id} not found.")
 
         file_paths = self.worker_files[worker_id]
         file_batches = self._make_batches(file_paths, batch_size_in_mb=batch_size_in_mb)
@@ -231,7 +214,7 @@ class BatchInferencePipeline:
 
         download_queue: queue.Queue = queue.Queue(maxsize=1)
         inference_queue: queue.Queue = queue.Queue(maxsize=1)
-        output_path = self._output_path
+        output_path = self._output_s3_path
 
         def download_worker(file_batches: List[List[str]]):
             for file_id, file_batch in enumerate(file_batches, 1):
@@ -279,7 +262,6 @@ class BatchInferencePipeline:
         self._batch_processed = True
 
         print(f"✅ Worker {worker_id} complete ({len(file_batches)} batches processed in {t1 - t0:.2f}s)")
-        return self._output_path
 
     def publish_results(  # noqa: PLR0913
         self,
@@ -303,10 +285,7 @@ class BatchInferencePipeline:
         """
         # Validate that batches were processed
         if not self._query_executed:
-            raise RuntimeError(
-                "Cannot publish results: query_and_batch() must be called first. "
-                "Call query_and_batch() to export data from Snowflake."
-            )
+            raise RuntimeError("Cannot publish results: query_and_batch() and process_batch() must be called first. ")
 
         if not self._batch_processed:
             raise RuntimeError(
@@ -320,7 +299,7 @@ class BatchInferencePipeline:
         print(f"📤 Writing predictions to Snowflake table: {output_table_name}")
 
         _copy_s3_to_snowflake(
-            s3_path=self._output_path,
+            s3_path=self._output_s3_path,
             table_name=output_table_name,
             table_definition=output_table_definition,
             warehouse=warehouse,
@@ -383,14 +362,12 @@ class BatchInferencePipeline:
             warehouse=warehouse,
         )
 
-        # Step 2: Process all batches sequentially
-        for worker_id in worker_ids:
-            self.process_batch(
-                worker_id=worker_id,
-                predict_fn=predict_fn,
-                batch_size_in_mb=batch_size_in_mb,
-                timeout_per_batch=timeout_per_batch,
-            )
+        self.process_batch(
+            worker_id=worker_ids[0],
+            predict_fn=predict_fn,
+            batch_size_in_mb=batch_size_in_mb,
+            timeout_per_batch=timeout_per_batch,
+        )
 
         # Step 3: Publish results
         self.publish_results(
