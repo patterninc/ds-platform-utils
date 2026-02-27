@@ -1,5 +1,6 @@
 """A Metaflow flow."""
 
+import os
 import subprocess
 import sys
 
@@ -21,6 +22,7 @@ class TestBatchInferencePipeline(FlowSpec):
     @step
     def query_and_batch(self):
         """Run the query and batch step."""
+        os.environ["DEBUG_QUERY"] = "1"
         n = 10000000
         query = f"SELECT UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) , UNIFORM(0::INT, 1000::INT, RANDOM()) FROM TABLE(GENERATOR(ROWCOUNT => {n}));"
         self.pipeline = BatchInferencePipeline()
@@ -47,6 +49,8 @@ class TestBatchInferencePipeline(FlowSpec):
     @step
     def publish_results(self, inputs):
         """Join the parallel branches."""
+        os.environ["DEBUG_QUERY"] = "1"
+
         print("Joining results from all workers...")
         inputs[0].pipeline.publish_results(
             output_table_name="DS_PLATFORM_UTILS_TEST_BATCH_INFERENCE_OUTPUT",
