@@ -50,14 +50,14 @@ class Config(BaseModel):
 
 class SimpleFlow(FlowSpec):
     """Flow with validated config."""
-    
+
     config = Parameter(
         'config',
         type=make_pydantic_parser_fn(Config),
         default='{"table_name": "my_table"}',
         help='JSON configuration'
     )
-    
+
     @step
     def start(self):
         # Access validated config
@@ -65,7 +65,7 @@ class SimpleFlow(FlowSpec):
         print(f"Warehouse: {self.config.warehouse}")
         print(f"Limit: {self.config.limit}")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -90,7 +90,7 @@ class DateRangeConfig(BaseModel):
     """Configuration with date validation."""
     start_date: str
     end_date: str
-    
+
     @validator('start_date', 'end_date')
     def validate_date_format(cls, v):
         """Ensure dates are in YYYY-MM-DD format."""
@@ -99,7 +99,7 @@ class DateRangeConfig(BaseModel):
             return v
         except ValueError:
             raise ValueError(f"Date must be in YYYY-MM-DD format, got: {v}")
-    
+
     @validator('end_date')
     def end_after_start(cls, v, values):
         """Ensure end_date is after start_date."""
@@ -113,12 +113,12 @@ class DateRangeFlow(FlowSpec):
         type=make_pydantic_parser_fn(DateRangeConfig),
         default='{"start_date": "2024-01-01", "end_date": "2024-12-31"}',
     )
-    
+
     @step
     def start(self):
         print(f"Processing {self.config.start_date} to {self.config.end_date}")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -180,14 +180,14 @@ class AdvancedFlow(FlowSpec):
         }
         ''',
     )
-    
+
     @step
     def start(self):
         print(f"Warehouse: {self.config.snowflake.warehouse}")
         print(f"Model: {self.config.model.model_path}")
         print(f"Features: {self.config.model.features}")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -205,30 +205,30 @@ class MLConfig(BaseModel):
     inference_date: str
     min_samples: int = 1000
     max_samples: int = 1_000_000
-    
+
     @validator('inference_date')
     def inference_after_training(cls, v, values):
         """Inference date must be after training period."""
         if 'training_end' in values and v <= values['training_end']:
             raise ValueError("inference_date must be after training_end")
         return v
-    
+
     @validator('min_samples', 'max_samples')
     def positive_samples(cls, v):
         """Sample counts must be positive."""
         if v <= 0:
             raise ValueError("Sample count must be positive")
         return v
-    
+
     @root_validator
     def check_sample_range(cls, values):
         """min_samples must be less than max_samples."""
         min_s = values.get('min_samples')
         max_s = values.get('max_samples')
-        
+
         if min_s and max_s and min_s >= max_s:
             raise ValueError("min_samples must be less than max_samples")
-        
+
         return values
 ```
 
@@ -294,7 +294,7 @@ class Config(BaseModel):
 ```python
 class Config(BaseModel):
     """Flow configuration.
-    
+
     Attributes:
         start_date: Start date in YYYY-MM-DD format
         end_date: End date in YYYY-MM-DD format
@@ -322,7 +322,7 @@ def threshold_in_range(cls, v):
 # ❌ Bad - too restrictive
 class Config(BaseModel):
     table_name: str
-    
+
     @validator('table_name')
     def specific_table(cls, v):
         if v != "exactly_this_table":  # Too rigid!
@@ -332,7 +332,7 @@ class Config(BaseModel):
 # ✅ Good - validate format, not content
 class Config(BaseModel):
     table_name: str
-    
+
     @validator('table_name')
     def valid_table_name(cls, v):
         if not v.replace('_', '').isalnum():  # Allow alphanumeric + underscore
@@ -362,36 +362,36 @@ class Schedule(BaseModel):
 
 class ProductionConfig(BaseModel):
     """Production-ready flow configuration."""
-    
+
     # Environment
     env: Environment = Environment.DEV
-    
+
     # Data
     start_date: str = Field(..., description="Start date (YYYY-MM-DD)")
     end_date: str = Field(..., description="End date (YYYY-MM-DD)")
     table_name: str = Field(..., description="Input table name")
-    
+
     # Model
     model_path: str = Field(..., description="Path to model file")
     features: List[str] = Field(..., description="Feature columns")
     threshold: float = Field(0.5, ge=0, le=1, description="Prediction threshold")
-    
+
     # Snowflake
     warehouse: str = "OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH"
     schema_override: Optional[str] = None
-    
+
     # Performance
     use_s3_stage: bool = True
     parallel_workers: int = Field(10, ge=1, le=50)
     batch_size_mb: int = Field(256, ge=64, le=512)
-    
+
     # Monitoring
     enable_alerts: bool = True
     alert_email: Optional[str] = None
-    
+
     # Schedule
     schedule: Optional[Schedule] = None
-    
+
     @validator('start_date', 'end_date')
     def validate_date(cls, v):
         """Validate date format."""
@@ -400,7 +400,7 @@ class ProductionConfig(BaseModel):
             return v
         except ValueError:
             raise ValueError(f"Invalid date format: {v}")
-    
+
     @validator('warehouse')
     def validate_warehouse(cls, v, values):
         """Validate warehouse based on environment."""
@@ -408,7 +408,7 @@ class ProductionConfig(BaseModel):
         if env == Environment.PROD and 'DEV' in v:
             raise ValueError("Cannot use DEV warehouse in PROD environment")
         return v
-    
+
     @root_validator
     def validate_alerts(cls, values):
         """If alerts enabled, email is required."""
@@ -422,13 +422,13 @@ class ProductionFlow(FlowSpec):
         type=make_pydantic_parser_fn(ProductionConfig),
         default='{"start_date": "2024-01-01", "end_date": "2024-12-31", "table_name": "input_data", "model_path": "model.pkl", "features": ["f1", "f2"]}',
     )
-    
+
     @step
     def start(self):
         print(f"Environment: {self.config.env.value}")
         print(f"Date range: {self.config.start_date} to {self.config.end_date}")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass

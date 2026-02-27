@@ -24,7 +24,7 @@ from metaflow import FlowSpec, step
 from ds_platform_utils.metaflow import BatchInferencePipeline
 
 class MyPredictionFlow(FlowSpec):
-    
+
     @step
     def start(self):
         # Initialize pipeline and export data to S3
@@ -34,7 +34,7 @@ class MyPredictionFlow(FlowSpec):
             parallel_workers=10,  # Split into 10 parallel workers
         )
         self.next(self.predict, foreach='worker_ids')
-    
+
     @step
     def predict(self):
         # Process single batch (runs in parallel via foreach)
@@ -45,7 +45,7 @@ class MyPredictionFlow(FlowSpec):
             batch_size_in_mb=256,
         )
         self.next(self.join)
-    
+
     @step
     def join(self, inputs):
         # Merge and write results to Snowflake
@@ -55,7 +55,7 @@ class MyPredictionFlow(FlowSpec):
             auto_create_table=True,
         )
         self.next(self.end)
-    
+
     @step
     def end(self):
         print("✅ Pipeline complete!")

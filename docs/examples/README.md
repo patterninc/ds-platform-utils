@@ -25,7 +25,7 @@ from ds_platform_utils.metaflow import query_pandas_from_snowflake, publish_pand
 
 class SimplePipeline(FlowSpec):
     """Query data, transform, and publish."""
-    
+
     @step
     def start(self):
         """Query input data."""
@@ -44,28 +44,28 @@ class SimplePipeline(FlowSpec):
         )
         print(f"Retrieved {len(self.df):,} rows")
         self.next(self.transform)
-    
+
     @step
     def transform(self):
         """Transform data."""
         print("Transforming data...")
-        
+
         # Add month column
         self.df['month'] = self.df['transaction_date'].dt.to_period('M')
-        
+
         # Calculate monthly spending per user
         self.results = self.df.groupby(['user_id', 'month']).agg({
             'amount': ['sum', 'mean', 'count']
         }).reset_index()
-        
+
         # Flatten column names
         self.results.columns = [
             '_'.join(col).strip('_') for col in self.results.columns
         ]
-        
+
         print(f"Created {len(self.results):,} aggregated rows")
         self.next(self.publish)
-    
+
     @step
     def publish(self):
         """Publish results."""
@@ -78,7 +78,7 @@ class SimplePipeline(FlowSpec):
         )
         print("✅ Done!")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -152,18 +152,18 @@ from config import FeatureConfig
 
 class FeaturePipeline(FlowSpec):
     """ML feature engineering pipeline."""
-    
+
     config = Parameter(
         'config',
         type=make_pydantic_parser_fn(FeatureConfig),
         default='{"start_date": "2024-01-01", "end_date": "2024-12-31"}',
     )
-    
+
     @step
     def start(self):
         """Extract raw features from Snowflake."""
         print(f"Extracting features from {self.config.start_date} to {self.config.end_date}")
-        
+
         self.df = query_pandas_from_snowflake(
             query="sql/extract_raw_features.sql",
             ctx={
@@ -173,34 +173,34 @@ class FeaturePipeline(FlowSpec):
         )
         print(f"Extracted features for {len(self.df):,} users")
         self.next(self.engineer_features)
-    
+
     @step
     def engineer_features(self):
         """Engineer features in Python."""
         print("Engineering features...")
-        
+
         # Time-based features
         now = pd.Timestamp.now()
         self.df['recency_days'] = (now - pd.to_datetime(self.df['last_seen'])).dt.days
         self.df['account_age_days'] = (now - pd.to_datetime(self.df['first_seen'])).dt.days
-        
+
         # Engagement features
         self.df['events_per_day'] = self.df['event_count'] / self.df['active_days']
         self.df['engagement_ratio'] = self.df['active_days'] / self.df['account_age_days']
-        
+
         # Value features
         self.df['value_volatility'] = self.df['std_value'] / (self.df['avg_value'] + 1)
-        
+
         # Segments
         self.df['user_segment'] = pd.cut(
             self.df['event_count'],
             bins=[0, 10, 50, 200, float('inf')],
             labels=['low', 'medium', 'high', 'power_user']
         )
-        
+
         print(f"Engineered {len(self.df.columns)} features")
         self.next(self.publish)
-    
+
     @step
     def publish(self):
         """Publish features."""
@@ -213,7 +213,7 @@ class FeaturePipeline(FlowSpec):
         )
         print(f"✅ Published {len(self.df):,} rows with {len(self.df.columns)} columns")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -252,12 +252,12 @@ import pickle
 
 class LargeScaleInference(FlowSpec):
     """Batch inference for millions of rows."""
-    
+
     @step
     def start(self):
         """Query and split into batches."""
         print("Querying input data and splitting into batches...")
-        
+
         pipeline = BatchInferencePipeline()
         self.worker_ids = pipeline.query_and_batch(
             input_query="""
@@ -275,39 +275,39 @@ class LargeScaleInference(FlowSpec):
             parallel_workers=20,  # 20 parallel workers
             warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
         )
-        
+
         print(f"Split into {len(self.worker_ids)} batches")
         self.next(self.predict, foreach='worker_ids')
-    
+
     @step
     def predict(self):
         """Predict for each batch (runs in parallel)."""
         worker_id = self.input
         print(f"Processing batch {worker_id}")
-        
+
         # Load model (cached across batches on same worker)
         with open('model.pkl', 'rb') as f:
             model = pickle.load(f)
-        
+
         def predict_fn(df: pd.DataFrame) -> pd.DataFrame:
             """Generate predictions."""
             feature_cols = [
-                'feature_1', 'feature_2', 'feature_3', 
+                'feature_1', 'feature_2', 'feature_3',
                 'feature_4', 'feature_5'
             ]
-            
+
             # Generate predictions
             predictions = model.predict_proba(df[feature_cols])[:, 1]
-            
+
             # Create output DataFrame
             result = pd.DataFrame({
                 'user_id': df['user_id'],
                 'score': predictions,
                 'prediction': (predictions >= 0.5).astype(int),
             })
-            
+
             return result
-        
+
         # Process this batch
         pipeline = BatchInferencePipeline()
         pipeline.process_batch(
@@ -315,24 +315,24 @@ class LargeScaleInference(FlowSpec):
             predict_fn=predict_fn,
             batch_size_in_mb=64,  # Process in 64MB chunks
         )
-        
+
         print(f"✅ Batch {worker_id} complete")
         self.next(self.join)
-    
+
     @step
     def join(self, inputs):
         """Collect results and publish."""
         print(f"All {len(inputs)} batches processed, publishing results...")
-        
+
         self.pipeline = inputs[0].pipeline
         self.pipeline.publish_results(
             output_table_name="user_predictions",
             warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
         )
-        
+
         print("✅ All predictions published!")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -370,18 +370,18 @@ from datetime import datetime, timedelta
 
 class IncrementalPipeline(FlowSpec):
     """Process daily incremental data."""
-    
+
     date = Parameter(
         'date',
         default=datetime.now().strftime('%Y-%m-%d'),
         help='Date to process (YYYY-MM-DD)',
     )
-    
+
     @step
     def start(self):
         """Query new data for specified date."""
         print(f"Processing data for {self.date}")
-        
+
         self.df = query_pandas_from_snowflake(
             query=f"""
                 SELECT *
@@ -389,47 +389,47 @@ class IncrementalPipeline(FlowSpec):
                 WHERE date = '{self.date}'
             """
         )
-        
+
         if len(self.df) == 0:
             print(f"⚠️ No data found for {self.date}")
         else:
             print(f"Found {len(self.df):,} rows for {self.date}")
-        
+
         self.next(self.transform)
-    
+
     @step
     def transform(self):
         """Transform new data."""
         if len(self.df) > 0:
             print("Transforming data...")
-            
+
             # Your transformation logic
             self.df['processed_date'] = datetime.now()
             self.df['derived_field'] = self.df['value'] * 2
-            
+
             print(f"Transformed {len(self.df):,} rows")
-        
+
         self.next(self.publish)
-    
+
     @step
     def publish(self):
         """Append to existing table."""
         if len(self.df) > 0:
             print(f"Appending {len(self.df):,} rows...")
-            
+
             publish_pandas(
                 table_name="processed_events",
                 df=self.df,
                 auto_create_table=False,  # Table must exist
                 overwrite=False,  # Append instead of replace
             )
-            
+
             print(f"✅ Appended {len(self.df):,} rows for {self.date}")
         else:
             print("⏭️ No data to publish")
-        
+
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass
@@ -466,12 +466,12 @@ from ds_platform_utils.metaflow import query_pandas_from_snowflake, publish_pand
 
 class MultiTableJoin(FlowSpec):
     """Join multiple tables and create enriched dataset."""
-    
+
     @step
     def start(self):
         """Start parallel queries."""
         self.next(self.query_users, self.query_events, self.query_demographics)
-    
+
     @step
     def query_users(self):
         """Query user data."""
@@ -481,7 +481,7 @@ class MultiTableJoin(FlowSpec):
         )
         print(f"Retrieved {len(self.users_df):,} users")
         self.next(self.join_data)
-    
+
     @step
     def query_events(self):
         """Query event data."""
@@ -499,7 +499,7 @@ class MultiTableJoin(FlowSpec):
         )
         print(f"Retrieved events for {len(self.events_df):,} users")
         self.next(self.join_data)
-    
+
     @step
     def query_demographics(self):
         """Query demographic data."""
@@ -509,33 +509,33 @@ class MultiTableJoin(FlowSpec):
         )
         print(f"Retrieved demographics for {len(self.demographics_df):,} users")
         self.next(self.join_data)
-    
+
     @step
     def join_data(self, inputs):
         """Join all data sources."""
         print("Joining data from all sources...")
-        
+
         # Merge users + events
         result = inputs.query_users.users_df.merge(
             inputs.query_events.events_df,
             on='user_id',
             how='left'
         )
-        
+
         # Merge with demographics
         result = result.merge(
             inputs.query_demographics.demographics_df,
             on='user_id',
             how='left'
         )
-        
+
         # Fill missing event counts with 0
         result['event_count'] = result['event_count'].fillna(0)
-        
+
         self.enriched_df = result
         print(f"Created enriched dataset with {len(self.enriched_df):,} rows")
         self.next(self.publish)
-    
+
     @step
     def publish(self):
         """Publish enriched dataset."""
@@ -548,7 +548,7 @@ class MultiTableJoin(FlowSpec):
         )
         print(f"✅ Published {len(self.enriched_df):,} rows")
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass

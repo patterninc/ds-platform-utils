@@ -203,13 +203,13 @@ class TrainingFlow(FlowSpec):
             use_s3_stage=True,
         )
         self.next(self.train)
-    
+
     @step
     def train(self):
         # Train model
         self.model = train_model(self.df)
         self.next(self.end)
-    
+
     @step
     def end(self):
         # Publish metrics
@@ -232,7 +232,7 @@ class PredictionFlow(FlowSpec):
             parallel_workers=10,
         )
         self.next(self.predict, foreach='worker_ids')
-    
+
     @step
     def predict(self):
         self.pipeline.process_batch(
@@ -240,7 +240,7 @@ class PredictionFlow(FlowSpec):
             predict_fn=self.model.predict,
         )
         self.next(self.join)
-    
+
     @step
     def join(self, inputs):
         self.pipeline = inputs[0].pipeline

@@ -55,7 +55,7 @@ uv sync
 
 ## Configuration
 
-**No manual configuration required!** 
+**No manual configuration required!**
 
 This library integrates seamlessly with Outerbounds, which automatically handles all Snowflake and AWS configuration. Simply use the functions in your Metaflow flows, and Outerbounds takes care of:
 
@@ -107,7 +107,7 @@ class PredictionFlow(FlowSpec):
             parallel_workers=10,
         )
         self.next(self.predict, foreach='worker_ids')
-    
+
     @step
     def predict(self):
         worker_id = self.input
@@ -116,7 +116,7 @@ class PredictionFlow(FlowSpec):
             predict_fn=my_model.predict,
         )
         self.next(self.join)
-    
+
     @step
     def join(self, inputs):
         self.pipeline = inputs[0].pipeline
@@ -124,7 +124,7 @@ class PredictionFlow(FlowSpec):
             output_table_name="predictions",
         )
         self.next(self.end)
-    
+
     @step
     def end(self):
         pass

@@ -128,7 +128,7 @@ CREATE OR REPLACE TABLE {{schema}}.{{table_name}} AS
 SELECT * FROM source_table;
 
 -- In audits
-SELECT 
+SELECT
     COUNT(*) > 0 AS has_data,
     MAX(created_at) > CURRENT_DATE - 7 AS is_recent
 FROM {{schema}}.{{table_name}};
@@ -250,17 +250,17 @@ class MyFlow(FlowSpec):
     def start(self):
         # Query data
         self.df = query_pandas_from_snowflake("""
-            SELECT * FROM raw_data 
+            SELECT * FROM raw_data
             WHERE date = CURRENT_DATE
         """)
         self.next(self.transform)
-    
+
     @step
     def transform(self):
         # Transform data
         self.features = self.df.groupby('user_id').size()
         self.next(self.publish)
-    
+
     @step
     def publish(self):
         # Publish DataFrame
@@ -271,7 +271,7 @@ class MyFlow(FlowSpec):
             overwrite=True,
         )
         self.next(self.end)
-    
+
     @step
     def end(self):
         print("Pipeline complete!")
