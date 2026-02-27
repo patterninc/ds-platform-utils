@@ -64,8 +64,7 @@ class TestBatchInferencePipeline(FlowSpec):
             query="SELECT * FROM DS_PLATFORM_UTILS_TEST_BATCH_INFERENCE_OUTPUT", warehouse="XS"
         )
         if len(df) != inputs[0].n:
-            raise ValueError(f"Expected {inputs[0].n} rows but got {len(df)}")
-
+            raise ValueError(f"Output row count {len(df)} does not match input row count {inputs[0].n}")
         self.next(self.end)
 
     @step
