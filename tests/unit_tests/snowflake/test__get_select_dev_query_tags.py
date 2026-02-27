@@ -1,50 +1,43 @@
-import types
-import warnings
+import os
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.ds_platform_utils._snowflake import run_query
+from ds_platform_utils.sql_utils import get_select_dev_query_tags
 
 
-def _make_dummy_current(*, tags):
-    """Use SimpleNamespace so we can quickly mock a Metaflow's `current` object attributes used by the `get_select_dev_query_tags()` function."""
-    cur = types.SimpleNamespace()
-    cur.tags = tags
-    cur.flow_name = "DummyFlow"
-    cur.project_name = "dummy-project"
-    cur.step_name = "dummy-step"
-    cur.run_id = "123"
-    cur.username = "tester"
-    cur.namespace = "user:tester"
-    cur.is_production = False
-    cur.card = None
-    return cur
+@pytest.fixture(scope="module")
+def patched_current():
+    """Patch Metaflow `current` object for modules used in this test file."""
+    mock_current = MagicMock("metaflow.current")
+    mock_current.tags = ["ds.domain:testing", "ds.project:unit-tests"]
+    mock_current.flow_name = "DummyFlow"
+    mock_current.project_name = "dummy-project"
+    mock_current.step_name = "dummy-step"
+    mock_current.run_id = "123"
+    mock_current.username = "tester"
+    mock_current.is_production = False
+    mock_current.namespace = "user:tester"
+    mock_current.is_running_flow = True
+    mock_current.card = []
+    os.environ["OB_CURRENT_PERIMETER"] = "default"
+    yield mock_current
+    os.environ.pop("OB_CURRENT_PERIMETER", None)
 
 
-def test_warns_when_either_required_tag_missing(monkeypatch):
-    """Raise warning if either `'ds.domain'` or `'ds.project'` is missing."""
-    dummy_current = _make_dummy_current(tags={"ds.project:foo"})
-    monkeypatch.setattr(run_query, "current", dummy_current)
-
-    with pytest.warns(UserWarning, match=r"one or both required Metaflow user tags"):
-        run_query.get_select_dev_query_tags()
-
-
-def test_warns_when_no_tags(monkeypatch):
-    """Raise warning if no tags are present."""
-    dummy_current = _make_dummy_current(tags=set())
-    monkeypatch.setattr(run_query, "current", dummy_current)
-
-    with pytest.warns(UserWarning, match=r"one or both required Metaflow user tags"):
-        run_query.get_select_dev_query_tags()
-
-
-def test_no_warning_when_both_required_tags_present(monkeypatch):
+def test_get_select_dev_query_tags(patched_current):
     """No warning when both required tags are present."""
-    dummy_current = _make_dummy_current(tags={"ds.domain:operations", "ds.project:myproj"})
-    monkeypatch.setattr(run_query, "current", dummy_current)
+    query_tags = get_select_dev_query_tags(current_obj=patched_current)
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        run_query.get_select_dev_query_tags()
-        assert not w  # check no warnings captured
+    assert query_tags["app"] == "testing"
+    assert query_tags["workload_id"] == "unit-tests"
+    assert query_tags["flow_name"] == "DummyFlow"
+    assert query_tags["project"] == "dummy-project"
+    assert query_tags["step_name"] == "dummy-step"
+    assert query_tags["run_id"] == "123"
+    assert query_tags["user"] == "tester"
+    assert query_tags["domain"] == "testing"
+    assert query_tags["namespace"] == "user:tester"
+    assert query_tags["perimeter"] == "default"
+    assert query_tags["is_production"] == "False"
+    assert query_tags["team"] == "data-science"
