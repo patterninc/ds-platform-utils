@@ -99,7 +99,15 @@ if __name__ == "__main__":
 @pytest.mark.slow
 def test_pandas_read_write_flow():
     """Test that the publish flow runs successfully."""
-    cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
+    cmd = [
+        sys.executable,
+        __file__,
+        "--environment=local",
+        "--with=card",
+        "run",
+        "--tag ds.domain:ml-platform",
+        "--tag ds.project:ds-platform-utils-tests",
+    ]
 
     print("\n=== Metaflow Output ===")
     for line in execute_with_output(cmd):
