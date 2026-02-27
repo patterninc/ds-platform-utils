@@ -14,13 +14,12 @@ from ds_platform_utils._snowflake.run_query import _execute_sql
 from ds_platform_utils.metaflow._consts import (
     DEV_SCHEMA,
     PROD_SCHEMA,
-    S3_DATA_FOLDER,
 )
-from ds_platform_utils.metaflow.s3 import _get_df_from_s3_files, _put_df_to_s3_folder
+from ds_platform_utils.metaflow.s3 import _get_df_from_s3_folder, _put_df_to_s3_folder
 from ds_platform_utils.metaflow.s3_stage import (
     _copy_s3_to_snowflake,
     _copy_snowflake_to_s3,
-    _get_s3_config,
+    _generate_s3_stage_paths,
 )
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 from ds_platform_utils.metaflow.write_audit_publish import (
@@ -115,13 +114,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     current.card.append(Markdown(f"## Publishing DataFrame to Snowflake table: `{table_name}`"))
     current.card.append(Table.from_dataframe(df.head()))
 
-    conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
-    _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
-
     if use_s3_stage:
-        s3_bucket, _ = _get_s3_config(current.is_production)
-        data_folder = "publish_" + str(pd.Timestamp.now().strftime("%Y%m%d_%H%M%S_%f"))
-        s3_path = f"{s3_bucket}/{S3_DATA_FOLDER}/{data_folder}"
+        s3_path, _ = _generate_s3_stage_paths()
 
         # Upload DataFrame to S3 as parquet files
         _put_df_to_s3_folder(
@@ -143,7 +137,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         )
 
     else:
-        # https://docs.snowflake.com/en/developer-guide/snowpark/reference/python/latest/snowpark/api/snowflake.snowpark.Session.write_pandas
+        conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
+        _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
+
+        # https://docs.snowflake.com/en/developer-guide/python-connector/python-connector-api#module-snowflake-connector-pandas-tools
         write_pandas(
             conn=conn,
             df=df,
@@ -157,7 +154,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             overwrite=overwrite,
             use_logical_type=use_logical_type,
         )
-    conn.close()
+        conn.close()
+
     # Add a link to the table in Snowflake to the card
     table_url = _make_snowflake_table_url(
         database="PATTERN_DB",
@@ -209,12 +207,12 @@ def query_pandas_from_snowflake(
     current.card.append(Markdown(f"```sql\n{query}\n```"))
 
     if use_s3_stage:
-        s3_files = _copy_snowflake_to_s3(
+        s3_path = _copy_snowflake_to_s3(
             query=query,
             warehouse=warehouse,
             use_utc=use_utc,
         )
-        df = _get_df_from_s3_files(s3_files)
+        df = _get_df_from_s3_folder(s3_path)
     else:
         conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
         _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")

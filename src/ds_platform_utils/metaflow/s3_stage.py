@@ -5,7 +5,6 @@ import sqlparse
 from metaflow import current
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow import s3
 from ds_platform_utils.metaflow._consts import (
     DEV_S3_BUCKET,
     DEV_SCHEMA,
@@ -30,7 +29,7 @@ def _get_s3_config(is_production: bool) -> Tuple[str, str]:
     return s3_bucket, snowflake_stage
 
 
-def _generate_s3_stage_path():
+def _generate_s3_stage_paths():
     """Generate a unique S3 stage path based on the current flow and run context."""
     s3_bucket, snowflake_stage = _get_s3_config(current.is_production)
     flow_name = current.flow_name if hasattr(current, "flow_name") else "unknown"
@@ -163,19 +162,19 @@ def _copy_snowflake_to_s3(
     warehouse: Optional[str] = None,
     use_utc: bool = True,
     s3_path: Optional[str] = None,
-) -> List[str]:
+) -> str:
     """Generate SQL COPY INTO command to export Snowflake query results to S3.
 
     :param query: SQL query to execute
     :param warehouse: Snowflake warehouse to use
     :param use_utc: Whether to use UTC time
 
-    :return: List of S3 file paths where the data was exported
+    :return: S3 path where the data was exported
     """
     schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
 
     if s3_path is None:
-        s3_path, sf_stage_path = _generate_s3_stage_path()
+        s3_path, sf_stage_path = _generate_s3_stage_paths()
     else:
         sf_stage_path = _get_snowflake_stage_path(s3_path)
 
@@ -189,8 +188,7 @@ def _copy_snowflake_to_s3(
 
     print(f"✅ Data exported to S3 path: {s3_path}")
 
-    file_paths = s3._list_files_in_s3_folder(s3_path)
-    return file_paths
+    return s3_path
 
 
 def _copy_s3_to_snowflake(  # noqa: PLR0913
