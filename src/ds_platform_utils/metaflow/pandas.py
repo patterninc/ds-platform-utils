@@ -56,8 +56,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     :param add_created_date: When true, will add a column called `created_date` to the DataFrame with the current
         timestamp in UTC.
 
-    :param chunk_size: Number of rows to be inserted once. If not provided, all rows will be dumped once.
-        Default to None normally, 100,000 if inside a stored procedure.
+    :param chunk_size: Number of rows to be inserted once. If not provided, the chunk size will be
+        automatically estimated based on the DataFrame's memory usage.
 
     :param compression: The compression used on the Parquet files: gzip or snappy.
         Gzip gives supposedly a better compression, while snappy is faster. Use whichever is more appropriate.
@@ -69,9 +69,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param parallel: Number of threads to be used when uploading chunks. See details at parallel parameter.
 
-    :param quote_identifiers: By default, identifiers, specifically database, schema, table and column names
-        (from df.columns) will be quoted. If set to False, identifiers are passed on to Snowflake without quoting.
-        I.e. identifiers will be coerced to uppercase by Snowflake. (Default value = True)
+    :param quote_identifiers: If set to True, identifiers, specifically database, schema, table and column names
+        (from df.columns) will be quoted. If set to False (default), identifiers are passed on to Snowflake without
+        quoting, i.e. identifiers will be coerced to uppercase by Snowflake.
 
     :param auto_create_table: When true, will automatically create a table with corresponding columns for each column in
         the passed in DataFrame. The table will not be created if it already exists.
@@ -87,7 +87,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param use_s3_stage: Whether to use the S3 stage method to publish the DataFrame, which is more efficient for large DataFrames.
 
-    :param table_schema: Optional list of tuples specifying the column names and types for the Snowflake table.
+    :param table_definition: Optional list of tuples specifying the column names and types for the Snowflake table.
         This is only used when `use_s3_stage` is True, and is required in that case. The list should be in the format: `[(col_name1, col_type1), (col_name2, col_type2), ...]`, where `col_type` is a valid Snowflake data type (e.g., 'STRING', 'NUMBER', 'TIMESTAMP_NTZ', etc.).
     """
     if not isinstance(df, pd.DataFrame):
