@@ -24,6 +24,7 @@ def patched_current() -> Generator[MagicMock, None, None]:
     mock_current.namespace = "user:tester"
     mock_current.is_running_flow = True
     mock_current.card = []
+    yield mock_current
 
 
 @pytest.fixture(scope="module")
