@@ -8,16 +8,16 @@ from metaflow import FlowSpec, project, step
 
 
 @project(name="ds_platform_utils_tests")
-class TestPandasReadWriteFlow(FlowSpec):
+class TestPandasReadWriteFlowViaS3(FlowSpec):
     """A sample flow."""
 
     @step
     def start(self):
         """Start the flow."""
-        self.next(self.test_publish_pandas)
+        self.next(self.test_publish_pandas_with_schema)
 
     @step
-    def test_publish_pandas(self):
+    def test_publish_pandas_with_schema(self):
         """Test the publish_pandas function."""
         import pandas as pd
 
@@ -33,16 +33,22 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the DataFrame to Snowflake
         publish_pandas(
-            table_name="DS_PLATFORM_UTILS_TEST_PANDAS",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3",
             df=df,
             auto_create_table=True,
             overwrite=True,
+            use_s3_stage=True,
+            table_definition=[
+                ("id", "INTEGER"),
+                ("name", "STRING"),
+                ("score", "FLOAT"),
+            ],
         )
 
-        self.next(self.test_publish_pandas_with_warehouse)
+        self.next(self.test_publish_pandas_without_schema)
 
     @step
-    def test_publish_pandas_with_warehouse(self):
+    def test_publish_pandas_without_schema(self):
         """Test the publish pandas on having parameters: warehouse."""
         import pandas as pd
 
@@ -58,11 +64,11 @@ class TestPandasReadWriteFlow(FlowSpec):
 
         # Publish the DataFrame to Snowflake with a specific warehouse
         publish_pandas(
-            table_name="DS_PLATFORM_UTILS_TEST_PANDAS",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3",
             df=df,
             auto_create_table=True,
             overwrite=True,
-            warehouse="OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+            use_s3_stage=True,
         )
 
         self.next(self.test_query_pandas)
@@ -73,10 +79,10 @@ class TestPandasReadWriteFlow(FlowSpec):
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
         # Query to retrieve the data we just published
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.DS_PLATFORM_UTILS_TEST_PANDAS;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.DS_PLATFORM_UTILS_TEST_PANDAS_VIA_S3;"
 
         # Query the data back
-        result_df = query_pandas_from_snowflake(query)
+        result_df = query_pandas_from_snowflake(query, use_s3_stage=True)
 
         # Quick validation
         assert len(result_df) == 5, "Expected 5 rows in the result"
@@ -93,12 +99,12 @@ class TestPandasReadWriteFlow(FlowSpec):
 
 
 if __name__ == "__main__":
-    TestPandasReadWriteFlow()
+    TestPandasReadWriteFlowViaS3()
 
 
 @pytest.mark.slow
-def test_pandas_read_write_flow():
-    """Test that the publish flow runs successfully."""
+def test_pandas_read_write_flow_via_s3():
+    """Test the pandas read/write flow via S3."""
     cmd = [
         sys.executable,
         __file__,

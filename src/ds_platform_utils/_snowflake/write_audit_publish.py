@@ -1,14 +1,13 @@
-import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generator, Literal, Optional, Union
 
-from jinja2 import DebugUndefined, Template
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow._consts import NON_PROD_SCHEMA, PROD_SCHEMA
+from ds_platform_utils.metaflow._consts import DEV_SCHEMA, PROD_SCHEMA
+from ds_platform_utils.sql_utils import get_query_from_string_or_fpath, substitute_map_into_string
 
 
 def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exception
@@ -29,7 +28,7 @@ def write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an exc
         performed and the query is simply run against the final table.
     """
     # gather inputs
-    publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+    publish_schema = PROD_SCHEMA if is_production else DEV_SCHEMA
     query = get_query_from_string_or_fpath(query)
 
     audits = audits or []
@@ -119,8 +118,8 @@ def _write_audit_publish(  # noqa: PLR0913 (too-many-arguments) this fn is an ex
 
     This function assumes all inputs have been validated and formatted correctly.
     """
-    audit_schema = NON_PROD_SCHEMA
-    publish_schema = PROD_SCHEMA if is_production else NON_PROD_SCHEMA
+    audit_schema = DEV_SCHEMA
+    publish_schema = PROD_SCHEMA if is_production else DEV_SCHEMA
 
     # Generate unique branch name
     branch_name = branch_name or str(uuid.uuid4())[:8]
@@ -181,22 +180,12 @@ class AuditSQLOperation(SQLOperation):
     results: dict[str, Any]
 
 
-def _debug_print_query(query: str) -> None:
-    """Print query if DEBUG_QUERY env var is set."""
-    if os.getenv("DEBUG_QUERY"):
-        print("\n=== DEBUG SQL QUERY ===")
-        print(query)
-        print("=====================\n")
-
-
 def run_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> None:
     """Execute one or more SQL statements.
 
     :param query: SQL query or queries to execute. Multiple statements must be separated by semicolons.
     :param cursor: Snowflake cursor. If None, prints query instead of executing
     """
-    _debug_print_query(query)
-
     if cursor is None:
         print(f"Would execute query:\n{query}")
         return
@@ -212,8 +201,6 @@ def run_audit_query(query: str, cursor: Optional[SnowflakeCursor] = None) -> dic
     :param query: SQL query that returns a single row of boolean values
     :param cursor: Snowflake cursor. If None, returns mock successful result
     """
-    _debug_print_query(query)
-
     if cursor is None:
         return {"mock_result": True}
 
@@ -399,29 +386,6 @@ def cleanup(
     drop_query = f"DROP TABLE IF EXISTS PATTERN_DB.{schema}.{branch_table};"
     print(f"Dropping temp table: {schema}.{branch_table}")
     run_query(query=drop_query, cursor=cursor)
-
-
-def substitute_map_into_string(string: str, values: dict[str, Any]) -> str:
-    """Format a string using a dictionary with Jinja2 templating.
-
-    :param string: The template string containing placeholders
-    :param values: A dictionary of values to substitute into the template
-    """
-    template = Template(string, undefined=DebugUndefined)
-    return template.render(values)
-
-
-def get_query_from_string_or_fpath(query_str_or_fpath: Union[str, Path]) -> str:
-    """Get the SQL query from a string or file path.
-
-    :param query_str_or_fpath: SQL query string or path to a .sql file
-    :return: The SQL query as a string
-    """
-    stripped_query = str(query_str_or_fpath).strip()
-    query_is_file_path = isinstance(query_str_or_fpath, Path) or stripped_query.endswith(".sql")
-    if query_is_file_path:
-        return Path(query_str_or_fpath).read_text()
-    return stripped_query
 
 
 if __name__ == "__main__":

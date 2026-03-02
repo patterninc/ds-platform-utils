@@ -23,7 +23,7 @@ FROM PATTERN_DB.{{schema}}.{{table_name}}
 """
 
 
-@project(name="test_publish_flow")
+@project(name="ds_platform_utils_tests")
 class TestPublishFlow(FlowSpec):
     """A sample flow."""
 
@@ -55,7 +55,7 @@ class TestPublishFlow(FlowSpec):
         """
 
         publish(
-            table_name="sample_table",
+            table_name="DS_PLATFORM_UTILS_TEST_PUBLISH",
             query=query,
             audits=[AUDIT],
         )
@@ -71,7 +71,7 @@ class TestPublishFlow(FlowSpec):
 
         # insert queries without creating/replacing the table
         publish(
-            table_name="sample_table",
+            table_name="DS_PLATFORM_UTILS_TEST_PUBLISH",
             query=query,
             audits=[
                 # assert that there are 8 rows. The initial 5, plus the recent 3.
@@ -81,7 +81,7 @@ class TestPublishFlow(FlowSpec):
 
         # no audit
         publish(
-            table_name="sample_table",
+            table_name="DS_PLATFORM_UTILS_TEST_PUBLISH",
             query=query,
             audits=[],
         )
@@ -89,7 +89,7 @@ class TestPublishFlow(FlowSpec):
         try:
             # intentionally fail an audit
             publish(
-                table_name="sample_table",
+                table_name="DS_PLATFORM_UTILS_TEST_PUBLISH",
                 query=query,
                 audits=["SELECT COUNT(*) = 0 FROM PATTERN_DB.{{schema}}.{{table_name}}"],
             )
@@ -112,7 +112,15 @@ if __name__ == "__main__":
 @pytest.mark.slow
 def test_publish_flow():
     """Test that the publish flow runs successfully."""
-    cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
+    cmd = [
+        sys.executable,
+        __file__,
+        "--environment=local",
+        "--with=card",
+        "run",
+        "--tag=ds.domain:ml-platform",
+        "--tag=ds.project:ds-platform-utils-tests",
+    ]
 
     print("\n=== Metaflow Output ===")
     for line in execute_with_output(cmd):
