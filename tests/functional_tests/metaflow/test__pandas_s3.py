@@ -111,8 +111,8 @@ def test_pandas_read_write_flow_via_s3():
         "--environment=local",
         "--with=card",
         "run",
-        "--tag ds.domain:ml-platform",
-        "--tag ds.project:ds-platform-utils-tests",
+        "--tag=ds.domain:ml-platform",
+        "--tag=ds.project:ds-platform-utils-tests",
     ]
 
     print("\n=== Metaflow Output ===")
