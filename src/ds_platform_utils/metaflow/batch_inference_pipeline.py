@@ -234,7 +234,7 @@ class BatchInferencePipeline:
                 with _timer(f"🔹 Generated predictions for file {file_id}"):
                     predictions_df = predict_fn(df)
                 inference_queue.put((file_id, predictions_df), timeout=timeout_per_batch)
-                print(f"🔘 Inference completed for batch {file_id}")
+                print(f"🔘 Inference completed for batch {file_id} of {len(file_batches)}")
 
         def upload_worker():
             while True:
