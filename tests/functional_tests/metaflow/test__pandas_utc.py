@@ -7,7 +7,7 @@ import pytest
 from metaflow import FlowSpec, project, step
 
 
-@project(name="test_pandas_read_write_utc_flow")
+@project(name="ds_platform_utils_tests")
 class TestPandasReadWriteUTCFlow(FlowSpec):
     """A sample flow."""
 
@@ -40,7 +40,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         # Publish the table to Snowflake (UTC=True is default)
         publish_pandas(
-            table_name="PANDAS_TEST_TABLE_UTC",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_UTC",
             df=df,
             auto_create_table=True,
             overwrite=True,
@@ -54,7 +54,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         # Publish the same table which was published via publish_pandas in previous step (UTC=True is default)
         publish(
-            table_name="PANDAS_TEST_TABLE_UTC",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_UTC",
             query="SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};",
         )
         self.next(self.test_query_pandas_with_use_utc)
@@ -66,7 +66,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_UTC;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.DS_PLATFORM_UTILS_TEST_PANDAS_UTC;"
         df = query_pandas_from_snowflake(query)
 
         print(df)
@@ -107,7 +107,11 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         # Use use_utc=False this time
         publish_pandas(
-            table_name="PANDAS_TEST_TABLE_NOUTC", df=df, auto_create_table=True, overwrite=True, use_utc=False
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_NOUTC",
+            df=df,
+            auto_create_table=True,
+            overwrite=True,
+            use_utc=False,
         )
         self.next(self.test_publish_with_use_utc_false)
 
@@ -118,7 +122,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         # Publish the same table which was published via publish_pandas in previous step
         publish(
-            table_name="PANDAS_TEST_TABLE_NOUTC",
+            table_name="DS_PLATFORM_UTILS_TEST_PANDAS_NOUTC",
             query="SELECT * FROM PATTERN_DB.{{schema}}.{{table_name}};",
             use_utc=False,
         )
@@ -131,7 +135,7 @@ class TestPandasReadWriteUTCFlow(FlowSpec):
 
         from ds_platform_utils.metaflow import query_pandas_from_snowflake
 
-        query = "SELECT * FROM PATTERN_DB.{{schema}}.PANDAS_TEST_TABLE_NOUTC;"
+        query = "SELECT * FROM PATTERN_DB.{{schema}}.DS_PLATFORM_UTILS_TEST_PANDAS_NOUTC;"
         df = query_pandas_from_snowflake(query, use_utc=False)
 
         print(df)
@@ -156,7 +160,15 @@ if __name__ == "__main__":
 @pytest.mark.slow
 def test_pandas_read_write_flow():
     """Test that the publish flow runs successfully."""
-    cmd = [sys.executable, __file__, "--environment=local", "--with=card", "run"]
+    cmd = [
+        sys.executable,
+        __file__,
+        "--environment=local",
+        "--with=card",
+        "run",
+        "--tag=ds.domain:ml-platform",
+        "--tag=ds.project:ds-platform-utils-tests",
+    ]
 
     print("\n=== Metaflow Output ===")
     for line in execute_with_output(cmd):

@@ -1,10 +1,8 @@
 import os
-from typing import Optional
+from typing import Literal, Optional, Union
 
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
-
-from ds_platform_utils._snowflake.run_query import _execute_sql
 
 ####################
 # --- Metaflow --- #
@@ -14,8 +12,22 @@ from ds_platform_utils._snowflake.run_query import _execute_sql
 SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 
+def get_snowflake_warehouse(
+    warehouse: str,
+) -> Optional[str]:
+    if not warehouse:
+        warehouse = "XS"
+
+    if warehouse.upper() in ["XS", "MED", "XL"]:
+        domain = "ADS" if current.is_running_flow and "ds.domain:advertising" in current.tags else "SHARED"
+        env = "PROD" if current.is_production else "DEV"
+        warehouse = f"OUTERBOUNDS_DATA_SCIENCE_{domain}_{env}_{warehouse}_WH"
+    return warehouse.upper()
+
+
 # @lru_cache
 def get_snowflake_connection(
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
 ) -> SnowflakeConnection:
     """Return a singleton Snowflake cursor.
@@ -48,7 +60,11 @@ def get_snowflake_connection(
     else:
         query_tag = None
 
-    return _create_snowflake_connection(use_utc=use_utc, query_tag=query_tag)
+    return _create_snowflake_connection(
+        warehouse=get_snowflake_warehouse(warehouse),
+        use_utc=use_utc,
+        query_tag=query_tag,
+    )
 
 
 #####################
@@ -57,26 +73,17 @@ def get_snowflake_connection(
 
 
 def _create_snowflake_connection(
+    warehouse: str,
     use_utc: bool,
     query_tag: Optional[str] = None,
 ) -> SnowflakeConnection:
     conn: SnowflakeConnection = Snowflake(
         integration=SNOWFLAKE_INTEGRATION,
         client_session_keep_alive=True,
+        warehouse=warehouse,
+        timezone="UTC" if use_utc else None,
+        session_parameters={"QUERY_TAG": query_tag},
     ).cn  # type: ignore[attr-defined]
-
-    queries = []
-
-    if use_utc:
-        queries.append("ALTER SESSION SET TIMEZONE = 'UTC';")
-
-    if query_tag:
-        queries.append(f"ALTER SESSION SET QUERY_TAG = '{query_tag}';")
-
-    # Merge into single SQL batch
-    sql = "\n".join(queries)
-    _debug_print_query(sql)
-    _execute_sql(conn, sql)
 
     return conn
 
