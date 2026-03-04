@@ -75,7 +75,7 @@ def get_snowflake_connection(
 def _create_snowflake_connection(
     warehouse: str,
     use_utc: bool,
-    query_tag: str | None = None,
+    query_tag: Optional[str] = None,
 ) -> SnowflakeConnection:
     conn: SnowflakeConnection = Snowflake(
         integration=SNOWFLAKE_INTEGRATION,
