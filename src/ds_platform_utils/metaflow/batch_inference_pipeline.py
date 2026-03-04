@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, List, Literal, Optional, Tuple, Union
 
 import pandas as pd
 from metaflow import current
@@ -117,7 +117,7 @@ class BatchInferencePipeline:
         self,
         input_query: Union[str, Path],
         ctx: Optional[dict] = None,
-        warehouse: Optional[str] = None,
+        warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
         use_utc: bool = True,
         parallel_workers: int = 1,
     ) -> List[int]:
@@ -269,7 +269,7 @@ class BatchInferencePipeline:
         output_table_definition: Optional[List[Tuple[str, str]]] = None,
         auto_create_table: bool = False,
         overwrite: bool = False,
-        warehouse: Optional[str] = None,
+        warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
         use_utc: bool = True,
     ) -> None:
         """Step 3: Write all predictions from S3 to Snowflake (call this in join step).
@@ -322,7 +322,7 @@ class BatchInferencePipeline:
         timeout_per_batch: int = 300,
         auto_create_table: bool = True,
         overwrite: bool = True,
-        warehouse: Optional[str] = None,
+        warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
         use_utc: bool = True,
     ) -> None:
         """Run the complete pipeline: query → process → publish in a single call.

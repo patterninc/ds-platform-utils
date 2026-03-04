@@ -35,7 +35,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     add_created_date: bool = False,
     chunk_size: Optional[int] = None,
     compression: Literal["snappy", "gzip"] = "snappy",
-    warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     parallel: int = 4,
     quote_identifiers: bool = False,
     auto_create_table: bool = False,
@@ -167,7 +167,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
 def query_pandas_from_snowflake(
     query: Union[str, Path],
-    warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     ctx: Optional[Dict[str, Any]] = None,
     use_utc: bool = True,
     use_s3_stage: bool = False,

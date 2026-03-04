@@ -9,8 +9,6 @@ Utility class to orchestrate batch inference with Snowflake + S3 in Metaflow ste
 - `query_and_batch(...)`: export source data to S3 and create worker batches.
 - `process_batch(...)`: run download → inference → upload for one worker.
 - `publish_results(...)`: copy prediction outputs from S3 to Snowflake.
-
-  Or
 - `run(...)`: convenience method to execute full flow sequentially.
 
 ## Detailed example (Metaflow foreach)
@@ -39,66 +37,65 @@ def predict_fn(df: pd.DataFrame) -> pd.DataFrame:
 
 class BatchPredictFlow(FlowSpec):
 
-	start
-	@step
-	def start(self):
-		self.next(self.query_and_batch)
+    @step
+    def start(self):
+        self.next(self.query_and_batch)
 
-	@step
-	def query_and_batch(self):
-		self.pipeline = BatchInferencePipeline()
+    @step
+    def query_and_batch(self):
+        self.pipeline = BatchInferencePipeline()
 
-		# Query can be inline SQL or a file path.
-		# {schema} is provided by ds_platform_utils (DEV/PROD selection).
-		self.worker_ids = self.pipeline.query_and_batch(
-			input_query="""
-				SELECT
-					id,
-					feature_1,
-					feature_2
-				FROM {schema}.model_features
-				WHERE ds = '2026-02-26'
-			""",
-			parallel_workers=8,
-			warehouse="ANALYTICS_WH",
-			use_utc=True,
-		)
+        # Query can be inline SQL or a file path.
+        # {schema} is provided by ds_platform_utils (DEV/PROD selection).
+        self.worker_ids = self.pipeline.query_and_batch(
+            input_query="""
+                SELECT
+                    id,
+                    feature_1,
+                    feature_2
+                FROM {{schema}}.model_features
+                WHERE ds = '2026-02-26'
+            """,
+            parallel_workers=8,
+            warehouse="MED",
+            use_utc=True,
+        )
 
-		self.next(self.process_batch, foreach="worker_ids")
+        self.next(self.process_batch, foreach="worker_ids")
 
-	@step
-	def process_batch(self):
-		# In a foreach step, self.input contains one worker_id.
-		self.pipeline.process_batch(
-			worker_id=self.input,
-			predict_fn=predict_fn,
-			batch_size_in_mb=256,
-			timeout_per_batch=300,
-		)
-		self.next(self.publish_results)
+    @step
+    def process_batch(self):
+        # In a foreach step, self.input contains one worker_id.
+        self.pipeline.process_batch(
+            worker_id=self.input,
+            predict_fn=predict_fn,
+            batch_size_in_mb=256,
+            timeout_per_batch=300,
+        )
+        self.next(self.publish_results)
 
-	@step
-	def publish_results(self, inputs):
-		# Reuse one pipeline object from foreach branches.
-		self.pipeline = inputs[0].pipeline
+    @step
+    def publish_results(self, inputs):
+        # Reuse one pipeline object from foreach branches.
+        self.pipeline = inputs[0].pipeline
 
-		self.pipeline.publish_results(
-			output_table_name="MODEL_PREDICTIONS_DAILY",
-			output_table_definition=[
-				("id", "NUMBER"),
-				("score", "FLOAT"),
-				("label", "NUMBER"),
-			],
-			auto_create_table=True,
-			overwrite=True,
-			warehouse="MED",
-			use_utc=True,
-		)
-		self.next(self.end)
+        self.pipeline.publish_results(
+            output_table_name="MODEL_PREDICTIONS_DAILY",
+            output_table_definition=[
+                ("id", "NUMBER"),
+                ("score", "FLOAT"),
+                ("label", "NUMBER"),
+            ],
+            auto_create_table=True,
+            overwrite=True,
+            warehouse="MED",
+            use_utc=True,
+        )
+        self.next(self.end)
 
-	@step
-	def end(self):
-		print("Batch inference complete")
+    @step
+    def end(self):
+        print("Batch inference complete")
 ```
 
 ## Detailed example (single-step convenience)
@@ -124,7 +121,7 @@ def batch_inference_step(self):
 	pipeline.run(
 		input_query="""
 			SELECT id, feature_1
-			FROM {schema}.model_features
+			FROM {{schema}}.model_features
 			WHERE ds = '2026-02-26'
 		""",
 		output_table_name="MODEL_PREDICTIONS_DAILY",
@@ -136,7 +133,6 @@ def batch_inference_step(self):
 	self.next(self.end)
 ```
 
-<!-- ...existing code... -->
 ## Parameters
 
 ### `query_and_batch(...)`
@@ -165,6 +161,11 @@ def batch_inference_step(self):
 **Returns:** `None`
 
 **Recommended**: Tune `batch_size_in_mb` for Outerbounds Small tasks (3 CPU, 15 GB memory), which are about 6x more cost-effective than Medium tasks.
+
+## Limitations
+
+- The pipeline uses Snowflake ↔ S3 stage copy operations, so some column data types may be inferred differently than expected.
+- For predictable output types, provide an explicit `output_table_definition` in `publish_results(...)` / `run(...)` and cast columns in `predict_fn` as needed.
 
 ### `publish_results(...)`
 

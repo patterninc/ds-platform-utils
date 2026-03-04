@@ -23,7 +23,7 @@ def publish(  # noqa: PLR0913, D417
     query: Union[str, Path],
     audits: Optional[List[Union[str, Path]]] = None,
     ctx: Optional[Dict[str, Any]] = None,
-    warehouse: Optional[Literal["XS", "MED", "XL"]] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
 ) -> None:
     """Publish a Snowflake table using the write-audit-publish (WAP) pattern via Metaflow's Snowflake connection.
@@ -36,7 +36,9 @@ def publish(  # noqa: PLR0913, D417
     quality of the data before publishing. Each script should return zero rows for a successful audit.
     :param ctx: A context dictionary passed into the SQL execution environment (used for
     parameter substitution within SQL templates, if applicable).
-    :param warehouse: The Snowflake warehouse to use for this operation. If not specified,
+    :param warehouse: The Snowflake warehouse to use for this operation. Supports
+        shorthand values (`XS`, `MED`, `XL`) or a fully qualified Snowflake warehouse name.
+        If not specified,
         it defaults to the `OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XS_WH` warehouse,
         when running in the Outerbounds **Default** perimeter, and to the
         `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.

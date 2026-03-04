@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple, Union
 
 import pandas as pd
 import sqlparse
@@ -160,7 +160,7 @@ def _infer_table_schema(conn, snowflake_stage_path: str, use_logical_type: bool)
 
 def _copy_snowflake_to_s3(
     query: str,
-    warehouse: Optional[str] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
     s3_path: Optional[str] = None,
 ) -> str:
@@ -196,7 +196,7 @@ def _copy_s3_to_snowflake(  # noqa: PLR0913
     s3_path: str,
     table_name: str,
     table_definition: Optional[List[Tuple[str, str]]] = None,
-    warehouse: Optional[str] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
     auto_create_table: bool = False,
     overwrite: bool = False,

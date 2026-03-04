@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Literal, Optional, Union
 
 from metaflow import Snowflake, current
 from snowflake.connector import SnowflakeConnection
@@ -12,7 +12,9 @@ from snowflake.connector import SnowflakeConnection
 SNOWFLAKE_INTEGRATION = "snowflake-default"
 
 
-def get_snowflake_warehouse(warehouse: Optional[str] = None) -> Optional[str]:
+def get_snowflake_warehouse(
+    warehouse: str,
+) -> Optional[str]:
     if not warehouse:
         warehouse = "XS"
 
@@ -25,7 +27,7 @@ def get_snowflake_warehouse(warehouse: Optional[str] = None) -> Optional[str]:
 
 # @lru_cache
 def get_snowflake_connection(
-    warehouse: Optional[str] = None,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
 ) -> SnowflakeConnection:
     """Return a singleton Snowflake cursor.
@@ -71,9 +73,9 @@ def get_snowflake_connection(
 
 
 def _create_snowflake_connection(
-    warehouse: Optional[str],
+    warehouse: str,
     use_utc: bool,
-    query_tag: Optional[str] = None,
+    query_tag: str | None = None,
 ) -> SnowflakeConnection:
     conn: SnowflakeConnection = Snowflake(
         integration=SNOWFLAKE_INTEGRATION,
