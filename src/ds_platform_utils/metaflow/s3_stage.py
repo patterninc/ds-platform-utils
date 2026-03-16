@@ -73,7 +73,7 @@ def _generate_snowflake_to_s3_copy_query(
     FROM (
         {query}
     )
-    OVERWRITE = TRUE
+    INCLUDE_QUERY_ID = TRUE
     FILE_FORMAT = (TYPE = 'parquet')
     MAX_FILE_SIZE = {max_file_size}
     HEADER = TRUE
@@ -192,7 +192,7 @@ def _copy_snowflake_to_s3(
     return s3_path
 
 
-def _copy_s3_to_snowflake(  # noqa: PLR0913
+def _copy_s3_to_snowflake(
     s3_path: str,
     table_name: str,
     table_definition: Optional[List[Tuple[str, str]]] = None,
