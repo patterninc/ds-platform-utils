@@ -192,7 +192,7 @@ def _copy_snowflake_to_s3(
     return s3_path
 
 
-def _copy_s3_to_snowflake(
+def _copy_s3_to_snowflake(  # noqa: PLR0913
     s3_path: str,
     table_name: str,
     table_definition: Optional[List[Tuple[str, str]]] = None,
