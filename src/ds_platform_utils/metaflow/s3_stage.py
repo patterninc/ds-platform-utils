@@ -73,7 +73,7 @@ def _generate_snowflake_to_s3_copy_query(
     FROM (
         {query}
     )
-    OVERWRITE = TRUE
+    INCLUDE_QUERY_ID = TRUE
     FILE_FORMAT = (TYPE = 'parquet')
     MAX_FILE_SIZE = {max_file_size}
     HEADER = TRUE
