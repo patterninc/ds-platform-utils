@@ -80,10 +80,12 @@ def _create_snowflake_connection(
     conn: SnowflakeConnection = Snowflake(
         integration=SNOWFLAKE_INTEGRATION,
         client_session_keep_alive=True,
-        warehouse=warehouse,
         timezone="UTC" if use_utc else None,
         session_parameters={"QUERY_TAG": query_tag},
     ).cn  # type: ignore[attr-defined]
+
+    ## Doing this in the connection parameters result in silently failing to set the warehouse, so we have to execute a raw query to set it.
+    conn.execute_string("USE WAREHOUSE {}".format(warehouse)) 
 
     return conn
 
