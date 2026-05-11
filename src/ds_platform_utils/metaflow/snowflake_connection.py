@@ -86,7 +86,10 @@ def _create_snowflake_connection(
 
     # Doing this in the connection parameters result in silently failing to set the warehouse,
     # so we have to execute a raw query to set it.
-    conn.execute_string("USE WAREHOUSE {}".format(warehouse))
+    try:
+        conn.execute_string("USE WAREHOUSE {}".format(warehouse))
+    except Exception as e:
+        raise RuntimeError(f"Failed to set Snowflake warehouse to {warehouse}: {e}") from e
 
     return conn
 
