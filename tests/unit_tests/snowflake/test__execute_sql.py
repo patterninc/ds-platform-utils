@@ -7,7 +7,7 @@ import pytest
 from snowflake.connector import SnowflakeConnection
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow.snowflake_connection import _create_snowflake_connection
+from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,7 @@ def patched_current() -> Generator[MagicMock, None, None]:
 @pytest.fixture(scope="module")
 def snowflake_conn(patched_current) -> Generator[SnowflakeConnection, None, None]:
     """Get a Snowflake connection for testing."""
-    yield _create_snowflake_connection(warehouse=None, use_utc=True)
+    yield get_snowflake_connection(warehouse=None, use_utc=True)
 
 
 def test_execute_sql_empty_string(snowflake_conn):
