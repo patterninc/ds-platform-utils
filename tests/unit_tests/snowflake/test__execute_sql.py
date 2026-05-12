@@ -1,36 +1,21 @@
 """Functional test for _execute_sql."""
 
 from typing import Generator
-from unittest.mock import MagicMock
 
 import pytest
 from snowflake.connector import SnowflakeConnection
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow.snowflake_connection import _create_snowflake_connection
+from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 
 
 @pytest.fixture(scope="module")
-def patched_current() -> Generator[MagicMock, None, None]:
-    """Patch Metaflow `current` object for modules used in this test file."""
-    mock_current = MagicMock("metaflow.current")
-    mock_current.tags = ["ds.domain:testing", "ds.project:unit-tests"]
-    mock_current.flow_name = "DummyFlow"
-    mock_current.project_name = "dummy-project"
-    mock_current.step_name = "dummy-step"
-    mock_current.run_id = "123"
-    mock_current.username = "tester"
-    mock_current.is_production = False
-    mock_current.namespace = "user:tester"
-    mock_current.is_running_flow = True
-    mock_current.card = []
-    yield mock_current
-
-
-@pytest.fixture(scope="module")
-def snowflake_conn(patched_current) -> Generator[SnowflakeConnection, None, None]:
+def snowflake_conn() -> Generator[SnowflakeConnection, None, None]:
     """Get a Snowflake connection for testing."""
-    yield _create_snowflake_connection(warehouse=None, use_utc=True)
+    from metaflow import current
+
+    current.is_production = False  # Ensure we're in non-prod for testing
+    yield get_snowflake_connection(warehouse=None, use_utc=True)
 
 
 def test_execute_sql_empty_string(snowflake_conn):
