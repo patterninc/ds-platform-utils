@@ -3,6 +3,7 @@
 ## Metaflow API Docs
 
 - [BatchInferencePipeline](docs/metaflow/batch_inference_pipeline.md)
+- [create_ownership_registry_view](docs/metaflow/create_ownership_registry_view.md)
 - [make_pydantic_parser_fn](docs/metaflow/make_pydantic_parser_fn.md)
 - [publish](docs/metaflow/publish.md)
 - [publish_pandas](docs/metaflow/publish_pandas.md)

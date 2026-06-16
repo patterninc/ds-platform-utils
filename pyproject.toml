@@ -1,11 +1,12 @@
 [project]
 name = "ds-platform-utils"
-version = "0.4.2"
+version = "0.5.0"
 description = "Utility library for Pattern Data Science."
 readme = "README.md"
 authors = [
     { name = "Amit Vikram Raj", email = "amit.raj@pattern.com" },
-    { name = "Eric Riddoch", email = "eric.riddoch@pattern.com" }
+    { name = "Eric Riddoch", email = "eric.riddoch@pattern.com" },
+    { name = "Vinay Shende", email = "vinay.shende@pattern.com" }
 ]
 # requires-python = ">=3.7"
 dependencies = [

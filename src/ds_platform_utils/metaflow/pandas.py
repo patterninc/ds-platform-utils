@@ -44,6 +44,7 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
     use_utc: bool = True,
     use_s3_stage: bool = False,
     table_definition: Optional[List[Tuple[str, str]]] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> None:
     """Store a pandas dataframe as a Snowflake table.
 
@@ -89,12 +90,25 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param table_definition: Optional list of tuples specifying the column names and types for the Snowflake table.
         This is only used when `use_s3_stage` is True, and is required in that case. The list should be in the format: `[(col_name1, col_type1), (col_name2, col_type2), ...]`, where `col_type` is a valid Snowflake data type (e.g., 'STRING', 'NUMBER', 'TIMESTAMP_NTZ', etc.).
+
+    :param tags: Optional overrides for the ownership/governance object tags applied to the published
+        table (see the table-ownership RFC). Keys may be `owner`/`team`/`domain`/`project`/`status`/`sla`/
+        `contact` (optionally `TABLE_`-prefixed). OWNER/TEAM/DOMAIN/PROJECT are derived from the Metaflow
+        run context when not overridden, STATUS defaults to `active`, and SLA/CONTACT are only applied when
+        provided here. Tags are only applied to **production** tables; in non-prod runs no tags are applied.
+        If the tag definitions have not yet been created by a Snowflake admin, tagging is skipped with a
+        warning (the publish still succeeds).
     """
+    from ds_platform_utils._snowflake.object_tags import apply_table_tags, build_table_tags
+
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
 
     if df.empty:
         raise ValueError("DataFrame is empty.")
+
+    # Build/validate tags up front so an invalid status/sla fails fast, before any writes.
+    table_tags = build_table_tags(tags_override=tags)
 
     if add_created_date:
         df["created_date"] = datetime.now().astimezone(pytz.utc)
@@ -136,6 +150,12 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             use_logical_type=use_logical_type,
         )
 
+        # Tag the published table (prod only). The S3 path has no open connection, so open one.
+        if current.is_production:
+            tag_conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
+            apply_table_tags(conn=tag_conn, table_name=table_name, tags=table_tags)
+            tag_conn.close()
+
     else:
         conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
         _execute_sql(conn, f"USE SCHEMA PATTERN_DB.{schema};")
@@ -154,6 +174,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             overwrite=overwrite,
             use_logical_type=use_logical_type,
         )
+
+        # Tag the published table (prod only), reusing the open connection before closing it.
+        if current.is_production:
+            apply_table_tags(conn=conn, table_name=table_name, tags=table_tags)
         conn.close()
 
     # Add a link to the table in Snowflake to the card

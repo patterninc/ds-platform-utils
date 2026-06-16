@@ -22,6 +22,7 @@ publish_pandas(
     use_utc: bool = True,
     use_s3_stage: bool = False,
     table_definition: list[tuple[str, str]] | None = None,
+    tags: dict[str, str] | None = None,
 ) -> None
 ```
 
@@ -30,6 +31,8 @@ publish_pandas(
 - Validates DataFrame input.
 - Writes directly via `write_pandas` or via S3 stage flow for large data.
 - Adds a Snowflake table URL to Metaflow card output.
+- **Automatically applies ownership object tags to production tables** (see
+  [Ownership tags](#ownership-tags) below).
 
 ## Parameters
 
@@ -49,8 +52,29 @@ publish_pandas(
 | `use_utc`           | `bool`                          |       No | If `True`, uses UTC timezone for Snowflake session.                                                           |
 | `use_s3_stage`      | `bool`                          |       No | If `True`, publishes via S3 stage flow; otherwise uses direct `write_pandas`.                                 |
 | `table_definition`  | `list[tuple[str, str]] \| None` |       No | Optional Snowflake table schema; used by S3 stage flow when table creation is needed.                         |
+| `tags`              | `dict[str, str] \| None`        |       No | Overrides for the ownership object tags applied to the published table. See [Ownership tags](#ownership-tags).|
 
 **Returns:** `None`
+
+## Ownership tags
+
+When publishing to **production**, `publish_pandas()` automatically applies the same
+seven table-ownership object tags as [`publish`](publish.md#ownership-tags):
+`TABLE_OWNER`, `TABLE_TEAM`, `TABLE_DOMAIN`, `TABLE_PROJECT`, `TABLE_STATUS` and
+(when provided via `tags=`) `TABLE_SLA` / `TABLE_CONTACT`.
+
+```python
+publish_pandas(
+    table_name="MY_TABLE",
+    df=df,
+    tags={"sla": "daily", "contact": "#ds-recsys"},
+)
+```
+
+- Tags are applied **only to production tables**; non-prod runs apply none.
+- Tag *definitions* must first be created by a Snowflake admin (RFC `CREATE TAG` setup);
+  until then tagging is **skipped with a warning** and the publish still succeeds.
+- Invalid `status`/`sla` values raise `ValueError` before any data is written.
 
 ## Limitations
 
