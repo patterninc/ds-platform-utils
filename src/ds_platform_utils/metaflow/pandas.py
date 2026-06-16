@@ -152,9 +152,9 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
         # Tag the published table (prod only). The S3 path has no open connection, so open one.
         if current.is_production:
-            tag_conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
-            apply_table_tags(conn=tag_conn, table_name=table_name, tags=table_tags)
-            tag_conn.close()
+            _tag_table_with_new_connection(
+                table_name=table_name, tags=table_tags, schema=schema, warehouse=warehouse, use_utc=use_utc
+            )
 
     else:
         conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
@@ -187,6 +187,35 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
         table=table_name,
     )
     current.card.append(Markdown(f"[View table in Snowflake]({table_url})"))
+
+
+def _tag_table_with_new_connection(
+    table_name: str,
+    tags: Dict[str, str],
+    schema: str,
+    warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]],
+    use_utc: bool,
+) -> None:
+    """Open a short-lived connection and tag an already-published table.
+
+    Used by the S3-stage publish path, which has no open connection. Opening the
+    connection happens outside ``apply_table_tags``' own error handling, so we guard it
+    here too: tagging must never break an already-successful publish.
+    """
+    from ds_platform_utils._snowflake.object_tags import apply_table_tags
+
+    tag_conn = None
+    try:
+        tag_conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
+        apply_table_tags(conn=tag_conn, table_name=table_name, tags=tags)
+    except Exception as exc:  # noqa: BLE001 -- tagging must never break a successful publish
+        print(
+            f"Warning: failed to open a Snowflake connection to tag PATTERN_DB.{schema}.{table_name} "
+            f"({exc}). The table was published successfully; tags were skipped."
+        )
+    finally:
+        if tag_conn is not None:
+            tag_conn.close()
 
 
 def query_pandas_from_snowflake(

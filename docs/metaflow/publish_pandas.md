@@ -72,6 +72,10 @@ publish_pandas(
 ```
 
 - Tags are applied **only to production tables**; non-prod runs apply none.
+- `TABLE_DOMAIN` / `TABLE_PROJECT` come from the `ds.domain` / `ds.project` Metaflow tags;
+  if a flow runs without them they fall back to the literal `unknown` and a warning is
+  printed. Ensure the flow carries those tags (automatic in CI / standard `poe` commands)
+  or pass `tags={"domain": ..., "project": ...}`. See [`publish`](publish.md#ownership-tags).
 - Tag *definitions* must first be created by a Snowflake admin (RFC `CREATE TAG` setup);
   until then tagging is **skipped with a warning** and the publish still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.

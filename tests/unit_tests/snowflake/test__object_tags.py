@@ -98,6 +98,25 @@ def test_build_table_tags_drops_empty_override_value():
     assert "TABLE_CONTACT" not in tags
 
 
+@pytest.mark.parametrize("bad_table", ["bad; DROP TABLE x", "has space", "1leading_digit", "", "a-b"])
+def test_build_set_tag_sql_rejects_invalid_table_name(bad_table):
+    """Non-identifier table names are rejected before reaching SQL."""
+    with pytest.raises(ValueError, match="Invalid table_name"):
+        build_set_tag_sql(table_name=bad_table, tags={"TABLE_OWNER": "john_doe"})
+
+
+def test_build_set_tag_sql_rejects_invalid_tag_name():
+    """Non-identifier tag names are rejected."""
+    with pytest.raises(ValueError, match="Invalid tag name"):
+        build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER; DROP": "x"})
+
+
+def test_build_set_tag_sql_rejects_invalid_schema():
+    """Non-identifier schema is rejected."""
+    with pytest.raises(ValueError, match="Invalid schema"):
+        build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER": "x"}, schema="DATA_SCIENCE; DROP")
+
+
 class FakeConn:
     def __init__(self):
         self.committed = False
@@ -118,6 +137,25 @@ def test_apply_table_tags_swallows_errors_and_warns(monkeypatch, capsys):
 
     apply_table_tags(conn=conn, table_name="my_table", tags={"TABLE_OWNER": "john_doe"})
 
+    assert conn.committed is False
+    assert "Warning: failed to apply ownership tags" in capsys.readouterr().out
+
+
+def test_apply_table_tags_invalid_identifier_warns_not_raises(monkeypatch, capsys):
+    """An invalid identifier must warn-and-skip, not propagate out of apply_table_tags."""
+    executed = False
+
+    def _spy(*_args, **_kwargs):
+        nonlocal executed
+        executed = True
+
+    monkeypatch.setattr(object_tags, "_execute_sql", _spy)
+    conn = FakeConn()
+
+    # A malformed table name would otherwise build invalid/injectable SQL.
+    apply_table_tags(conn=conn, table_name="bad; DROP TABLE x", tags={"TABLE_OWNER": "john_doe"})
+
+    assert executed is False  # never reached execution
     assert conn.committed is False
     assert "Warning: failed to apply ownership tags" in capsys.readouterr().out
 

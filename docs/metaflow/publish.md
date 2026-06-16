@@ -61,11 +61,18 @@ object tags from the table-ownership RFC. The seven tags are:
 | --------------- | ------------------------------------------------------- | --------------- |
 | `TABLE_OWNER`   | Metaflow `current.username`                             | yes             |
 | `TABLE_TEAM`    | `data-science`                                          | yes             |
-| `TABLE_DOMAIN`  | `ds.domain` Metaflow tag                                | yes             |
-| `TABLE_PROJECT` | `ds.project` Metaflow tag                               | yes             |
+| `TABLE_DOMAIN`  | `ds.domain` Metaflow tag, else `unknown`                | yes             |
+| `TABLE_PROJECT` | `ds.project` Metaflow tag, else `unknown`               | yes             |
 | `TABLE_STATUS`  | `active` (override allows `active`/`deprecated`/`archived`) | yes          |
 | `TABLE_SLA`     | override only (`realtime`/`hourly`/`daily`/`weekly`/`ad_hoc`) | only if given |
 | `TABLE_CONTACT` | override only (Slack channel or email)                  | only if given   |
+
+> **`TABLE_DOMAIN` / `TABLE_PROJECT` depend on flow tags.** These are read from the
+> `ds.domain` / `ds.project` Metaflow tags. If a flow runs without them, the value falls
+> back to the literal string `unknown` and a warning is printed (the same warning used
+> for select.dev cost tracking). Make sure your flow carries `--tag "ds.domain:..."` and
+> `--tag "ds.project:..."` — these are applied automatically in CI and the standard `poe`
+> run commands in the monorepo — or pass `tags={"domain": ..., "project": ...}` explicitly.
 
 Pass `tags=` to override any value. Keys may be `owner`/`team`/`domain`/`project`/
 `status`/`sla`/`contact` (optionally `TABLE_`-prefixed):

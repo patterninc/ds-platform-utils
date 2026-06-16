@@ -9,6 +9,7 @@ The tag *definitions* must be created once by a Snowflake admin (see the RFC's
 (already successful) table write untouched -- tagging must never break a publish.
 """
 
+import re
 from typing import TYPE_CHECKING, Dict, Optional
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
@@ -19,6 +20,12 @@ if TYPE_CHECKING:
     from snowflake.connector import SnowflakeConnection
 
 DATABASE = "PATTERN_DB"
+
+# A Snowflake unquoted identifier: starts with a letter/underscore, then letters/digits/underscores.
+# Identifiers (table name, schema, tag names) are interpolated directly into the SET TAG SQL, so we
+# reject anything else to avoid malformed SQL or statement injection. (Tag *values* are safely
+# single-quoted + escaped via _quote and are not subject to this check.)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # RFC allowed-value lists for the constrained tags.
 TABLE_STATUS_ALLOWED = {"active", "deprecated", "archived"}
@@ -115,6 +122,20 @@ def _quote(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _validate_identifier(value: str, kind: str) -> None:
+    """Reject anything that isn't a plain unquoted SQL identifier.
+
+    Identifiers are interpolated unquoted into the ``SET TAG`` SQL, so a value containing
+    e.g. ``;`` or whitespace could produce invalid SQL or statement injection.
+
+    :param value: Identifier to check (table name, schema, or tag name).
+    :param kind: Human-readable label used in the error message.
+    :raises ValueError: If ``value`` is not a valid unquoted identifier.
+    """
+    if not _IDENTIFIER_RE.match(value):
+        raise ValueError(f"Invalid {kind} {value!r}; expected an unquoted identifier (letters/numbers/underscore).")
+
+
 def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str = PROD_SCHEMA) -> str:
     """Build a single ``ALTER TABLE ... SET TAG`` statement.
 
@@ -124,11 +145,15 @@ def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str = PROD_
     :param tags: Mapping of tag name to value (e.g. from :func:`build_table_tags`).
     :param schema: Schema holding both the table and the tag definitions.
     :return: The ``ALTER TABLE`` SQL string.
-    :raises ValueError: If ``tags`` is empty.
+    :raises ValueError: If ``tags`` is empty, or any identifier (table/schema/tag name) is invalid.
     """
     if not tags:
         raise ValueError("No tags to apply.")
     table = table_name.upper()
+    _validate_identifier(table, "table_name")
+    _validate_identifier(schema, "schema")
+    for name in tags:
+        _validate_identifier(name, "tag name")
     assignments = ",\n        ".join(f"{DATABASE}.{schema}.{name} = '{_quote(value)}'" for name, value in tags.items())
     return f"ALTER TABLE {DATABASE}.{schema}.{table}\n    SET TAG\n        {assignments};"
 
@@ -153,8 +178,9 @@ def apply_table_tags(
     """
     if not tags:
         return
-    sql = build_set_tag_sql(table_name=table_name, tags=tags, schema=schema)
     try:
+        # Built inside the try so identifier-validation errors warn-and-skip rather than break publish.
+        sql = build_set_tag_sql(table_name=table_name, tags=tags, schema=schema)
         _execute_sql(conn, sql)
         conn.commit()
         print(f"Applied ownership tags to {DATABASE}.{schema}.{table_name.upper()}: {sorted(tags)}")
