@@ -63,8 +63,8 @@ object tags from the table-ownership RFC. The seven tags are:
 | `TABLE_TEAM`    | `data-science`                                          | yes             |
 | `TABLE_DOMAIN`  | `ds.domain` Metaflow tag, else `unknown`                | yes             |
 | `TABLE_PROJECT` | `ds.project` Metaflow tag, else `unknown`               | yes             |
-| `TABLE_STATUS`  | `active` (override allows `active`/`deprecated`/`archived`) | yes          |
-| `TABLE_SLA`     | override only (`realtime`/`hourly`/`daily`/`weekly`/`ad_hoc`) | only if given |
+| `TABLE_STATUS`  | `active` (override allows `active`/`development`/`testing`/`deprecated`/`archived`/`retired`) | yes |
+| `TABLE_SLA`     | override only (`streaming`/`realtime`/`hourly`/`daily`/`weekly`/`monthly`/`quarterly`/`ad_hoc`/`on_demand`) | only if given |
 | `TABLE_CONTACT` | override only (Slack channel or email)                  | only if given   |
 
 > **`TABLE_DOMAIN` / `TABLE_PROJECT` depend on flow tags.** These are read from the
