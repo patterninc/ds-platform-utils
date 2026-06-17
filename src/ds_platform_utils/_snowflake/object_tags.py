@@ -28,8 +28,18 @@ DATABASE = "PATTERN_DB"
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # RFC allowed-value lists for the constrained tags.
-TABLE_STATUS_ALLOWED = {"active", "development", "testing",  "deprecated", "archived", "retired"}
-TABLE_SLA_ALLOWED = {"streaming", "realtime", "hourly", "daily", "weekly", "monthly", "quarterly", "ad_hoc", "on_demand"}
+TABLE_STATUS_ALLOWED = {"active", "development", "testing", "deprecated", "archived", "retired"}
+TABLE_SLA_ALLOWED = {
+    "streaming",
+    "realtime",
+    "hourly",
+    "daily",
+    "weekly",
+    "monthly",
+    "quarterly",
+    "ad_hoc",
+    "on_demand",
+}
 DEFAULT_TABLE_STATUS = "active"
 
 # All seven RFC tag names.
