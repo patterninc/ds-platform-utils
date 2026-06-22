@@ -93,9 +93,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
 
     :param tags: Optional overrides for the ownership/governance object tags applied to the published
         table (see the table-ownership RFC). Keys may be `owner`/`team`/`domain`/`project`/`status`/`sla`/
-        `contact` (optionally `TABLE_`-prefixed). OWNER/TEAM/DOMAIN/PROJECT are derived from the Metaflow
-        run context when not overridden, STATUS defaults to `active`, and SLA/CONTACT are only applied when
-        provided here. Tags are only applied to **production** tables; in non-prod runs no tags are applied.
+        `contact` (optionally `TABLE_`-prefixed). TEAM/DOMAIN/PROJECT are derived from the Metaflow
+        run context when not overridden; OWNER defaults to the owning-team alias `ds-<domain>-team`
+        (or `unknown` if the domain is unknown); STATUS defaults to `active`; SLA/CONTACT are only applied
+        when provided here. Tags are only applied to **production** tables; in non-prod runs no tags are applied.
         If the tag definitions have not yet been created by a Snowflake admin, tagging is skipped with a
         warning (the publish still succeeds).
     """
@@ -150,11 +151,10 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             use_logical_type=use_logical_type,
         )
 
-        # Tag the published table (prod only). The S3 path has no open connection, so open one.
-        if current.is_production:
-            _tag_table_with_new_connection(
-                table_name=table_name, tags=table_tags, schema=schema, warehouse=warehouse, use_utc=use_utc
-            )
+        # Tag the published table. The S3 path has no open connection, so open one.
+        _tag_table_with_new_connection(
+            table_name=table_name, tags=table_tags, schema=schema, warehouse=warehouse, use_utc=use_utc
+        )
 
     else:
         conn: SnowflakeConnection = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
@@ -175,9 +175,8 @@ def publish_pandas(  # noqa: PLR0913 (too many arguments)
             use_logical_type=use_logical_type,
         )
 
-        # Tag the published table (prod only), reusing the open connection before closing it.
-        if current.is_production:
-            apply_table_tags(conn=conn, table_name=table_name, tags=table_tags)
+        # Tag the published table, reusing the open connection before closing it.
+        apply_table_tags(conn=conn, table_name=table_name, tags=table_tags, schema=schema)
         conn.close()
 
     # Add a link to the table in Snowflake to the card
@@ -207,7 +206,7 @@ def _tag_table_with_new_connection(
     tag_conn = None
     try:
         tag_conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
-        apply_table_tags(conn=tag_conn, table_name=table_name, tags=tags)
+        apply_table_tags(conn=tag_conn, table_name=table_name, tags=tags, schema=schema)
     except Exception as exc:  # noqa: BLE001 -- tagging must never break a successful publish
         print(
             f"Warning: failed to open a Snowflake connection to tag PATTERN_DB.{schema}.{table_name} "

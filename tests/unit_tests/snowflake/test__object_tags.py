@@ -22,16 +22,44 @@ class FakeCurrent:
 
 
 def test_build_table_tags_derives_all_mappings():
-    """All four context-derived tags + default STATUS are present; SLA/CONTACT omitted."""
+    """Context-derived tags + default STATUS present; OWNER = team alias from domain; SLA/CONTACT omitted."""
     tags = build_table_tags(current_obj=FakeCurrent())
 
-    assert tags["TABLE_OWNER"] == "john_doe"
+    # OWNER is derived from the domain (not current.username) when no override is given.
+    assert tags["TABLE_OWNER"] == "ds-recommendations-team"
     assert tags["TABLE_TEAM"] == "data-science"
     assert tags["TABLE_DOMAIN"] == "recommendations"
     assert tags["TABLE_PROJECT"] == "two_tower_v2"
     assert tags["TABLE_STATUS"] == "active"
     assert "TABLE_SLA" not in tags
     assert "TABLE_CONTACT" not in tags
+
+
+def test_build_table_tags_owner_falls_back_to_unknown_without_domain():
+    """When the domain can't be resolved, OWNER falls back to 'unknown'."""
+
+    class NoDomainCurrent(FakeCurrent):
+        tags = []  # no ds.domain / ds.project -> domain resolves to "unknown"
+
+    tags = build_table_tags(current_obj=NoDomainCurrent())
+
+    assert tags["TABLE_DOMAIN"] == "unknown"
+    assert tags["TABLE_OWNER"] == "unknown"
+
+
+def test_build_table_tags_owner_follows_overridden_domain():
+    """Overriding the domain (without overriding owner) re-derives the owner team alias."""
+    tags = build_table_tags(tags_override={"domain": "advertising"}, current_obj=FakeCurrent())
+
+    assert tags["TABLE_DOMAIN"] == "advertising"
+    assert tags["TABLE_OWNER"] == "ds-advertising-team"
+
+
+def test_build_table_tags_explicit_owner_beats_domain_derivation():
+    """An explicit owner override wins over the domain-derived team alias."""
+    tags = build_table_tags(tags_override={"owner": "jane"}, current_obj=FakeCurrent())
+
+    assert tags["TABLE_OWNER"] == "jane"
 
 
 def test_build_table_tags_overrides_win():
@@ -62,17 +90,30 @@ def test_build_table_tags_unknown_key_raises():
 
 
 def test_build_set_tag_sql_format_and_escaping():
-    """SQL targets DATA_SCIENCE for both table and tag, upper-cases the table, escapes quotes."""
-    sql = build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER": "o'brien"})
+    """SQL targets the table schema for the object, upper-cases the table, escapes quotes."""
+    sql = build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER": "o'brien"}, schema="DATA_SCIENCE")
 
     assert "ALTER TABLE PATTERN_DB.DATA_SCIENCE.MY_TABLE" in sql
     assert "PATTERN_DB.DATA_SCIENCE.TABLE_OWNER = 'o''brien'" in sql
     assert sql.strip().endswith(";")
 
 
+def test_build_set_tag_sql_dev_table_uses_stage_schema():
+    """A dev table is tagged with tag definitions co-located in DATA_SCIENCE_STAGE."""
+    sql = build_set_tag_sql(
+        table_name="my_table",
+        tags={"TABLE_OWNER": "ds-advertising-team"},
+        schema="DATA_SCIENCE_STAGE",
+    )
+
+    # Both the object and the tag definition are referenced from the stage schema.
+    assert "ALTER TABLE PATTERN_DB.DATA_SCIENCE_STAGE.MY_TABLE" in sql
+    assert "PATTERN_DB.DATA_SCIENCE_STAGE.TABLE_OWNER = 'ds-advertising-team'" in sql
+
+
 def test_build_set_tag_sql_empty_raises():
     with pytest.raises(ValueError, match="No tags to apply"):
-        build_set_tag_sql(table_name="t", tags={})
+        build_set_tag_sql(table_name="t", tags={}, schema="DATA_SCIENCE")
 
 
 def test_build_set_tag_sql_multiple_tags_joined():
@@ -80,6 +121,7 @@ def test_build_set_tag_sql_multiple_tags_joined():
     sql = build_set_tag_sql(
         table_name="my_table",
         tags={"TABLE_OWNER": "john_doe", "TABLE_TEAM": "data-science", "TABLE_STATUS": "active"},
+        schema="DATA_SCIENCE",
     )
 
     assert sql.count("SET TAG") == 1
@@ -102,13 +144,13 @@ def test_build_table_tags_drops_empty_override_value():
 def test_build_set_tag_sql_rejects_invalid_table_name(bad_table):
     """Non-identifier table names are rejected before reaching SQL."""
     with pytest.raises(ValueError, match="Invalid table_name"):
-        build_set_tag_sql(table_name=bad_table, tags={"TABLE_OWNER": "john_doe"})
+        build_set_tag_sql(table_name=bad_table, tags={"TABLE_OWNER": "john_doe"}, schema="DATA_SCIENCE")
 
 
 def test_build_set_tag_sql_rejects_invalid_tag_name():
     """Non-identifier tag names are rejected."""
     with pytest.raises(ValueError, match="Invalid tag name"):
-        build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER; DROP": "x"})
+        build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER; DROP": "x"}, schema="DATA_SCIENCE")
 
 
 def test_build_set_tag_sql_rejects_invalid_schema():
@@ -135,7 +177,7 @@ def test_apply_table_tags_swallows_errors_and_warns(monkeypatch, capsys):
     monkeypatch.setattr(object_tags, "_execute_sql", _boom)
     conn = FakeConn()
 
-    apply_table_tags(conn=conn, table_name="my_table", tags={"TABLE_OWNER": "john_doe"})
+    apply_table_tags(conn=conn, table_name="my_table", tags={"TABLE_OWNER": "john_doe"}, schema="DATA_SCIENCE")
 
     assert conn.committed is False
     assert "Warning: failed to apply ownership tags" in capsys.readouterr().out
@@ -153,7 +195,9 @@ def test_apply_table_tags_invalid_identifier_warns_not_raises(monkeypatch, capsy
     conn = FakeConn()
 
     # A malformed table name would otherwise build invalid/injectable SQL.
-    apply_table_tags(conn=conn, table_name="bad; DROP TABLE x", tags={"TABLE_OWNER": "john_doe"})
+    apply_table_tags(
+        conn=conn, table_name="bad; DROP TABLE x", tags={"TABLE_OWNER": "john_doe"}, schema="DATA_SCIENCE"
+    )
 
     assert executed is False  # never reached execution
     assert conn.committed is False
@@ -171,7 +215,7 @@ def test_apply_table_tags_success_executes_and_commits(monkeypatch, capsys):
     monkeypatch.setattr(object_tags, "_execute_sql", _capture)
     conn = FakeConn()
 
-    apply_table_tags(conn=conn, table_name="my_table", tags={"TABLE_OWNER": "john_doe"})
+    apply_table_tags(conn=conn, table_name="my_table", tags={"TABLE_OWNER": "john_doe"}, schema="DATA_SCIENCE")
 
     assert captured["conn"] is conn
     assert "ALTER TABLE PATTERN_DB.DATA_SCIENCE.MY_TABLE" in captured["sql"]
@@ -191,7 +235,7 @@ def test_apply_table_tags_noop_on_empty(monkeypatch):
     monkeypatch.setattr(object_tags, "_execute_sql", _spy)
     conn = FakeConn()
 
-    apply_table_tags(conn=conn, table_name="my_table", tags={})
+    apply_table_tags(conn=conn, table_name="my_table", tags={}, schema="DATA_SCIENCE")
 
     assert called is False
     assert conn.committed is False

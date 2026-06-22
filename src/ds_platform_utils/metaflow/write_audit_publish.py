@@ -7,6 +7,7 @@ from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
+from ds_platform_utils.metaflow._consts import DEV_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 from ds_platform_utils.sql_utils import get_query_from_string_or_fpath
 
@@ -46,9 +47,10 @@ def publish(  # noqa: PLR0913, D417
     :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
     :param tags: Optional overrides for the ownership/governance object tags applied to the published
         table (see the table-ownership RFC). Keys may be ``owner``/``team``/``domain``/``project``/
-        ``status``/``sla``/``contact`` (optionally ``TABLE_``-prefixed). OWNER/TEAM/DOMAIN/PROJECT are
-        derived from the Metaflow run context when not overridden, STATUS defaults to ``active``, and
-        SLA/CONTACT are only applied when provided here. Tags are only applied to **production** tables;
+        ``status``/``sla``/``contact`` (optionally ``TABLE_``-prefixed). TEAM/DOMAIN/PROJECT are
+        derived from the Metaflow run context when not overridden; OWNER defaults to the owning-team
+        alias ``ds-<domain>-team`` (or ``unknown`` if the domain is unknown); STATUS defaults to
+        ``active``; SLA/CONTACT are only applied when provided here. Tags are only applied to **production** tables;
         in non-prod runs no tags are applied. If the tag definitions have not yet been created by a
         Snowflake admin, tagging is skipped with a warning (the publish still succeeds).
 
@@ -99,9 +101,11 @@ def publish(  # noqa: PLR0913, D417
                 )
             last_op_was_write = operation.operation_type == "write"
 
-        # Tag the final table (prod only). Done after the SWAP so tags land on the live table.
-        if current.is_production:
-            apply_table_tags(conn=cur.connection, table_name=table_name, tags=table_tags)
+        # Tag the final table. Done after the SWAP so tags land on the live table. Applied to every
+        # table; the table lives in DATA_SCIENCE (prod) or DATA_SCIENCE_STAGE (dev), while the tag
+        # definitions always live in DATA_SCIENCE (the apply_table_tags default tag_schema).
+        schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
+        apply_table_tags(conn=cur.connection, table_name=table_name, tags=table_tags, schema=schema)
 
 
 def update_card_with_operation_info(

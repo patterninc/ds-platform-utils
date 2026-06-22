@@ -13,7 +13,6 @@ import re
 from typing import TYPE_CHECKING, Dict, Optional
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow._consts import PROD_SCHEMA
 from ds_platform_utils.sql_utils import get_select_dev_query_tags
 
 if TYPE_CHECKING:
@@ -41,6 +40,15 @@ TABLE_SLA_ALLOWED = {
     "on_demand",
 }
 DEFAULT_TABLE_STATUS = "active"
+
+# Value used by get_select_dev_query_tags when a derived field can't be resolved.
+UNKNOWN_VALUE = "unknown"
+
+
+def _owner_from_domain(domain: str) -> str:
+    """Map a domain to its owning team alias, e.g. ``advertising`` -> ``ds-advertising-team``."""
+    return f"ds-{domain}-team"
+
 
 # All seven RFC tag names.
 TAG_OWNER = "TABLE_OWNER"
@@ -91,10 +99,13 @@ def build_table_tags(
 ) -> Dict[str, str]:
     """Build the final ``{TAG_NAME: value}`` dict to apply to a published table.
 
-    OWNER / TEAM / DOMAIN / PROJECT are derived from the Metaflow run context (reusing
-    :func:`get_select_dev_query_tags`); STATUS defaults to ``active``. Any value may be
-    overridden via ``tags_override``. SLA and CONTACT are only included when supplied
-    via ``tags_override`` (they cannot be inferred).
+    TEAM / DOMAIN / PROJECT are derived from the Metaflow run context (reusing
+    :func:`get_select_dev_query_tags`); STATUS defaults to ``active``. OWNER is resolved
+    by priority: (1) an explicit ``owner`` override, else (2) the owning-team alias derived
+    from the (possibly overridden) domain -- ``ds-<domain>-team`` -- when the domain is
+    known, else (3) ``unknown``. (We deliberately don't use ``current.username`` for OWNER:
+    on deployed/argo runs it resolves to a service identity, not a person.) SLA and CONTACT
+    are only included when supplied via ``tags_override``.
 
     :param tags_override: Optional overrides, keyed by ``owner``/``TABLE_OWNER``/etc.
     :param current_obj: Optional Metaflow ``current`` stand-in (for testing).
@@ -106,7 +117,6 @@ def build_table_tags(
     derived = get_select_dev_query_tags(current_obj=current_obj)
 
     tags: Dict[str, str] = {
-        TAG_OWNER: derived["user"],
         TAG_TEAM: derived["team"],
         TAG_DOMAIN: derived["domain"],
         TAG_PROJECT: derived["workload_id"],
@@ -114,6 +124,15 @@ def build_table_tags(
     }
     # SLA / CONTACT are only set when explicitly provided.
     tags.update(overrides)
+
+    # Resolve OWNER: explicit override wins; else derive a team alias from the (final) domain
+    # when it's known; else fall back to "unknown".
+    if TAG_OWNER not in overrides:
+        domain = tags.get(TAG_DOMAIN)
+        if domain and domain != UNKNOWN_VALUE:
+            tags[TAG_OWNER] = _owner_from_domain(domain)
+        else:
+            tags[TAG_OWNER] = UNKNOWN_VALUE
 
     status = tags[TAG_STATUS]
     if status not in TABLE_STATUS_ALLOWED:
@@ -146,10 +165,12 @@ def _validate_identifier(value: str, kind: str) -> None:
         raise ValueError(f"Invalid {kind} {value!r}; expected an unquoted identifier (letters/numbers/underscore).")
 
 
-def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str = PROD_SCHEMA) -> str:
+def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str) -> str:
     """Build a single ``ALTER TABLE ... SET TAG`` statement.
 
-    Tag definitions and the table both live in ``schema`` (``DATA_SCIENCE`` for prod).
+    Tags are co-located with the table they describe: the table and its tag *definitions*
+    both live in ``schema`` -- ``DATA_SCIENCE`` for prod tables, ``DATA_SCIENCE_STAGE`` for
+    dev/stage tables (the definitions must exist in each schema).
 
     :param table_name: Table to tag (upper-cased to match Snowflake's stored identifier).
     :param tags: Mapping of tag name to value (e.g. from :func:`build_table_tags`).
@@ -172,31 +193,33 @@ def apply_table_tags(
     conn: "SnowflakeConnection",
     table_name: str,
     tags: Dict[str, str],
-    schema: str = PROD_SCHEMA,
+    schema: str,
 ) -> None:
     """Apply object tags to a published table, warning (never raising) on failure.
 
-    A failure here most commonly means the tag definitions have not yet been created by
-    an admin (see the RFC ``CREATE TAG`` setup). Because the table write has already
-    succeeded by this point, we log a clear warning and return rather than breaking the
-    publish.
+    A failure here most commonly means the tag definitions have not yet been created in
+    ``schema`` by an admin (see the RFC ``CREATE TAG`` setup), or the publishing role lacks
+    ``APPLY`` on the tags. Because the table write has already succeeded by this point, we
+    log a clear warning and return rather than breaking the publish.
 
     :param conn: Open Snowflake connection.
     :param table_name: Table to tag.
     :param tags: Mapping of tag name to value.
-    :param schema: Schema holding both the table and the tag definitions.
+    :param schema: Schema holding both the table and its tag definitions (prod or dev/stage).
     """
     if not tags:
         return
+    target = f"{DATABASE}.{schema}.{table_name.upper()}"
     try:
         # Built inside the try so identifier-validation errors warn-and-skip rather than break publish.
         sql = build_set_tag_sql(table_name=table_name, tags=tags, schema=schema)
         _execute_sql(conn, sql)
         conn.commit()
-        print(f"Applied ownership tags to {DATABASE}.{schema}.{table_name.upper()}: {sorted(tags)}")
+        print(f"Applied ownership tags to {target}: {sorted(tags)}")
     except Exception as exc:  # noqa: BLE001 -- tagging must never break a successful publish
         print(
-            f"Warning: failed to apply ownership tags to {DATABASE}.{schema}.{table_name.upper()} "
-            f"({exc}). The table was published successfully; tags were skipped. This usually means the "
-            f"tag definitions have not been created yet by a Snowflake admin (see the table-ownership RFC)."
+            f"Warning: failed to apply ownership tags to {target} ({exc}). The table was published "
+            f"successfully; tags were skipped. This usually means the tag definitions have not been "
+            f"created yet by a Snowflake admin, or the publishing role lacks APPLY on the tags "
+            f"(see the table-ownership RFC)."
         )
