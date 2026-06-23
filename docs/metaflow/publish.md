@@ -23,7 +23,7 @@ publish(
 - Reads SQL from a string or `.sql` path.
 - Runs write/audit/publish operations through Snowflake.
 - Adds operation details and table links to the Metaflow card when available.
-- **Automatically applies ownership object tags to every published table** (see
+- **Automatically applies ownership object tags to production tables** (see
   [Ownership tags](#ownership-tags) below).
 
 ## Parameters
@@ -54,8 +54,8 @@ publish(
 
 ## Ownership tags
 
-On **every** publish, `publish()` automatically applies the table-ownership object tags
-from the table-ownership RFC. The seven tags are:
+When publishing to **production**, `publish()` automatically applies the table-ownership
+object tags from the table-ownership RFC. The seven tags are:
 
 | Tag             | Source                                                  | Always set?     |
 | --------------- | ------------------------------------------------------- | --------------- |
@@ -96,13 +96,9 @@ publish(
 
 Notes:
 
-- Tags are applied to **every** published table — prod tables in `DATA_SCIENCE` and
-  dev/stage tables in `DATA_SCIENCE_STAGE`. Tags are **co-located with the table's schema**:
-  a prod table references the tag definitions in `DATA_SCIENCE`, a dev table references
-  those in `DATA_SCIENCE_STAGE`. So the definitions must exist in **each** schema, and the
-  publishing role needs `APPLY` on the tags **in that schema** (e.g. the dev role needs
-  `APPLY` on the `DATA_SCIENCE_STAGE` tags).
-- The tag *definitions* must first be created once by a Snowflake admin in each schema
+- Tags are applied **only to production tables** (`DATA_SCIENCE`). Non-prod
+  (`DATA_SCIENCE_STAGE`) runs apply no tags. The publishing role needs `APPLY` on the tags.
+- The tag *definitions* must first be created once by a Snowflake admin in `DATA_SCIENCE`
   (the RFC `CREATE TAG` setup). Until then, tagging is **skipped with a warning** — the publish
   still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.

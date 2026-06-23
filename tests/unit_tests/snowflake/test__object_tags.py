@@ -98,17 +98,12 @@ def test_build_set_tag_sql_format_and_escaping():
     assert sql.strip().endswith(";")
 
 
-def test_build_set_tag_sql_dev_table_uses_stage_schema():
-    """A dev table is tagged with tag definitions co-located in DATA_SCIENCE_STAGE."""
-    sql = build_set_tag_sql(
-        table_name="my_table",
-        tags={"TABLE_OWNER": "ds-advertising-team"},
-        schema="DATA_SCIENCE_STAGE",
-    )
+def test_build_set_tag_sql_defaults_to_data_science():
+    """Schema defaults to DATA_SCIENCE (only production tables are tagged)."""
+    sql = build_set_tag_sql(table_name="my_table", tags={"TABLE_OWNER": "ds-advertising-team"})
 
-    # Both the object and the tag definition are referenced from the stage schema.
-    assert "ALTER TABLE PATTERN_DB.DATA_SCIENCE_STAGE.MY_TABLE" in sql
-    assert "PATTERN_DB.DATA_SCIENCE_STAGE.TABLE_OWNER = 'ds-advertising-team'" in sql
+    assert "ALTER TABLE PATTERN_DB.DATA_SCIENCE.MY_TABLE" in sql
+    assert "PATTERN_DB.DATA_SCIENCE.TABLE_OWNER = 'ds-advertising-team'" in sql
 
 
 def test_build_set_tag_sql_empty_raises():

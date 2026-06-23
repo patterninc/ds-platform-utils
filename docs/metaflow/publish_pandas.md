@@ -31,7 +31,7 @@ publish_pandas(
 - Validates DataFrame input.
 - Writes directly via `write_pandas` or via S3 stage flow for large data.
 - Adds a Snowflake table URL to Metaflow card output.
-- **Automatically applies ownership object tags to every published table** (see
+- **Automatically applies ownership object tags to production tables** (see
   [Ownership tags](#ownership-tags) below).
 
 ## Parameters
@@ -58,7 +58,7 @@ publish_pandas(
 
 ## Ownership tags
 
-On **every** publish, `publish_pandas()` automatically applies the same
+When publishing to **production**, `publish_pandas()` automatically applies the same
 seven table-ownership object tags as [`publish`](publish.md#ownership-tags):
 `TABLE_OWNER`, `TABLE_TEAM`, `TABLE_DOMAIN`, `TABLE_PROJECT`, `TABLE_STATUS` and
 (when provided via `tags=`) `TABLE_SLA` / `TABLE_CONTACT`.
@@ -71,9 +71,7 @@ publish_pandas(
 )
 ```
 
-- Tags are applied to **every** published table — prod in `DATA_SCIENCE`, dev/stage in
-  `DATA_SCIENCE_STAGE`. Tags are co-located with the table's schema, so the definitions
-  must exist in **each** schema and the publishing role needs `APPLY` on the tags there.
+- Tags are applied **only to production tables** (`DATA_SCIENCE`); non-prod runs apply none.
 - `TABLE_DOMAIN` / `TABLE_PROJECT` come from the `ds.domain` / `ds.project` Metaflow tags;
   if a flow runs without them they fall back to the literal `unknown` and a warning is
   printed. Ensure the flow carries those tags (automatic in CI / standard `poe` commands)

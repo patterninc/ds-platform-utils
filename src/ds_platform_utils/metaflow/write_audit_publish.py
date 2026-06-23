@@ -7,7 +7,6 @@ from metaflow.cards import Artifact, Markdown, Table
 from snowflake.connector.cursor import SnowflakeCursor
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
-from ds_platform_utils.metaflow._consts import DEV_SCHEMA, PROD_SCHEMA
 from ds_platform_utils.metaflow.snowflake_connection import get_snowflake_connection
 from ds_platform_utils.sql_utils import get_query_from_string_or_fpath
 
@@ -101,11 +100,9 @@ def publish(  # noqa: PLR0913, D417
                 )
             last_op_was_write = operation.operation_type == "write"
 
-        # Tag the final table. Done after the SWAP so tags land on the live table. Applied to every
-        # table; the table lives in DATA_SCIENCE (prod) or DATA_SCIENCE_STAGE (dev), while the tag
-        # definitions always live in DATA_SCIENCE (the apply_table_tags default tag_schema).
-        schema = PROD_SCHEMA if current.is_production else DEV_SCHEMA
-        apply_table_tags(conn=cur.connection, table_name=table_name, tags=table_tags, schema=schema)
+        # Tag the final table (prod only). Done after the SWAP so tags land on the live table.
+        if current.is_production:
+            apply_table_tags(conn=cur.connection, table_name=table_name, tags=table_tags)
 
 
 def update_card_with_operation_info(

@@ -13,6 +13,7 @@ import re
 from typing import TYPE_CHECKING, Dict, Optional
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
+from ds_platform_utils.metaflow._consts import PROD_SCHEMA
 from ds_platform_utils.sql_utils import get_select_dev_query_tags
 
 if TYPE_CHECKING:
@@ -165,12 +166,11 @@ def _validate_identifier(value: str, kind: str) -> None:
         raise ValueError(f"Invalid {kind} {value!r}; expected an unquoted identifier (letters/numbers/underscore).")
 
 
-def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str) -> str:
+def build_set_tag_sql(table_name: str, tags: Dict[str, str], schema: str = PROD_SCHEMA) -> str:
     """Build a single ``ALTER TABLE ... SET TAG`` statement.
 
-    Tags are co-located with the table they describe: the table and its tag *definitions*
-    both live in ``schema`` -- ``DATA_SCIENCE`` for prod tables, ``DATA_SCIENCE_STAGE`` for
-    dev/stage tables (the definitions must exist in each schema).
+    Only production tables are tagged, so the table and its tag *definitions* both live in
+    ``schema`` (``DATA_SCIENCE``).
 
     :param table_name: Table to tag (upper-cased to match Snowflake's stored identifier).
     :param tags: Mapping of tag name to value (e.g. from :func:`build_table_tags`).
@@ -193,7 +193,7 @@ def apply_table_tags(
     conn: "SnowflakeConnection",
     table_name: str,
     tags: Dict[str, str],
-    schema: str,
+    schema: str = PROD_SCHEMA,
 ) -> None:
     """Apply object tags to a published table, warning (never raising) on failure.
 
@@ -205,7 +205,7 @@ def apply_table_tags(
     :param conn: Open Snowflake connection.
     :param table_name: Table to tag.
     :param tags: Mapping of tag name to value.
-    :param schema: Schema holding both the table and its tag definitions (prod or dev/stage).
+    :param schema: Schema holding both the table and its tag definitions (``DATA_SCIENCE``).
     """
     if not tags:
         return
