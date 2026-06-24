@@ -80,6 +80,7 @@ def get_select_dev_query_tags(current_obj: Optional[Any] = None) -> dict[str, Op
         "step_name": _attr("step_name"),
         "run_id": _attr("run_id"),
         "user": _attr("username"),
+        "owner": _extract("ds.owner"),
         "domain": _extract("ds.domain"),
         "namespace": _attr("namespace"),
         "perimeter": str(os.environ.get("OB_CURRENT_PERIMETER") or os.environ.get("OBP_PERIMETER")),

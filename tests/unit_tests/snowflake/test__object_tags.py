@@ -62,6 +62,28 @@ def test_build_table_tags_explicit_owner_beats_domain_derivation():
     assert tags["TABLE_OWNER"] == "jane"
 
 
+def test_build_table_tags_ds_owner_flow_tag_beats_domain_derivation():
+    """A `ds.owner` flow tag is used (priority 2) over the domain-derived team alias."""
+
+    class DsOwnerCurrent(FakeCurrent):
+        tags = ["ds.domain:recommendations", "ds.project:two_tower_v2", "ds.owner:john_doe"]
+
+    tags = build_table_tags(current_obj=DsOwnerCurrent())
+
+    assert tags["TABLE_OWNER"] == "john_doe"
+
+
+def test_build_table_tags_explicit_owner_beats_ds_owner_flow_tag():
+    """An explicit override (priority 1) wins over the `ds.owner` flow tag (priority 2)."""
+
+    class DsOwnerCurrent(FakeCurrent):
+        tags = ["ds.domain:recommendations", "ds.project:two_tower_v2", "ds.owner:john_doe"]
+
+    tags = build_table_tags(tags_override={"owner": "jane"}, current_obj=DsOwnerCurrent())
+
+    assert tags["TABLE_OWNER"] == "jane"
+
+
 def test_build_table_tags_overrides_win():
     """Overrides (incl. alias + cased keys) replace derived values and add SLA/CONTACT."""
     tags = build_table_tags(

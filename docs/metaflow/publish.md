@@ -59,7 +59,7 @@ object tags from the table-ownership RFC. The seven tags are:
 
 | Tag             | Source                                                  | Always set?     |
 | --------------- | ------------------------------------------------------- | --------------- |
-| `TABLE_OWNER`   | owning-team alias derived from the domain (`ds-<domain>-team`), else `unknown` | yes |
+| `TABLE_OWNER`   | `ds.owner` flow tag, else owning-team alias derived from the domain (`ds-<domain>-team`), else `unknown` | yes |
 | `TABLE_TEAM`    | `data-science`                                          | yes             |
 | `TABLE_DOMAIN`  | `ds.domain` Metaflow tag, else `unknown`                | yes             |
 | `TABLE_PROJECT` | `ds.project` Metaflow tag, else `unknown`               | yes             |
@@ -67,12 +67,14 @@ object tags from the table-ownership RFC. The seven tags are:
 | `TABLE_SLA`     | override only (`streaming`/`realtime`/`hourly`/`daily`/`weekly`/`monthly`/`quarterly`/`ad_hoc`/`on_demand`) | only if given |
 | `TABLE_CONTACT` | override only (Slack channel or email)                  | only if given   |
 
-> **`TABLE_OWNER` is derived from the domain, not the run user.** Owner is resolved by
-> priority: (1) an explicit `tags={"owner": ...}` override, else (2) the owning-team alias
-> `ds-<domain>-team` when the domain is known (e.g. domain `advertising` →
-> `ds-advertising-team`), else (3) `unknown`. We don't use `current.username`, because on
-> deployed/argo runs it resolves to a service identity (`argo-workflows`) rather than a
-> person. Pass `tags={"owner": ...}` to set a specific individual or alias.
+> **`TABLE_OWNER` is not the run user.** Owner is resolved by priority:
+> (1) an explicit `tags={"owner": ...}` override, else
+> (2) the **`ds.owner`** Metaflow flow tag (set in CI alongside `ds.domain`/`ds.project`), else
+> (3) the owning-team alias `ds-<domain>-team` when the domain is known (e.g. domain
+> `advertising` → `ds-advertising-team`), else (4) `unknown`. We don't use `current.username`,
+> because on deployed/argo runs it resolves to a service identity (`argo-workflows`) rather
+> than a person. Set `ds.owner` on the flow for a per-flow owner, or pass `tags={"owner": ...}`
+> per call.
 
 > **`TABLE_DOMAIN` / `TABLE_PROJECT` depend on flow tags.** These are read from the
 > `ds.domain` / `ds.project` Metaflow tags. If a flow runs without them, the value falls

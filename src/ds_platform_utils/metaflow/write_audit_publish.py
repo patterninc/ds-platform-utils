@@ -47,8 +47,9 @@ def publish(  # noqa: PLR0913, D417
     :param tags: Optional overrides for the ownership/governance object tags applied to the published
         table (see the table-ownership RFC). Keys may be ``owner``/``team``/``domain``/``project``/
         ``status``/``sla``/``contact`` (optionally ``TABLE_``-prefixed). TEAM/DOMAIN/PROJECT are
-        derived from the Metaflow run context when not overridden; OWNER defaults to the owning-team
-        alias ``ds-<domain>-team`` (or ``unknown`` if the domain is unknown); STATUS defaults to
+        derived from the Metaflow run context when not overridden; OWNER is resolved by priority --
+        explicit ``owner`` override → ``ds.owner`` flow tag → owning-team alias ``ds-<domain>-team`` →
+        ``unknown``; STATUS defaults to
         ``active``; SLA/CONTACT are only applied when provided here. Tags are only applied to **production** tables;
         in non-prod runs no tags are applied. If the tag definitions have not yet been created by a
         Snowflake admin, tagging is skipped with a warning (the publish still succeeds).

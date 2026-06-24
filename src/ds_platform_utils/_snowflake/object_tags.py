@@ -102,11 +102,11 @@ def build_table_tags(
 
     TEAM / DOMAIN / PROJECT are derived from the Metaflow run context (reusing
     :func:`get_select_dev_query_tags`); STATUS defaults to ``active``. OWNER is resolved
-    by priority: (1) an explicit ``owner`` override, else (2) the owning-team alias derived
-    from the (possibly overridden) domain -- ``ds-<domain>-team`` -- when the domain is
-    known, else (3) ``unknown``. (We deliberately don't use ``current.username`` for OWNER:
-    on deployed/argo runs it resolves to a service identity, not a person.) SLA and CONTACT
-    are only included when supplied via ``tags_override``.
+    by priority: (1) an explicit ``owner`` override, else (2) the ``ds.owner`` flow tag,
+    else (3) the owning-team alias derived from the (possibly overridden) domain --
+    ``ds-<domain>-team`` -- when the domain is known, else (4) ``unknown``. (We deliberately
+    don't use ``current.username`` for OWNER: on deployed/argo runs it resolves to a service
+    identity, not a person.) SLA and CONTACT are only included when supplied via ``tags_override``.
 
     :param tags_override: Optional overrides, keyed by ``owner``/``TABLE_OWNER``/etc.
     :param current_obj: Optional Metaflow ``current`` stand-in (for testing).
@@ -126,11 +126,14 @@ def build_table_tags(
     # SLA / CONTACT are only set when explicitly provided.
     tags.update(overrides)
 
-    # Resolve OWNER: explicit override wins; else derive a team alias from the (final) domain
-    # when it's known; else fall back to "unknown".
+    # Resolve OWNER by priority: (1) explicit override, (2) the `ds.owner` flow tag, (3) the
+    # team alias derived from the (final) domain, (4) "unknown".
     if TAG_OWNER not in overrides:
+        ds_owner = derived.get("owner")
         domain = tags.get(TAG_DOMAIN)
-        if domain and domain != UNKNOWN_VALUE:
+        if ds_owner and ds_owner != UNKNOWN_VALUE:
+            tags[TAG_OWNER] = ds_owner
+        elif domain and domain != UNKNOWN_VALUE:
             tags[TAG_OWNER] = _owner_from_domain(domain)
         else:
             tags[TAG_OWNER] = UNKNOWN_VALUE
