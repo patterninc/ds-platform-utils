@@ -62,7 +62,7 @@ class TestPandasReadWriteFlow(FlowSpec):
             df=df,
             auto_create_table=True,
             overwrite=True,
-            warehouse="OUTERBOUNDS_DATA_SCIENCE_MED_WH",
+            warehoouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_MED_WH",
         )
 
         self.next(self.test_query_pandas)
