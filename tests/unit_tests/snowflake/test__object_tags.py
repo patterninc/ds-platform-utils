@@ -63,14 +63,25 @@ def test_build_table_tags_explicit_owner_beats_domain_derivation():
 
 
 def test_build_table_tags_ds_owner_flow_tag_beats_domain_derivation():
-    """A `ds.owner` flow tag is used (priority 2) over the domain-derived team alias."""
+    """A `ds.owner` flow tag is used (priority 2), wrapped as a team alias, over the domain."""
 
     class DsOwnerCurrent(FakeCurrent):
         tags = ["ds.domain:recommendations", "ds.project:two_tower_v2", "ds.owner:john_doe"]
 
     tags = build_table_tags(current_obj=DsOwnerCurrent())
 
-    assert tags["TABLE_OWNER"] == "john_doe"
+    assert tags["TABLE_OWNER"] == "ds-john_doe-team"
+
+
+def test_build_table_tags_ds_owner_flow_tag_already_aliased_is_not_double_wrapped():
+    """A `ds.owner` that's already a full alias is used as-is (idempotent wrapping)."""
+
+    class DsOwnerCurrent(FakeCurrent):
+        tags = ["ds.domain:recommendations", "ds.project:two_tower_v2", "ds.owner:ds-payments-team"]
+
+    tags = build_table_tags(current_obj=DsOwnerCurrent())
+
+    assert tags["TABLE_OWNER"] == "ds-payments-team"
 
 
 def test_build_table_tags_explicit_owner_beats_ds_owner_flow_tag():

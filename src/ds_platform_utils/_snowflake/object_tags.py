@@ -46,9 +46,14 @@ DEFAULT_TABLE_STATUS = "active"
 UNKNOWN_VALUE = "unknown"
 
 
-def _owner_from_domain(domain: str) -> str:
-    """Map a domain to its owning team alias, e.g. ``advertising`` -> ``ds-advertising-team``."""
-    return f"ds-{domain}-team"
+def _team_alias(name: str) -> str:
+    """Wrap a domain/owner name into its team alias, e.g. ``advertising`` -> ``ds-advertising-team``.
+
+    Idempotent: a value that is already an alias (``ds-advertising-team``) is returned unchanged
+    rather than double-wrapped, so an already-formatted ``ds.owner`` flow tag stays intact.
+    """
+    core = name.removeprefix("ds-").removesuffix("-team")
+    return f"ds-{core}-team"
 
 
 # All seven RFC tag names.
@@ -102,9 +107,9 @@ def build_table_tags(
 
     TEAM / DOMAIN / PROJECT are derived from the Metaflow run context (reusing
     :func:`get_select_dev_query_tags`); STATUS defaults to ``active``. OWNER is resolved
-    by priority: (1) an explicit ``owner`` override, else (2) the ``ds.owner`` flow tag,
-    else (3) the owning-team alias derived from the (possibly overridden) domain --
-    ``ds-<domain>-team`` -- when the domain is known, else (4) ``unknown``. (We deliberately
+    by priority: (1) an explicit ``owner`` override, else (2) the ``ds.owner`` flow tag as a
+    team alias (``ds-<owner>-team``), else (3) the owning-team alias derived from the (possibly
+    overridden) domain -- ``ds-<domain>-team`` -- when the domain is known, else (4) ``unknown``. (We deliberately
     don't use ``current.username`` for OWNER: on deployed/argo runs it resolves to a service
     identity, not a person.) SLA and CONTACT are only included when supplied via ``tags_override``.
 
@@ -126,15 +131,15 @@ def build_table_tags(
     # SLA / CONTACT are only set when explicitly provided.
     tags.update(overrides)
 
-    # Resolve OWNER by priority: (1) explicit override, (2) the `ds.owner` flow tag, (3) the
-    # team alias derived from the (final) domain, (4) "unknown".
+    # Resolve OWNER by priority: (1) explicit override, (2) the `ds.owner` flow tag wrapped as
+    # a team alias, (3) the team alias derived from the (final) domain, (4) "unknown".
     if TAG_OWNER not in overrides:
         ds_owner = derived.get("owner")
         domain = tags.get(TAG_DOMAIN)
         if ds_owner and ds_owner != UNKNOWN_VALUE:
-            tags[TAG_OWNER] = ds_owner
+            tags[TAG_OWNER] = _team_alias(ds_owner)
         elif domain and domain != UNKNOWN_VALUE:
-            tags[TAG_OWNER] = _owner_from_domain(domain)
+            tags[TAG_OWNER] = _team_alias(domain)
         else:
             tags[TAG_OWNER] = UNKNOWN_VALUE
 
