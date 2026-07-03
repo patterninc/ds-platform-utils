@@ -43,9 +43,7 @@ def test_build_table_tags_derives_all_mappings():
 
 def test_build_table_tags_last_updated_override_wins():
     """An explicit last_updated override replaces the auto-stamped timestamp."""
-    tags = build_table_tags(
-        tags_override={"LAST_UPDATED": "2020-01-02 03:04:05"}, current_obj=FakeCurrent()
-    )
+    tags = build_table_tags(tags_override={"LAST_UPDATED": "2020-01-02 03:04:05"}, current_obj=FakeCurrent())
 
     assert tags["LAST_UPDATED"] == "2020-01-02 03:04:05"
 

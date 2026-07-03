@@ -76,6 +76,7 @@ def _now_last_updated() -> str:
     """Current UTC time formatted as ``YYYY-MM-DD HH:MI:SS`` for the LAST_UPDATED tag."""
     return datetime.now(timezone.utc).strftime(_LAST_UPDATED_FORMAT)
 
+
 # Maps accepted override keys (case-insensitive, with or without the ``TABLE_`` prefix)
 # to the canonical tag name.
 _OVERRIDE_ALIASES = {
