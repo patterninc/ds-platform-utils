@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from ds_platform_utils._snowflake import object_tags
@@ -6,6 +8,8 @@ from ds_platform_utils._snowflake.object_tags import (
     build_set_tag_sql,
     build_table_tags,
 )
+
+_LAST_UPDATED_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
 
 
 class FakeCurrent:
@@ -33,6 +37,17 @@ def test_build_table_tags_derives_all_mappings():
     assert tags["TABLE_STATUS"] == "active"
     assert "TABLE_SLA" not in tags
     assert "TABLE_CONTACT" not in tags
+    # LAST_UPDATED is auto-stamped in "YYYY-MM-DD HH:MI:SS" form.
+    assert _LAST_UPDATED_RE.match(tags["LAST_UPDATED"])
+
+
+def test_build_table_tags_last_updated_override_wins():
+    """An explicit last_updated override replaces the auto-stamped timestamp."""
+    tags = build_table_tags(
+        tags_override={"LAST_UPDATED": "2020-01-02 03:04:05"}, current_obj=FakeCurrent()
+    )
+
+    assert tags["LAST_UPDATED"] == "2020-01-02 03:04:05"
 
 
 def test_build_table_tags_owner_falls_back_to_unknown_without_domain():

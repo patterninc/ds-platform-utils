@@ -10,6 +10,7 @@ The tag *definitions* must be created once by a Snowflake admin (see the RFC's
 """
 
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Dict, Optional
 
 from ds_platform_utils._snowflake.run_query import _execute_sql
@@ -64,6 +65,16 @@ TAG_PROJECT = "TABLE_PROJECT"
 TAG_STATUS = "TABLE_STATUS"
 TAG_SLA = "TABLE_SLA"
 TAG_CONTACT = "TABLE_CONTACT"
+# Auto-populated timestamp of when the table was last published/updated.
+TAG_LAST_UPDATED = "LAST_UPDATED"
+
+# Format for TAG_LAST_UPDATED values: "YYYY-MM-DD HH:MI:SS" (UTC).
+_LAST_UPDATED_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _now_last_updated() -> str:
+    """Current UTC time formatted as ``YYYY-MM-DD HH:MI:SS`` for the LAST_UPDATED tag."""
+    return datetime.now(timezone.utc).strftime(_LAST_UPDATED_FORMAT)
 
 # Maps accepted override keys (case-insensitive, with or without the ``TABLE_`` prefix)
 # to the canonical tag name.
@@ -75,6 +86,7 @@ _OVERRIDE_ALIASES = {
     "status": TAG_STATUS,
     "sla": TAG_SLA,
     "contact": TAG_CONTACT,
+    "last_updated": TAG_LAST_UPDATED,
 }
 
 
@@ -111,7 +123,9 @@ def build_table_tags(
     team alias (``ds-<owner>-team``), else (3) the owning-team alias derived from the (possibly
     overridden) domain -- ``ds-<domain>-team`` -- when the domain is known, else (4) ``unknown``. (We deliberately
     don't use ``current.username`` for OWNER: on deployed/argo runs it resolves to a service
-    identity, not a person.) SLA and CONTACT are only included when supplied via ``tags_override``.
+    identity, not a person.) LAST_UPDATED defaults to the current publish time in UTC
+    (``YYYY-MM-DD HH:MI:SS``) but can be overridden (e.g. for backfills, migrations and other use cases). SLA and CONTACT are
+    only included when supplied via ``tags_override``.
 
     :param tags_override: Optional overrides, keyed by ``owner``/``TABLE_OWNER``/etc.
     :param current_obj: Optional Metaflow ``current`` stand-in (for testing).
@@ -127,6 +141,8 @@ def build_table_tags(
         TAG_DOMAIN: derived["domain"],
         TAG_PROJECT: derived["workload_id"],
         TAG_STATUS: DEFAULT_TABLE_STATUS,
+        # Stamp the publish time (UTC); an explicit override below still wins.
+        TAG_LAST_UPDATED: _now_last_updated(),
     }
     # SLA / CONTACT are only set when explicitly provided.
     tags.update(overrides)
