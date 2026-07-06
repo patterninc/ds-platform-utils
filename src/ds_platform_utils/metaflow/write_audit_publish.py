@@ -25,6 +25,7 @@ def publish(  # noqa: PLR0913, D417
     ctx: Optional[Dict[str, Any]] = None,
     warehouse: Optional[Union[Literal["XS", "MED", "XL"], str]] = None,
     use_utc: bool = True,
+    tags: Optional[Dict[str, str]] = None,
 ) -> None:
     """Publish a Snowflake table using the write-audit-publish (WAP) pattern via Metaflow's Snowflake connection.
 
@@ -43,6 +44,15 @@ def publish(  # noqa: PLR0913, D417
         when running in the Outerbounds **Default** perimeter, and to the
         `OUTERBOUNDS_DATA_SCIENCE_SHARED_PROD_XS_WH` warehouse, when running in the Outerbounds **PROD** perimeter.
     :param use_utc: Whether to use UTC timezone for the Snowflake connection (affects timestamp fields).
+    :param tags: Optional overrides for the ownership/governance object tags applied to the published
+        table (see the table-ownership RFC). Keys may be ``owner``/``team``/``domain``/``project``/
+        ``status``/``sla``/``contact`` (optionally ``TABLE_``-prefixed). TEAM/DOMAIN/PROJECT are
+        derived from the Metaflow run context when not overridden; OWNER is resolved by priority --
+        explicit ``owner`` override → ``ds.owner`` flow tag → owning-team alias ``ds-<domain>-team`` →
+        ``unknown``; STATUS defaults to
+        ``active``; SLA/CONTACT are only applied when provided here. Tags are only applied to **production** tables;
+        in non-prod runs no tags are applied. If the tag definitions have not yet been created by a
+        Snowflake admin, tagging is skipped with a warning (the publish still succeeds).
 
     Returns
     -------
@@ -58,11 +68,16 @@ def publish(  # noqa: PLR0913, D417
         query="sql/create_training_data.sql",
         audits=["sql/validate_training_data.sql"],
         warehouse="OUTERBOUNDS_DATA_SCIENCE_SHARED_DEV_XL_WH",
+        tags={"sla": "daily", "contact": "#ds-recsys"},
     )
     ```
 
     """
+    from ds_platform_utils._snowflake.object_tags import apply_table_tags, build_table_tags
     from ds_platform_utils._snowflake.write_audit_publish import write_audit_publish
+
+    # Build/validate tags up front so an invalid status/sla fails fast, before any writes.
+    table_tags = build_table_tags(tags_override=tags)
 
     conn = get_snowflake_connection(warehouse=warehouse, use_utc=use_utc)
     query = get_query_from_string_or_fpath(query)
@@ -85,6 +100,10 @@ def publish(  # noqa: PLR0913, D417
                     cursor=cur,
                 )
             last_op_was_write = operation.operation_type == "write"
+
+        # Tag the final table (prod only). Done after the SWAP so tags land on the live table.
+        if current.is_production:
+            apply_table_tags(conn=cur.connection, table_name=table_name, tags=table_tags)
 
 
 def update_card_with_operation_info(

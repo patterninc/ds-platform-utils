@@ -9,3 +9,7 @@
 - [query_pandas_from_snowflake](docs/metaflow/query_pandas_from_snowflake.md)
 - [restore_step_state](docs/metaflow/restore_step_state.md)
 
+## Admin / Setup
+
+- [Table-ownership registry view](docs/metaflow/table_ownership_registry.md)
+
