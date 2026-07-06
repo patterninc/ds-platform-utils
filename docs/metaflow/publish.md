@@ -105,4 +105,4 @@ Notes:
   still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.
 - Tagged tables surface in the `TABLE_OWNERSHIP_REGISTRY` view (see
-  `create_ownership_registry_view`).
+  [Table-ownership registry view](table_ownership_registry.md)).
