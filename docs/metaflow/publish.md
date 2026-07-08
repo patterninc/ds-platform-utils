@@ -104,5 +104,3 @@ Notes:
   (the RFC `CREATE TAG` setup). Until then, tagging is **skipped with a warning** — the publish
   still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.
-- Tagged tables surface in the `TABLE_OWNERSHIP_REGISTRY` view (see
-  [Table-ownership registry view](table_ownership_registry.md)).
