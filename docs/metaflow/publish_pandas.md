@@ -80,6 +80,12 @@ publish_pandas(
   until then tagging is **skipped with a warning** and the publish still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.
 
+## Notes
+
+- The underlying Snowflake session always has `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`
+  set (`snowflake_connection.py`), so quoted identifiers resolve case-insensitively
+  regardless of `quote_identifiers`.
+
 ## Limitations
 
 - When `use_s3_stage=True`, some column data types may not map exactly as expected between pandas/parquet and Snowflake.
