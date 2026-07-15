@@ -88,6 +88,7 @@ def _create_snowflake_connection(
     # so we have to execute a raw query to set it.
     try:
         conn.execute_string("USE WAREHOUSE {}".format(warehouse))
+        conn.execute_string("ALTER SESSION SET QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE")
     except Exception as e:
         raise RuntimeError(f"Failed to set Snowflake warehouse to {warehouse}: {e}") from e
 
