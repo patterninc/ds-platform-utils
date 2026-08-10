@@ -3,7 +3,7 @@
 ## Metaflow API Docs
 
 - [BatchInferencePipeline](docs/metaflow/batch_inference_pipeline.md)
-- [get_packages_from_pyproject / get_packages_from_uv_lock](docs/metaflow/pypi_packages.md)
+- [uv_pypi_base / uv_pypi](docs/metaflow/pypi_packages.md)
 - [make_pydantic_parser_fn](docs/metaflow/make_pydantic_parser_fn.md)
 - [publish](docs/metaflow/publish.md)
 - [publish_pandas](docs/metaflow/publish_pandas.md)

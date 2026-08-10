@@ -1,15 +1,26 @@
-"""Derive a Metaflow ``@pypi`` packages map from a flow repo's dependency declarations.
+"""Build a Metaflow ``@pypi`` environment from a flow repo's dependency declarations.
 
-Keeping the dependency list in one place means a flow's `@pypi_base` cannot drift from what
-the project actually installs. Two entry points, same output contract, differing only in
-where the versions come from:
+Describing the environment in one place means a flow cannot drift from what the project
+actually installs.
 
-- [`get_packages_from_pyproject`][ds_platform_utils.metaflow.get_packages_from_pyproject]
-  reads `pyproject.toml`, so a dependency is pinned exactly as loosely as it was declared.
-- [`get_packages_from_uv_lock`][ds_platform_utils.metaflow.get_packages_from_uv_lock] reads
-  `uv.lock`, so every version is the resolved one -- including exact commit SHAs for git
-  dependencies, which makes a bake reproducible instead of tracking whatever `main` points
-  at today.
+[`uv_pypi_base`][ds_platform_utils.metaflow.uv_pypi_base] is the whole thing -- Metaflow's
+`@pypi_base` with the Python version and packages filled in from uv.lock:
+
+```python
+@uv_pypi_base
+class MyFlow(FlowSpec): ...
+```
+
+[`uv_pypi`][ds_platform_utils.metaflow.uv_pypi] is its step-level counterpart, delegating to
+`@pypi`. Those two decorators are the entire public surface of this module.
+
+Everything below them is internal: `_get_pypi_kwargs` assembles the arguments both decorators
+pass on, over `_get_packages_from_uv_lock` for the packages and `_find_python_version` for the
+interpreter.
+
+Versions come from `uv.lock` rather than the constraints in pyproject.toml, so every one is
+the version uv actually resolved -- including exact commit SHAs for git dependencies. That is
+what makes a bake reproducible instead of tracking whatever `main` points at today.
 """
 
 import sys
@@ -58,35 +69,85 @@ def _find_project_file(filename: str, project_root: Optional[Union[str, Path]] =
     return None
 
 
-def _uv_source_to_direct_reference(name: str, source: dict) -> str:
-    """Render a `[tool.uv.sources]` entry as a PEP 508 direct reference.
-
-    uv's table syntax (`{ git = "...", rev = "main" }`) means nothing to pip, so it has to be
-    flattened into the `git+<url>@<ref>` form pip understands.
+def _load_toml(path: Path) -> dict:
+    """Parse a TOML file.
 
     Args:
-        name: the dependency name the source is declared for, used in the error message
-        source: the source table, e.g. `{"git": "https://...", "rev": "main"}`
+        path: the file to read
 
     """
-    if "git" in source:
-        url = f"git+{source['git']}"
-        # uv allows rev / tag / branch; all three land on the same pip fragment.
-        ref = source.get("rev") or source.get("tag") or source.get("branch")
-        if ref:
-            url = f"{url}@{ref}"
-    elif "url" in source:
-        url = source["url"]
-    else:
-        raise ValueError(
-            f"[tool.uv.sources] entry for {name!r} cannot be installed by @pypi: {source!r}. Only git and "
-            "url sources are fetchable from a remote task -- path and workspace sources are local-only."
-        )
-    if source.get("subdirectory"):
-        url = f"{url}#subdirectory={source['subdirectory']}"
-    # metaflow passes a version through verbatim when it starts with "@", which is
-    # exactly the PEP 508 direct-reference separator.
-    return f"@ {url}"
+    with open(path, "rb") as f:
+        return tomllib.load(f)
+
+
+def _requires_python_floor(project_root: Optional[Union[str, Path]] = None) -> Optional[str]:
+    """Read the lowest Python version the project claims to support.
+
+    `requires-python` is a range, not a version, so the floor is the only concrete thing in
+    it -- `">=3.11,<3.13"` means the project is built to run on 3.11. uv.lock is checked
+    before pyproject.toml because the lock records the range the dependency graph was
+    actually resolved against.
+
+    Args:
+        project_root: directory holding the project files. Defaults to searching upward from
+            the directory the flow was launched from.
+
+    Returns:
+        A `"<major>.<minor>"` string, or `None` when neither file declares a floor.
+
+    """
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    requires = None
+    lock_path = _find_project_file("uv.lock", project_root)
+    if lock_path is not None:
+        requires = _load_toml(lock_path).get("requires-python")
+    if not requires:
+        toml_path = _find_project_file("pyproject.toml", project_root)
+        if toml_path is not None:
+            requires = _load_toml(toml_path).get("project", {}).get("requires-python")
+    if not requires:
+        return None
+
+    # ">=3.11" and "~=3.11" pin a floor; "==3.11.*" pins it exactly. "<3.13" says nothing
+    # about what the project runs on, so upper bounds are ignored.
+    floors = [
+        Version(spec.version.rstrip(".*")) for spec in SpecifierSet(requires) if spec.operator in (">=", "==", "~=")
+    ]
+    if not floors:
+        return None
+    floor = max(floors)
+    return f"{floor.major}.{floor.minor}"
+
+
+def _find_python_version(project_root: Optional[Union[str, Path]] = None) -> str:
+    """Work out which Python version the flow's environment should be built on.
+
+    Checked in order of how concrete each source is:
+
+    1. `.python-version` -- the exact interpreter uv pinned and built the venv from.
+    2. `requires-python` in uv.lock or pyproject.toml -- a range, so the floor is used.
+    3. The running interpreter, which on a remote task is the one already baked into the
+       image, so falling through to it is harmless.
+
+    Args:
+        project_root: directory holding the project files. Defaults to searching upward from
+            the directory the flow was launched from.
+
+    Returns:
+        A version string such as `"3.11"`, ready to hand to `@pypi(python=...)`.
+
+    """
+    pin_path = _find_project_file(".python-version", project_root)
+    if pin_path is not None:
+        for line in pin_path.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if line:
+                # uv allows an implementation prefix, e.g. "cpython@3.11" or "pypy@3.10"
+                return line.rpartition("@")[2]
+
+    return _requires_python_floor(project_root) or f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def _lock_source_to_direct_reference(name: str, source: dict) -> str:
@@ -159,136 +220,7 @@ def _split_lock_packages(lock: dict, lock_path: Path) -> Tuple[dict, dict]:
     return root, entries
 
 
-def _flatten_group(group: str, declared: dict, path: Tuple[str, ...] = ()) -> list:
-    """Expand one PEP 735 dependency group into a flat list of requirement strings.
-
-    A group entry is normally a requirement string, but it can also be
-    `{include-group = "other"}`, which pulls in another group wholesale -- so the expansion
-    recurses.
-
-    Args:
-        group: name of the group to expand
-        declared: the whole `[dependency-groups]` table
-        path: groups already being expanded further up the recursion, used to catch an
-            include cycle instead of blowing the stack
-
-    """
-    if group in path:
-        raise ValueError("circular include-group chain in [dependency-groups]: " + " -> ".join(path + (group,)))
-    try:
-        entries = declared[group]
-    except KeyError:
-        raise ValueError(
-            f"dependency group {group!r} is not declared in [dependency-groups]. "
-            f"Declared groups: {', '.join(sorted(declared)) or '(none)'}"
-        ) from None
-
-    requirements = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            try:
-                included = entry["include-group"]
-            except KeyError:
-                raise ValueError(f"unsupported entry in dependency group {group!r}: {entry!r}") from None
-            requirements.extend(_flatten_group(included, declared, path + (group,)))
-        else:
-            requirements.append(entry)
-    return requirements
-
-
-def get_packages_from_pyproject(
-    groups: Optional[Union[str, list]] = None,
-    project_root: Optional[Union[str, Path]] = None,
-) -> dict:
-    """Build the `@pypi` packages map from a flow repo's `pyproject.toml`.
-
-    Dependencies declared in `[tool.uv.sources]` are not on PyPI, so they are emitted as git
-    direct references and built from source by pip rather than resolved by name.
-
-    Prefer [`get_packages_from_uv_lock`][ds_platform_utils.metaflow.get_packages_from_uv_lock]
-    when the repo has a lockfile: this function can only pass on what was declared, so an
-    open-ended `>=` constraint stays open-ended and two bakes a week apart may not match.
-
-    Returns an empty map when `pyproject.toml` cannot be found. A remote task re-imports the
-    flow module -- and therefore re-evaluates the decorator -- inside a container whose code
-    package holds only `.py` files, so the file is missing there. By that point the image has
-    already been baked from the map resolved on the client, so nothing needs to be
-    re-derived; without this the remote task dies on `FileNotFoundError`.
-
-    Example usage:
-
-    ```python
-    from metaflow import FlowSpec, pypi_base, step
-
-    from ds_platform_utils.metaflow import get_packages_from_pyproject
-
-
-    @pypi_base(python="3.11", packages=get_packages_from_pyproject())
-    class MyFlow(FlowSpec):
-        @step
-        def start(self):
-            self.next(self.end)
-
-        @step
-        def end(self):
-            pass
-    ```
-
-    Args:
-        groups: names of `[dependency-groups]` to add on top of the project's runtime
-            dependencies, e.g. `["dev"]`. Groups are optional by definition, so none are
-            included unless asked for. `{include-group = ...}` references are followed. A
-            name declared in more than one requested group takes its last-seen constraint.
-        project_root: directory holding `pyproject.toml`. Defaults to searching upward from
-            the directory the flow was launched from.
-
-    Returns:
-        A map of package name -> version constraint, ready to hand to `@pypi(packages=...)`.
-
-    """
-    from packaging.requirements import Requirement
-    from packaging.utils import canonicalize_name
-
-    if isinstance(groups, str):
-        # a bare string would otherwise iterate character by character
-        groups = [groups]
-
-    toml_path = _find_project_file("pyproject.toml", project_root)
-    if toml_path is None:
-        return {}
-
-    with open(toml_path, "rb") as f:
-        pyproject = tomllib.load(f)
-
-    sources = {
-        canonicalize_name(name): (name, source)
-        for name, source in pyproject.get("tool", {}).get("uv", {}).get("sources", {}).items()
-    }
-
-    requirements = list(pyproject["project"]["dependencies"])
-    if groups:
-        declared = pyproject.get("dependency-groups", {})
-        for group in groups:
-            requirements.extend(_flatten_group(group, declared))
-
-    packages = {}
-    for dep in requirements:
-        req = Requirement(dep)
-        source = sources.get(canonicalize_name(req.name))
-        if source:
-            packages[req.name] = _uv_source_to_direct_reference(*source)
-            continue
-        specifiers = list(req.specifier)
-        # metaflow prepends "==" to a bare version but passes <, >, !, ~, @ through
-        # verbatim, so an "==" pin has to be handed over as the bare version.
-        if len(specifiers) == 1 and specifiers[0].operator == "==":
-            packages[req.name] = specifiers[0].version
-        else:
-            packages[req.name] = str(req.specifier)
-    return packages
-
-
-def get_packages_from_uv_lock(
+def _get_packages_from_uv_lock(
     groups: Optional[Union[str, list]] = None,
     project_root: Optional[Union[str, Path]] = None,
 ) -> dict:
@@ -305,21 +237,19 @@ def get_packages_from_uv_lock(
     bake for any platform but this one. `@pypi` resolves transitives itself from these pinned
     roots. A name locked more than once is emitted unpinned for the same reason.
 
-    Returns an empty map when `uv.lock` cannot be found, for the same reason
-    [`get_packages_from_pyproject`][ds_platform_utils.metaflow.get_packages_from_pyproject]
-    does when `pyproject.toml` is missing -- a remote task re-imports the flow module inside a
-    container whose code package holds only `.py` files. The image is already baked from the
-    map resolved on the client by then, so nothing is lost.
+    Returns an empty map when `uv.lock` cannot be found -- a remote task re-imports the flow
+    module inside a container whose code package holds only `.py` files. The image is already
+    baked from the map resolved on the client by then, so nothing is lost.
 
     Example usage:
 
     ```python
     from metaflow import FlowSpec, pypi_base, step
 
-    from ds_platform_utils.metaflow import get_packages_from_uv_lock
+    from ds_platform_utils.metaflow import _get_packages_from_uv_lock
 
 
-    @pypi_base(python="3.11", packages=get_packages_from_uv_lock())
+    @pypi_base(python="3.11", packages=_get_packages_from_uv_lock())
     class MyFlow(FlowSpec):
         @step
         def start(self):
@@ -349,8 +279,7 @@ def get_packages_from_uv_lock(
     if lock_path is None:
         return {}
 
-    with open(lock_path, "rb") as f:
-        lock = tomllib.load(f)
+    lock = _load_toml(lock_path)
 
     root, entries = _split_lock_packages(lock, lock_path)
 
@@ -384,3 +313,219 @@ def get_packages_from_uv_lock(
         else:
             packages[name] = _lock_source_to_direct_reference(name, source)
     return packages
+
+
+def _get_pypi_kwargs(
+    groups: Optional[Union[str, list]] = None,
+    python: Optional[str] = None,
+    project_root: Optional[Union[str, Path]] = None,
+) -> dict:
+    """Build every argument `@pypi_base` needs from a flow repo's uv.lock.
+
+    Splat the result into the decorator and the flow's environment is described in exactly
+    one place -- neither the Python version nor the dependency list can drift from what
+    `uv sync` gives you locally:
+
+    ```python
+    @pypi_base(**_get_pypi_kwargs())
+    ```
+
+    Packages come from
+    `_get_packages_from_uv_lock`, so
+    the same guarantees apply: direct dependencies only, pinned to their locked versions,
+    with git dependencies pinned to their resolved commit SHA.
+
+    The Python version is whatever the project builds its own environment on, checked in
+    order of how concrete each source is:
+
+    1. `.python-version` -- the interpreter uv pinned, e.g. `"3.11"`.
+    2. `requires-python` in uv.lock or pyproject.toml -- a range, so its floor is used.
+    3. The running interpreter.
+
+    Example usage:
+
+    ```python
+    from metaflow import FlowSpec, pypi_base, step
+
+    from ds_platform_utils.metaflow import _get_pypi_kwargs
+
+
+    @pypi_base(**_get_pypi_kwargs())
+    class MyFlow(FlowSpec):
+        @step
+        def start(self):
+            self.next(self.end)
+
+        @step
+        def end(self):
+            pass
+    ```
+
+    Args:
+        groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
+            Excluded by default, since groups are optional by definition.
+        python: Python version to use instead of the one derived from the project, e.g.
+            `"3.11"`. Reach for this when the flow has to run on a different interpreter than
+            the repo develops against.
+        project_root: directory holding the project files. Defaults to searching upward from
+            the directory the flow was launched from.
+
+    Returns:
+        `{"python": ..., "packages": {...}}`, ready to splat into `@pypi_base`.
+
+    """
+    return {
+        "python": python or _find_python_version(project_root),
+        "packages": _get_packages_from_uv_lock(groups=groups, project_root=project_root),
+    }
+
+
+def _apply_uv_pypi(decorator, target, disabled=None, **kwargs):
+    """Wrap a Metaflow pypi decorator so its environment comes from the project.
+
+    Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(groups=["dev"])`)
+    forms: in the bare form the decorated object arrives as `target`, in the called form
+    `target` is `None` and the returned closure receives it instead.
+
+    The environment is resolved when the decorator is applied, not when this function is
+    called, so nothing is read off disk until a flow module is imported.
+
+    Args:
+        decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
+        target: the flow or step being decorated, or `None` in the called form
+        disabled: when not `None`, forwarded to the Metaflow decorator to turn the
+            environment off without removing it
+        **kwargs: `groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
+
+    """
+
+    def decorate(obj):
+        pypi_kwargs = _get_pypi_kwargs(**kwargs)
+        if disabled is not None:
+            pypi_kwargs["disabled"] = disabled
+        return decorator(**pypi_kwargs)(obj)
+
+    return decorate if target is None else decorate(target)
+
+
+def uv_pypi_base(
+    flow=None,
+    *,
+    groups: Optional[Union[str, list]] = None,
+    python: Optional[str] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    disabled: Optional[bool] = None,
+):
+    """Metaflow's `@pypi_base`, with the flow's environment filled in from uv.lock.
+
+    Delegates to `@pypi_base` after deriving `python` and `packages` via
+    `_get_pypi_kwargs`, so the flow's
+    environment is described only once -- in the project's own dependency files -- and cannot
+    drift from what `uv sync` gives you locally.
+
+    Use [`uv_pypi`][ds_platform_utils.metaflow.uv_pypi] for a single step.
+
+    Example usage:
+
+    ```python
+    from metaflow import FlowSpec, step
+
+    from ds_platform_utils.metaflow import uv_pypi_base
+
+
+    @uv_pypi_base
+    class MyFlow(FlowSpec):
+        @step
+        def start(self):
+            self.next(self.end)
+
+        @step
+        def end(self):
+            pass
+    ```
+
+    Both forms work; call it when there is something to configure:
+
+    ```python
+    @uv_pypi_base                       # equivalent to @pypi_base(**_get_pypi_kwargs())
+    @uv_pypi_base(groups=["dev"])       # add a dependency group
+    @uv_pypi_base(python="3.11")        # override the derived interpreter
+    ```
+
+    Args:
+        flow: the decorated `FlowSpec`, supplied by Python in the bare form. Never pass this
+            yourself.
+        groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
+            Excluded by default, since groups are optional by definition.
+        python: Python version to use instead of the one derived from the project, e.g.
+            `"3.11"`.
+        project_root: directory holding the project files. Defaults to searching upward from
+            the directory the flow was launched from.
+        disabled: set `True` to skip environment creation, as on `@pypi_base` itself.
+
+    Returns:
+        The decorated flow, or a decorator when called with keyword arguments.
+
+    """
+    from metaflow import pypi_base
+
+    return _apply_uv_pypi(pypi_base, flow, disabled, groups=groups, python=python, project_root=project_root)
+
+
+def uv_pypi(
+    step=None,
+    *,
+    groups: Optional[Union[str, list]] = None,
+    python: Optional[str] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    disabled: Optional[bool] = None,
+):
+    """Metaflow's `@pypi`, with a single step's environment filled in from uv.lock.
+
+    The step-level counterpart to
+    [`uv_pypi_base`][ds_platform_utils.metaflow.uv_pypi_base] -- same derived environment,
+    scoped to one step instead of the whole flow. Both Metaflow decorators accept the same
+    `python` / `packages` / `disabled` arguments, so the two behave identically apart from
+    where they attach.
+
+    Example usage:
+
+    ```python
+    from metaflow import FlowSpec, step
+
+    from ds_platform_utils.metaflow import uv_pypi
+
+
+    class MyFlow(FlowSpec):
+        @step
+        def start(self):
+            self.next(self.train)
+
+        @uv_pypi(groups=["train"])
+        @step
+        def train(self):
+            self.next(self.end)
+
+        @step
+        def end(self):
+            pass
+    ```
+
+    Args:
+        step: the decorated step function, supplied by Python in the bare form. Never pass
+            this yourself.
+        groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
+            Excluded by default, since groups are optional by definition.
+        python: Python version to use instead of the one derived from the project, e.g.
+            `"3.11"`.
+        project_root: directory holding the project files. Defaults to searching upward from
+            the directory the flow was launched from.
+        disabled: set `True` to skip environment creation, as on `@pypi` itself.
+
+    Returns:
+        The decorated step, or a decorator when called with keyword arguments.
+
+    """
+    from metaflow import pypi
+
+    return _apply_uv_pypi(pypi, step, disabled, groups=groups, python=python, project_root=project_root)

@@ -1,53 +1,21 @@
-# `get_packages_from_pyproject` / `get_packages_from_uv_lock`
+# `uv_pypi_base` / `uv_pypi`
 
 Source: `ds_platform_utils.metaflow.pypi_packages`
 
-Derives the `packages={...}` map for Metaflow's `@pypi` / `@pypi_base` from your flow repo's
-own dependency declarations, so the decorator cannot drift from what the project installs.
+Builds a Metaflow `@pypi` / `@pypi_base` environment from your flow repo's own dependency
+declarations, so the decorator cannot drift from what the project installs.
 
-## Which one to use
+## Start here
 
-| | Reads | Emits | Use when |
-| --- | --- | --- | --- |
-| `get_packages_from_uv_lock` | `uv.lock` | resolved versions (`"2.3.2"`), git commit SHAs | **Preferred.** The repo has a lockfile and you want reproducible bakes. |
-| `get_packages_from_pyproject` | `pyproject.toml` | declared constraints (`">=2"`) | No lockfile, or you deliberately want the loose constraint re-resolved at bake time. |
-
-The lockfile variant is the safer default: a `>=` constraint in `pyproject.toml` — or a git
-dependency pinned to `rev = "main"` — means two bakes a week apart can produce different
-images. `uv.lock` records what was actually resolved, including the commit SHA.
-
-## Signature
+`@uv_pypi_base` is `@pypi_base` with the Python version and packages filled in from `uv.lock`:
 
 ```python
-get_packages_from_uv_lock(
-    groups: Optional[Union[str, list]] = None,
-    project_root: Optional[Union[str, Path]] = None,
-) -> dict
+from metaflow import FlowSpec, step
 
-get_packages_from_pyproject(
-    groups: Optional[Union[str, list]] = None,
-    project_root: Optional[Union[str, Path]] = None,
-) -> dict
-```
-
-## Parameters
-
-| Parameter      | Type                              | Required | Description                                                                                                            |
-| -------------- | --------------------------------- | -------: | ---------------------------------------------------------------------------------------------------------------------- |
-| `groups`       | `str \| list[str]`                |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional. |
-| `project_root` | `str \| Path`                     |       No | Directory holding `uv.lock` / `pyproject.toml`. Defaults to searching upward from the launch directory.                 |
-
-**Returns:** `dict` of package name → version, ready for `@pypi(packages=...)`.
-
-## Typical usage
-
-```python
-from metaflow import FlowSpec, pypi_base, step
-
-from ds_platform_utils.metaflow import get_packages_from_uv_lock
+from ds_platform_utils.metaflow import uv_pypi_base
 
 
-@pypi_base(python="3.11", packages=get_packages_from_uv_lock())
+@uv_pypi_base
 class MyFlow(FlowSpec):
     @step
     def start(self):
@@ -58,23 +26,94 @@ class MyFlow(FlowSpec):
         pass
 ```
 
-## What it does
+That's the whole environment — no `python=`, no `packages=`, nothing to keep in sync. Call it
+when there is something to configure:
+
+```python
+@uv_pypi_base                    # derive everything
+@uv_pypi_base(groups=["dev"])    # add a dependency group
+@uv_pypi_base(python="3.11")     # override the derived interpreter
+@uv_pypi_base(disabled=True)     # skip environment creation
+```
+
+### One step instead of the whole flow
+
+`@uv_pypi` is the same thing scoped to a step, delegating to `@pypi`:
+
+```python
+class MyFlow(FlowSpec):
+    @uv_pypi(groups=["train"])
+    @step
+    def train(self): ...
+```
+
+### Where the Python version comes from
+
+Checked in order of how concrete each source is:
+
+| | Source | Example |
+| --: | --- | --- |
+| 1 | `.python-version` — the interpreter uv pinned | `3.11`, or `cpython@3.11` |
+| 2 | `requires-python` in `uv.lock`, else `pyproject.toml` — a range, so its **floor** is used | `">=3.11,<3.13"` → `3.11` |
+| 3 | The running interpreter | |
+
+Upper bounds are ignored: `<3.13` says nothing about what the project runs *on*. Pass
+`python=` to bypass all three.
+
+> **Note:** this repo pins `3.9` in `.python-version`, so a bare `@uv_pypi_base` here yields
+> `python="3.9"` — not the `"3.11"` you may have hand-written in a decorator before. That is
+> the intended behavior: the flow now builds on the interpreter the project actually uses.
+
+## Signatures
+
+```python
+uv_pypi_base(
+    flow=None,                                          # supplied by Python in the bare form
+    *,
+    groups: Optional[Union[str, list]] = None,
+    python: Optional[str] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    disabled: Optional[bool] = None,
+)                  # the decorated flow, or a decorator
+
+uv_pypi(
+    step=None,
+    *,
+    groups: Optional[Union[str, list]] = None,
+    python: Optional[str] = None,
+    project_root: Optional[Union[str, Path]] = None,
+    disabled: Optional[bool] = None,
+)                  # the decorated step, or a decorator
+```
+
+## Parameters
+
+| Parameter      | Type               | Required | Description                                                                                                             |
+| -------------- | ------------------ | -------: | ----------------------------------------------------------------------------------------------------------------------- |
+| `groups`       | `str \| list[str]` |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional.  |
+| `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
+| `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
+| `disabled`     | `bool`             |       No | Forwarded to Metaflow to skip environment creation without removing the decorator.                                      |
+
+## How the packages are derived
 
 - Emits the **root project's direct dependencies only**, not the full transitive closure.
   Lock entries are marker-gated per platform (`appnope` on darwin, `colorama` on win32), so
   pinning the whole graph would break a bake on any platform but the one that resolved it.
   `@pypi` resolves transitives itself from the pinned roots.
-- Renders non-PyPI dependencies as PEP 508 direct references (`@ git+https://...@<sha>`),
-  which `@pypi` passes through to pip verbatim. `[tool.uv.sources]` tables and uv.lock's
-  single-URL git form are both flattened to what pip understands.
+- Renders non-PyPI dependencies as PEP 508 direct references (`@ git+https://...@<sha>`), which
+  `@pypi` passes through to pip verbatim. uv records a git source as one URL carrying the ref in
+  the query string and the resolved commit in the fragment; that gets taken apart and
+  reassembled around the **commit SHA**, which is what makes the build repeatable.
 - Leaves a dependency **unpinned** (`""`) when the lock holds it at more than one version
   behind different resolution markers — pinning either one would break the other platform.
-- Follows `{include-group = ...}` chains in `[dependency-groups]` (the lockfile variant needs
-  no such handling; uv flattens groups when it writes the lock).
-- Returns `{}` when the file cannot be found, which is what makes remote tasks work: a remote
-  task re-imports the flow module — re-evaluating the decorator — inside a container whose
-  code package holds only `.py` files. The image was already baked from the map resolved on
-  the client, so nothing is lost.
+- Emits **nothing** when `uv.lock` cannot be found, which is what makes remote tasks work: a
+  remote task re-imports the flow module — re-evaluating the decorator — inside a container
+  whose code package holds only `.py` files. The image was already baked from the environment
+  resolved on the client, so nothing is lost.
+
+Everything above comes from `uv.lock`, so run `uv lock` after changing a dependency or the
+flow will bake the previous version.
 
 ## Finding the project root
 
@@ -91,11 +130,12 @@ Pass `project_root=` explicitly if the flow is launched from outside the repo.
 
 ## Errors
 
-Both functions raise `ValueError` rather than silently emitting a map that will fail at bake
-time:
+Decoration raises `ValueError` rather than silently building an environment that will fail at
+bake time, so these surface the moment the flow module is imported:
 
-- a requested group is not declared / recorded
-- a `[tool.uv.sources]` or lock `source` is `path` or `workspace` — local-only, so a remote
-  task cannot fetch it
+- a requested group is not recorded in the lock
+- a lock `source` is `path` or `workspace` — local-only, so a remote task cannot fetch it
 - a root dependency is missing from the lock (stale lockfile — run `uv lock`)
-- `[dependency-groups]` contains a circular `include-group` chain
+
+Metaflow raises `BadFlowDecoratorException` if `@uv_pypi_base` is applied to something that is
+not a `FlowSpec`, and there is a matching check for `@uv_pypi` on steps.
