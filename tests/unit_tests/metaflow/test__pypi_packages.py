@@ -251,6 +251,53 @@ def test_uv_pypi_base_forwards_disabled(project_root: Path, pypi_base_spy: dict)
     assert pypi_base_spy["disabled"] is True
 
 
+def test_uv_pypi_base_prints_the_resolved_environment(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture
+):
+    (project_root / ".python-version").write_text("3.11\n")
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    out = capsys.readouterr().out
+
+    header, *rows = out.rstrip("\n").splitlines()
+    assert header == "@uv_pypi_base on MyFlow: python 3.11, 4 package(s) from uv.lock"
+
+    names = [row.split()[0] for row in rows]
+    assert names == sorted(names), "listed by name so two runs compare by eye"
+    # the darwin-gated dependency is resolved away, not reported
+    assert "pyobjc-core" not in names
+
+    versions = dict(row.split(maxsplit=1) for row in rows)
+    assert versions["pandas"].strip() == "2.3.2"
+    # a deliberate "let @pypi resolve it" has to read as such rather than as a blank column
+    assert versions["polars"].strip() == "(unpinned)"
+    assert versions["ds-platform-utils"].strip().startswith("@ git+https://")
+
+    # every version starts at the same column, padded to the longest name
+    assert len({len(row) - len(row.split(maxsplit=1)[1]) for row in rows}) == 1
+
+
+def test_uv_pypi_prints_the_step_it_decorates(project_root: Path, capsys: pytest.CaptureFixture):
+    def train(self):
+        pass
+
+    uv_pypi(project_root=project_root)(step(train))
+    assert "@uv_pypi on train:" in capsys.readouterr().out
+
+
+def test_uv_pypi_base_says_nothing_when_no_lock_is_found(tmp_path: Path, capsys: pytest.CaptureFixture):
+    # a remote task re-imports the flow module inside an already-baked image, so there is no
+    # lockfile and nothing worth reporting -- printing there would just be noise per task
+    uv_pypi_base(project_root=tmp_path)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
+def test_uv_pypi_base_flags_a_disabled_environment(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture
+):
+    uv_pypi_base(disabled=True, project_root=project_root)(_build_flow())
+    assert "[environment disabled]" in capsys.readouterr().out
+
+
 def test_uv_pypi_base_registers_with_metaflow(project_root: Path):
     # the one test that exercises the real decorator end to end
     from metaflow.flowspec import FlowStateItems

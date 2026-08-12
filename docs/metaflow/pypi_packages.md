@@ -47,6 +47,28 @@ class MyFlow(FlowSpec):
     def train(self): ...
 ```
 
+### What it prints
+
+Both decorators print the environment they resolved, so a run records what it actually built:
+
+```
+@uv_pypi_base on MyFlow: python 3.10, 10 package(s) from uv.lock
+  jinja2                      3.1.6
+  outerbounds                 0.12.39
+  pandas                      2.3.3
+  polars                      (unpinned)
+  snowflake-connector-python  4.7.2
+  ...
+```
+
+`(unpinned)` means the lock could not be narrowed to one version, so `@pypi` resolves it —
+see [Resolving a universal lockfile](#resolving-a-universal-lockfile). A `disabled=True`
+environment is flagged in the header.
+
+This happens at **import** time, so it prints on any command that loads the flow module, not
+only `run`. Nothing is printed when no `uv.lock` is found — that is the remote task
+re-importing the module inside an already-baked image, where there is nothing to report.
+
 ### Where the Python version comes from
 
 Checked in order of how concrete each source is:

@@ -467,7 +467,32 @@ def _get_pypi_kwargs(
     }
 
 
-def _apply_uv_pypi(decorator, target, disabled=None, **kwargs):
+def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
+    """Render a resolved environment as an aligned block, for printing at decoration time.
+
+    Args:
+        label: what is being decorated, e.g. `"@uv_pypi_base on MyFlow"`
+        pypi_kwargs: the `python` / `packages` map about to be handed to Metaflow
+
+    Returns:
+        A multi-line string, package names sorted so two runs are comparable by eye.
+
+    """
+    packages = pypi_kwargs["packages"]
+    header = f"{label}: python {pypi_kwargs['python']}, {len(packages)} package(s) from uv.lock"
+    if pypi_kwargs.get("disabled"):
+        header += "  [environment disabled]"
+
+    width = max(len(name) for name in packages)
+    lines = [header]
+    for name in sorted(packages):
+        # an empty version is a deliberate "let @pypi resolve it", not a missing value, so
+        # say so rather than printing a blank column
+        lines.append(f"  {name.ljust(width)}  {packages[name] or '(unpinned)'}")
+    return "\n".join(lines)
+
+
+def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
     """Wrap a Metaflow pypi decorator so its environment comes from the project.
 
     Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(dependency_groups=["dev"])`)
@@ -477,9 +502,15 @@ def _apply_uv_pypi(decorator, target, disabled=None, **kwargs):
     The environment is resolved when the decorator is applied, not when this function is
     called, so nothing is read off disk until a flow module is imported.
 
+    The resolved environment is printed, so a run records what it actually built rather than
+    leaving you to re-derive it. Nothing is printed when the map came back empty -- that is the
+    remote task re-importing the flow module inside an already-baked image, where there is no
+    lockfile to read and nothing worth reporting.
+
     Args:
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
         target: the flow or step being decorated, or `None` in the called form
+        label: the decorator's own name, used to say which one resolved the environment
         disabled: when not `None`, forwarded to the Metaflow decorator to turn the
             environment off without removing it
         **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
@@ -490,6 +521,9 @@ def _apply_uv_pypi(decorator, target, disabled=None, **kwargs):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
         if disabled is not None:
             pypi_kwargs["disabled"] = disabled
+        if pypi_kwargs["packages"]:
+            named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
+            print(_format_pypi_environment(named, pypi_kwargs))
         return decorator(**pypi_kwargs)(obj)
 
     return decorate if target is None else decorate(target)
@@ -557,7 +591,13 @@ def uv_pypi_base(
     from metaflow import pypi_base
 
     return _apply_uv_pypi(
-        pypi_base, flow, disabled, dependency_groups=dependency_groups, python=python, project_root=project_root
+        pypi_base,
+        flow,
+        "@uv_pypi_base",
+        disabled,
+        dependency_groups=dependency_groups,
+        python=python,
+        project_root=project_root,
     )
 
 
@@ -618,5 +658,5 @@ def uv_pypi(
     from metaflow import pypi
 
     return _apply_uv_pypi(
-        pypi, step, disabled, dependency_groups=dependency_groups, python=python, project_root=project_root
+        pypi, step, "@uv_pypi", disabled, dependency_groups=dependency_groups, python=python, project_root=project_root
     )
