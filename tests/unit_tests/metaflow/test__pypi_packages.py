@@ -28,6 +28,10 @@ UV_LOCK = textwrap.dedent("""
         { name = "pandas" },
         { name = "polars" },
         { name = "ds-platform-utils" },
+        # a universal resolution: one entry per marker region, each naming its own version
+        { name = "numpy", version = "1.26.4", marker = "python_full_version < '3.11'" },
+        { name = "numpy", version = "2.3.0", marker = "python_full_version >= '3.11'" },
+        { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
     ]
 
     [package.dev-dependencies]
@@ -59,6 +63,23 @@ UV_LOCK = textwrap.dedent("""
     name = "pytest"
     version = "8.4.1"
     source = { registry = "https://pypi.org/simple" }
+
+    [[package]]
+    name = "numpy"
+    version = "1.26.4"
+    source = { registry = "https://pypi.org/simple" }
+    resolution-markers = ["python_full_version < '3.11'"]
+
+    [[package]]
+    name = "numpy"
+    version = "2.3.0"
+    source = { registry = "https://pypi.org/simple" }
+    resolution-markers = ["python_full_version >= '3.11'"]
+
+    [[package]]
+    name = "pyobjc-core"
+    version = "10.3.1"
+    source = { registry = "https://pypi.org/simple" }
 """)
 
 
@@ -82,21 +103,37 @@ def test_uv_lock_pins_git_dep_to_resolved_commit(project_root: Path):
     )
 
 
-def test_uv_lock_leaves_multi_version_dep_unpinned(project_root: Path):
+def test_uv_lock_resolves_split_dep_against_the_python_version(project_root: Path):
+    # numpy is locked twice; the root entries carry the marker that decides which one applies
+    assert _get_packages_from_uv_lock(project_root=project_root, python="3.10")["numpy"] == "1.26.4"
+    assert _get_packages_from_uv_lock(project_root=project_root, python="3.11")["numpy"] == "2.3.0"
+    # a full three-part version has to compare the same way a bare "3.11" does
+    assert _get_packages_from_uv_lock(project_root=project_root, python="3.12.7")["numpy"] == "2.3.0"
+
+
+def test_uv_lock_drops_dep_gated_to_another_platform(project_root: Path):
+    # pyobjc-core is darwin-only, and @pypi has nowhere to put the marker, so a Linux bake
+    # must not be told to install it
+    assert "pyobjc-core" not in _get_packages_from_uv_lock(project_root=project_root, python="3.11")
+    darwin = _get_packages_from_uv_lock(project_root=project_root, python="3.11", sys_platform="darwin")
+    assert darwin["pyobjc-core"] == "10.3.1"
+
+
+def test_uv_lock_leaves_indistinguishable_multi_version_dep_unpinned(project_root: Path):
     packages = _get_packages_from_uv_lock(project_root=project_root)
-    # locked at 1.36.1 and 1.30.0 behind different resolution markers, so pinning either
-    # would break a bake on the other python version
+    # polars is locked at two versions but its root entry carries no marker or version, so
+    # there is nothing to resolve against -- hand it to @pypi rather than guess
     assert packages["polars"] == ""
 
 
 def test_uv_lock_excludes_groups_unless_asked(project_root: Path):
     assert "pytest" not in _get_packages_from_uv_lock(project_root=project_root)
-    assert _get_packages_from_uv_lock(groups="dev", project_root=project_root)["pytest"] == "8.4.1"
+    assert _get_packages_from_uv_lock(dependency_groups="dev", project_root=project_root)["pytest"] == "8.4.1"
 
 
 def test_uv_lock_rejects_unrecorded_group(project_root: Path):
     with pytest.raises(ValueError, match="is not recorded in"):
-        _get_packages_from_uv_lock(groups=["nope"], project_root=project_root)
+        _get_packages_from_uv_lock(dependency_groups=["nope"], project_root=project_root)
 
 
 def test_returns_empty_map_when_files_are_missing(tmp_path: Path):
@@ -143,7 +180,7 @@ def test_pypi_base_kwargs_honours_explicit_python(project_root: Path):
 
 
 def test_pypi_base_kwargs_passes_groups_through(project_root: Path):
-    assert _get_pypi_kwargs(groups=["dev"], project_root=project_root)["packages"]["pytest"] == "8.4.1"
+    assert _get_pypi_kwargs(dependency_groups=["dev"], project_root=project_root)["packages"]["pytest"] == "8.4.1"
 
 
 def _build_flow():
@@ -165,40 +202,63 @@ def _build_flow():
     return MyFlow
 
 
-def _pypi_attributes(flow):
-    """Pull the attributes Metaflow recorded for whichever pypi decorator was applied."""
-    return list(flow._flow_decorators.values())[0][0].attributes
+@pytest.fixture
+def pypi_base_spy(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Capture the arguments handed to Metaflow's `@pypi_base` instead of applying it.
+
+    The contract under test is "call Metaflow's decorator with this environment", so asserting
+    on the call keeps these tests off Metaflow's internals -- where the decorator is recorded
+    has already moved once between versions.
+    """
+    recorded: dict = {}
+
+    def spy(**kwargs):
+        recorded.update(kwargs)
+        return lambda target: target
+
+    monkeypatch.setattr("metaflow.pypi_base", spy)
+    return recorded
 
 
-def test_uv_pypi_base_applies_derived_environment(project_root: Path):
+def test_uv_pypi_base_applies_derived_environment(project_root: Path, pypi_base_spy: dict):
     (project_root / ".python-version").write_text("3.11\n")
-    attributes = _pypi_attributes(uv_pypi_base(project_root=project_root)(_build_flow()))
-    assert attributes["python"] == "3.11"
-    assert attributes["packages"] == _get_packages_from_uv_lock(project_root=project_root)
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert pypi_base_spy["python"] == "3.11"
+    assert pypi_base_spy["packages"] == _get_packages_from_uv_lock(project_root=project_root, python="3.11")
 
 
-def test_uv_pypi_base_works_bare(project_root: Path, monkeypatch: pytest.MonkeyPatch):
+def test_uv_pypi_base_works_bare(project_root: Path, pypi_base_spy: dict, monkeypatch: pytest.MonkeyPatch):
     # the bare form has nowhere to pass project_root, so it walks up from the launch directory
     monkeypatch.chdir(project_root)
-    assert _pypi_attributes(uv_pypi_base(_build_flow()))["packages"]["pandas"] == "2.3.2"
+    uv_pypi_base(_build_flow())
+    assert pypi_base_spy["packages"]["pandas"] == "2.3.2"
 
 
-def test_uv_pypi_base_registers_as_pypi_base(project_root: Path):
+def test_uv_pypi_base_passes_groups_and_python_through(project_root: Path, pypi_base_spy: dict):
+    uv_pypi_base(dependency_groups=["dev"], python="3.12", project_root=project_root)(_build_flow())
+    assert pypi_base_spy["python"] == "3.12"
+    assert pypi_base_spy["packages"]["pytest"] == "8.4.1"
+
+
+def test_uv_pypi_base_omits_disabled_unless_asked(project_root: Path, pypi_base_spy: dict):
+    # leaving the key out is what lets a step-level @uv_pypi inherit the flow's setting
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert "disabled" not in pypi_base_spy
+
+
+def test_uv_pypi_base_forwards_disabled(project_root: Path, pypi_base_spy: dict):
+    uv_pypi_base(disabled=True, project_root=project_root)(_build_flow())
+    assert pypi_base_spy["disabled"] is True
+
+
+def test_uv_pypi_base_registers_with_metaflow(project_root: Path):
+    # the one test that exercises the real decorator end to end
+    from metaflow.flowspec import FlowStateItems
+
     decorated = uv_pypi_base(project_root=project_root)(_build_flow())
-    assert "pypi_base" in decorated._flow_decorators
-
-
-def test_uv_pypi_base_passes_groups_and_python_through(project_root: Path):
-    attributes = _pypi_attributes(
-        uv_pypi_base(groups=["dev"], python="3.12", project_root=project_root)(_build_flow())
-    )
-    assert attributes["python"] == "3.12"
-    assert attributes["packages"]["pytest"] == "8.4.1"
-
-
-def test_uv_pypi_base_forwards_disabled(project_root: Path):
-    attributes = _pypi_attributes(uv_pypi_base(disabled=True, project_root=project_root)(_build_flow()))
-    assert attributes["disabled"] is True
+    recorded = decorated._flow_state[FlowStateItems.FLOW_DECORATORS]
+    assert "pypi_base" in recorded
+    assert recorded["pypi_base"][0].attributes["packages"] == _get_packages_from_uv_lock(project_root=project_root)
 
 
 def test_uv_pypi_base_rejects_non_flow():

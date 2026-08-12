@@ -31,7 +31,7 @@ when there is something to configure:
 
 ```python
 @uv_pypi_base                    # derive everything
-@uv_pypi_base(groups=["dev"])    # add a dependency group
+@uv_pypi_base(dependency_groups=["dev"])    # add a dependency group
 @uv_pypi_base(python="3.11")     # override the derived interpreter
 @uv_pypi_base(disabled=True)     # skip environment creation
 ```
@@ -42,7 +42,7 @@ when there is something to configure:
 
 ```python
 class MyFlow(FlowSpec):
-    @uv_pypi(groups=["train"])
+    @uv_pypi(dependency_groups=["train"])
     @step
     def train(self): ...
 ```
@@ -60,9 +60,11 @@ Checked in order of how concrete each source is:
 Upper bounds are ignored: `<3.13` says nothing about what the project runs *on*. Pass
 `python=` to bypass all three.
 
-> **Note:** this repo pins `3.9` in `.python-version`, so a bare `@uv_pypi_base` here yields
-> `python="3.9"` — not the `"3.11"` you may have hand-written in a decorator before. That is
-> the intended behavior: the flow now builds on the interpreter the project actually uses.
+> **Note:** whatever the repo pins is what the flow bakes on — not the version you may have
+> hand-written in a decorator before. That is the intended behavior, and it means re-pinning
+> `.python-version` moves the flow with it, with no decorator edit.
+
+The resolved version also decides **which packages** you get; see below.
 
 ## Signatures
 
@@ -70,7 +72,7 @@ Upper bounds are ignored: `<3.13` says nothing about what the project runs *on*.
 uv_pypi_base(
     flow=None,                                          # supplied by Python in the bare form
     *,
-    groups: Optional[Union[str, list]] = None,
+    dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
@@ -79,7 +81,7 @@ uv_pypi_base(
 uv_pypi(
     step=None,
     *,
-    groups: Optional[Union[str, list]] = None,
+    dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
@@ -90,7 +92,7 @@ uv_pypi(
 
 | Parameter      | Type               | Required | Description                                                                                                             |
 | -------------- | ------------------ | -------: | ----------------------------------------------------------------------------------------------------------------------- |
-| `groups`       | `str \| list[str]` |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional.  |
+| `dependency_groups` | `str \| list[str]` |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional.  |
 | `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
 | `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
 | `disabled`     | `bool`             |       No | Forwarded to Metaflow to skip environment creation without removing the decorator.                                      |
@@ -105,8 +107,7 @@ uv_pypi(
   `@pypi` passes through to pip verbatim. uv records a git source as one URL carrying the ref in
   the query string and the resolved commit in the fragment; that gets taken apart and
   reassembled around the **commit SHA**, which is what makes the build repeatable.
-- Leaves a dependency **unpinned** (`""`) when the lock holds it at more than one version
-  behind different resolution markers — pinning either one would break the other platform.
+- **Resolves markers** against the environment being built — see below.
 - Emits **nothing** when `uv.lock` cannot be found, which is what makes remote tasks work: a
   remote task re-imports the flow module — re-evaluating the decorator — inside a container
   whose code package holds only `.py` files. The image was already baked from the environment
@@ -114,6 +115,43 @@ uv_pypi(
 
 Everything above comes from `uv.lock`, so run `uv lock` after changing a dependency or the
 flow will bake the previous version.
+
+## Resolving a universal lockfile
+
+`uv.lock` is a *universal* resolution: it holds the answer for every Python version and platform
+in range at once, each tagged with the marker it applies to. That is why switching OS never
+requires a re-lock. But `@pypi` takes a flat name → version map with **nowhere to put a
+marker**, so the markers have to be resolved here rather than passed along.
+
+A dependency that no single version covers appears once per marker region, each naming its own
+version:
+
+```toml
+{ name = "pandas", version = "2.3.3", marker = "python_full_version < '3.11'" }
+{ name = "pandas", version = "3.0.5", marker = "python_full_version >= '3.11'" }
+```
+
+So the same unchanged lockfile yields different packages depending on the interpreter — which is
+why the Python version is resolved *first* and then used to pick the packages:
+
+```python
+>>> # .python-version = 3.10
+>>> uv_pypi_base ...  # pandas 2.3.3
+>>> # .python-version = 3.11
+>>> uv_pypi_base ...  # pandas 3.0.5
+```
+
+Three outcomes per dependency:
+
+| Lock state | Emitted |
+| --- | --- |
+| One entry, or several with a marker that selects one | that exact version |
+| Marker excludes this environment (e.g. `sys_platform == 'darwin'` on a Linux bake) | **omitted** — `@pypi` cannot express the condition, so installing it would break the bake |
+| Several entries with no marker or version to tell them apart | `""`, left for `@pypi` to resolve |
+
+**Platform assumption:** markers are evaluated against **Linux**, which is what Metaflow builds
+for a remote task. A dependency gated to macOS is therefore dropped. If a flow only ever runs
+locally on a Mac and needs such a dependency, the packages helper takes `sys_platform="darwin"`.
 
 ## Finding the project root
 
