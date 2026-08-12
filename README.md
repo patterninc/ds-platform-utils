@@ -12,5 +12,6 @@
 
 ## Admin / Setup
 
+- [Private repo access in Fast Bakery](docs/metaflow/private_repo_access.md)
 - [Table-ownership registry view](docs/metaflow/table_ownership_registry.md)
 
