@@ -516,6 +516,7 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
         **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
 
     """
+    import metaflow
 
     def decorate(obj):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
@@ -523,7 +524,8 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
             pypi_kwargs["disabled"] = disabled
         if pypi_kwargs["packages"]:
             named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
-            print(_format_pypi_environment(named, pypi_kwargs))
+            if not metaflow.current.is_running_flow:
+                print(_format_pypi_environment(named, pypi_kwargs))
         return decorator(**pypi_kwargs)(obj)
 
     return decorate if target is None else decorate(target)
