@@ -323,6 +323,19 @@ def test_log_true_does_not_reintroduce_per_task_output(
     assert capsys.readouterr().out == ""
 
 
+def test_uv_pypi_base_stays_quiet_while_a_flow_is_running(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # something re-importing the flow module mid-run, e.g. a flow triggering another flow.
+    # argv says "run" here, so `current` is the only thing that can catch it.
+    import metaflow
+
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "run"])
+    monkeypatch.setattr(type(metaflow.current), "is_running_flow", property(lambda self: True))
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
 def test_pypi_log_env_var_forces_and_silences(
     project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ):

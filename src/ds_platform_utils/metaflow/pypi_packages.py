@@ -496,7 +496,20 @@ def _should_log_environment(log: bool) -> bool:
     override = os.environ.get(_LOG_ENV_VAR)
     if override is not None:
         return override.strip() not in ("", "0", "false", "False")
-    return log and not any(command in sys.argv for command in _TASK_COMMANDS)
+    if not log:
+        return False
+
+    from metaflow import current
+
+    # Two ways to be executing a task rather than launching one, and they catch different
+    # cases. `current` is only populated once the task runtime starts, which is after the flow
+    # module was imported and these decorators ran -- so it is False during the decoration
+    # this function guards, and only True when something re-imports the module mid-run, such
+    # as a flow triggering another flow. The argv check covers the ordinary case: the `step`
+    # subprocess Metaflow spawns per task, which decorates long before `current` exists.
+    if current.is_running_flow:
+        return False
+    return not any(command in sys.argv for command in _TASK_COMMANDS)
 
 
 def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:

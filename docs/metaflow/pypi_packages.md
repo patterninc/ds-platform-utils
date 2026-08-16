@@ -74,6 +74,7 @@ summary into one block per step, so anything running a task stays quiet:
 | --- | --- |
 | `@uv_pypi_base`, client invocation (`run`, `resume`, …) | ✅ |
 | `@uv_pypi_base`, per-task `step` subprocess | ❌ |
+| Flow module re-imported mid-run (`current.is_running_flow`) | ❌ |
 | `@uv_pypi` on a step | ❌ — Outerbounds already prints a package list per baked image |
 | No `uv.lock` found (remote task, `.py`-only code package) | ❌ — nothing was resolved |
 
