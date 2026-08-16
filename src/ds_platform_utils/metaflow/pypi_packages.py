@@ -653,14 +653,13 @@ def uv_pypi_base(  # noqa: PLR0913 -- keyword-only decorator options, not a posi
     )
 
 
-def uv_pypi(  # noqa: PLR0913 -- keyword-only decorator options, not a positional argument list
+def uv_pypi(
     step=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
-    log: bool = False,
 ):
     """Metaflow's `@pypi`, with a single step's environment filled in from uv.lock.
 
@@ -703,9 +702,6 @@ def uv_pypi(  # noqa: PLR0913 -- keyword-only decorator options, not a positiona
         project_root: directory holding the project files. Defaults to searching upward from
             the directory the flow was launched from.
         disabled: set `True` to skip environment creation, as on `@pypi` itself.
-        log: whether to print the resolved environment. Off by default, because Outerbounds
-            already prints a package list for every image it bakes. Set `True` when this
-            step's environment is the one you need to inspect.
 
     Returns:
         The decorated step, or a decorator when called with keyword arguments.
@@ -718,7 +714,6 @@ def uv_pypi(  # noqa: PLR0913 -- keyword-only decorator options, not a positiona
         step,
         "@uv_pypi",
         disabled,
-        log,
         dependency_groups=dependency_groups,
         python=python,
         project_root=project_root,

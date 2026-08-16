@@ -78,16 +78,15 @@ summary into one block per step, so anything running a task stays quiet:
 | `@uv_pypi` on a step | ❌ — Outerbounds already prints a package list per baked image |
 | No `uv.lock` found (remote task, `.py`-only code package) | ❌ — nothing was resolved |
 
-Both decorators take `log=` to change that per decorator — `log=True` on `uv_pypi_base`,
-`log=False` on `uv_pypi`:
+`uv_pypi_base` takes `log=` to silence its own summary:
 
 ```python
-@uv_pypi_base(log=False)         # silence this flow's summary
-@uv_pypi(log=True)               # ...or opt one step in
+@uv_pypi_base(log=False)         # this flow reports nothing
 ```
 
-`log=` chooses which decorators report. It does **not** override the per-task suppression, so
-opting a step in still prints once per run rather than once per task. To reach past that, set
+`log=` only chooses whether the flow decorator reports. It does **not** override the per-task
+suppression, so `log=True` still prints once per run rather than once per task. To reach past
+that — or to see a step's `@uv_pypi` environment, which never reports on its own — set
 `DS_PLATFORM_UTILS_PYPI_LOG`:
 
 ```bash
@@ -134,7 +133,6 @@ uv_pypi(
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
-    log: bool = False,
 )                  # the decorated step, or a decorator
 ```
 
@@ -146,7 +144,7 @@ uv_pypi(
 | `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
 | `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
 | `disabled`     | `bool`             |       No | Forwarded to Metaflow to skip environment creation without removing the decorator.                                      |
-| `log`          | `bool`             |       No | Print the resolved environment. Defaults to `True` on `uv_pypi_base`, `False` on `uv_pypi`. See [What it prints](#what-it-prints). |
+| `log`          | `bool`             |       No | `uv_pypi_base` only. Print the resolved environment, on by default. See [What it prints](#what-it-prints). |
 
 ## How the packages are derived
 

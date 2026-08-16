@@ -301,25 +301,14 @@ def test_uv_pypi_base_can_be_silenced(project_root: Path, pypi_base_spy: dict, c
     assert capsys.readouterr().out == ""
 
 
-def test_uv_pypi_can_be_asked_to_report(project_root: Path, capsys: pytest.CaptureFixture):
-    def train(self):
-        pass
-
-    uv_pypi(log=True, project_root=project_root)(step(train))
-    assert "@uv_pypi on train:" in capsys.readouterr().out
-
-
 def test_log_true_does_not_reintroduce_per_task_output(
-    project_root: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ):
-    # log= picks which decorators report; it does not override the per-task suppression, or
-    # opting a step in would print once per task again. The env var is the escape hatch.
-    monkeypatch.setattr("sys.argv", ["my_flow.py", "step", "train"])
-
-    def train(self):
-        pass
-
-    uv_pypi(log=True, project_root=project_root)(step(train))
+    # log= picks whether the flow decorator reports; it does not override the per-task
+    # suppression, or the summary would print once per task again. The env var is the escape
+    # hatch for that.
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "step", "start"])
+    uv_pypi_base(log=True, project_root=project_root)(_build_flow())
     assert capsys.readouterr().out == ""
 
 
