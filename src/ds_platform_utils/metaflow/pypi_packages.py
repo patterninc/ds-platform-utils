@@ -32,6 +32,7 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+import os
 from pathlib import Path
 from typing import Optional, Tuple, Union
 from urllib.parse import parse_qs, urlsplit, urlunsplit
@@ -42,6 +43,15 @@ _LOCAL_SOURCE_KEYS = ("virtual", "editable", "directory")
 #: Metaflow bakes remote task images for Linux, so that is the platform markers are evaluated
 #: against. A flow that only ever runs locally on a Mac can override it.
 _DEFAULT_SYS_PLATFORM = "linux"
+
+#: Set to "0" to silence the resolved-environment summary, or "1" to print it from every
+#: process and decorator -- including the per-task subprocesses normally kept quiet.
+_LOG_ENV_VAR = "DS_PLATFORM_UTILS_PYPI_LOG"
+
+#: Metaflow subcommands that mean "this process is running one task", not the client
+#: invocation. Metaflow spawns one such subprocess per task, in the flow repo, so each would
+#: otherwise re-import the flow module and reprint the whole environment.
+_TASK_COMMANDS = ("step", "spin-step")
 
 #: Marker variables that follow from the target platform once `sys_platform` is known.
 _PLATFORM_MARKERS = {
@@ -467,6 +477,28 @@ def _get_pypi_kwargs(
     }
 
 
+def _should_log_environment(log: bool) -> bool:
+    """Decide whether to print the resolved environment from this process.
+
+    Metaflow launches one `step` subprocess per task, from the flow repo, so every one of them
+    re-imports the flow module and re-evaluates the decorators. Printing from each turns a
+    single useful summary into one block per step. Only the client invocation reports.
+
+    Outerbounds also prints its own package list for each image Fast Bakery builds, so a
+    step-scoped `@uv_pypi` adds nothing the run output does not already carry -- the flow-level
+    decorator is the one worth hearing from.
+
+    Args:
+        log: whether this decorator reports at all -- true for `@uv_pypi_base`, false for the
+            step-level `@uv_pypi`
+
+    """
+    override = os.environ.get(_LOG_ENV_VAR)
+    if override is not None:
+        return override.strip() not in ("", "0", "false", "False")
+    return log and not any(command in sys.argv for command in _TASK_COMMANDS)
+
+
 def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
     """Render a resolved environment as an aligned block, for printing at decoration time.
 
@@ -492,7 +524,7 @@ def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
     return "\n".join(lines)
 
 
-def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
+def _apply_uv_pypi(decorator, target, label, disabled=None, log=False, **kwargs):
     """Wrap a Metaflow pypi decorator so its environment comes from the project.
 
     Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(dependency_groups=["dev"])`)
@@ -502,10 +534,9 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
     The environment is resolved when the decorator is applied, not when this function is
     called, so nothing is read off disk until a flow module is imported.
 
-    The resolved environment is printed, so a run records what it actually built rather than
-    leaving you to re-derive it. Nothing is printed when the map came back empty -- that is the
-    remote task re-importing the flow module inside an already-baked image, where there is no
-    lockfile to read and nothing worth reporting.
+    The resolved environment may be printed, so a run records what it actually built rather
+    than leaving you to re-derive it. See `_should_log_environment` for when: deliberately once
+    per run rather than once per step.
 
     Args:
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
@@ -513,31 +544,33 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
         label: the decorator's own name, used to say which one resolved the environment
         disabled: when not `None`, forwarded to the Metaflow decorator to turn the
             environment off without removing it
+        log: whether this decorator reports its environment at all
         **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
 
     """
-    import metaflow
 
     def decorate(obj):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
         if disabled is not None:
             pypi_kwargs["disabled"] = disabled
-        if pypi_kwargs["packages"]:
+        # an empty map means no lockfile was found, as in a remote task whose code package
+        # carries only .py files -- nothing was resolved, so there is nothing to report
+        if pypi_kwargs["packages"] and _should_log_environment(log):
             named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
-            if not metaflow.current.is_running_flow:
-                print(_format_pypi_environment(named, pypi_kwargs))
+            print(_format_pypi_environment(named, pypi_kwargs))
         return decorator(**pypi_kwargs)(obj)
 
     return decorate if target is None else decorate(target)
 
 
-def uv_pypi_base(
+def uv_pypi_base(  # noqa: PLR0913 -- keyword-only decorator options, not a positional argument list
     flow=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
+    log: bool = True,
 ):
     """Metaflow's `@pypi_base`, with the flow's environment filled in from uv.lock.
 
@@ -585,6 +618,9 @@ def uv_pypi_base(
         project_root: directory holding the project files. Defaults to searching upward from
             the directory the flow was launched from.
         disabled: set `True` to skip environment creation, as on `@pypi_base` itself.
+        log: whether to print the resolved environment. On by default, once per run -- the
+            per-task subprocesses Metaflow launches stay quiet regardless. Set `False` to
+            silence this flow.
 
     Returns:
         The decorated flow, or a decorator when called with keyword arguments.
@@ -597,19 +633,21 @@ def uv_pypi_base(
         flow,
         "@uv_pypi_base",
         disabled,
+        log=log,
         dependency_groups=dependency_groups,
         python=python,
         project_root=project_root,
     )
 
 
-def uv_pypi(
+def uv_pypi(  # noqa: PLR0913 -- keyword-only decorator options, not a positional argument list
     step=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
+    log: bool = False,
 ):
     """Metaflow's `@pypi`, with a single step's environment filled in from uv.lock.
 
@@ -652,6 +690,9 @@ def uv_pypi(
         project_root: directory holding the project files. Defaults to searching upward from
             the directory the flow was launched from.
         disabled: set `True` to skip environment creation, as on `@pypi` itself.
+        log: whether to print the resolved environment. Off by default, because Outerbounds
+            already prints a package list for every image it bakes. Set `True` when this
+            step's environment is the one you need to inspect.
 
     Returns:
         The decorated step, or a decorator when called with keyword arguments.
@@ -660,5 +701,12 @@ def uv_pypi(
     from metaflow import pypi
 
     return _apply_uv_pypi(
-        pypi, step, "@uv_pypi", disabled, dependency_groups=dependency_groups, python=python, project_root=project_root
+        pypi,
+        step,
+        "@uv_pypi",
+        disabled,
+        log,
+        dependency_groups=dependency_groups,
+        python=python,
+        project_root=project_root,
     )

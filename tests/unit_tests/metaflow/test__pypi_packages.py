@@ -276,12 +276,65 @@ def test_uv_pypi_base_prints_the_resolved_environment(
     assert len({len(row) - len(row.split(maxsplit=1)[1]) for row in rows}) == 1
 
 
-def test_uv_pypi_prints_the_step_it_decorates(project_root: Path, capsys: pytest.CaptureFixture):
+def test_uv_pypi_stays_quiet_on_a_step(project_root: Path, capsys: pytest.CaptureFixture):
+    # Outerbounds already prints a package list per image it bakes, so a step-scoped decorator
+    # reporting as well is pure duplication
     def train(self):
         pass
 
     uv_pypi(project_root=project_root)(step(train))
+    assert capsys.readouterr().out == ""
+
+
+def test_uv_pypi_base_stays_quiet_inside_a_task_subprocess(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # metaflow launches one `step` subprocess per task, each re-importing the flow module; only
+    # the client invocation should report, or one summary becomes one block per step
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "--quiet", "step", "start", "--run-id", "1"])
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
+def test_uv_pypi_base_can_be_silenced(project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture):
+    uv_pypi_base(log=False, project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
+def test_uv_pypi_can_be_asked_to_report(project_root: Path, capsys: pytest.CaptureFixture):
+    def train(self):
+        pass
+
+    uv_pypi(log=True, project_root=project_root)(step(train))
     assert "@uv_pypi on train:" in capsys.readouterr().out
+
+
+def test_log_true_does_not_reintroduce_per_task_output(
+    project_root: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # log= picks which decorators report; it does not override the per-task suppression, or
+    # opting a step in would print once per task again. The env var is the escape hatch.
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "step", "train"])
+
+    def train(self):
+        pass
+
+    uv_pypi(log=True, project_root=project_root)(step(train))
+    assert capsys.readouterr().out == ""
+
+
+def test_pypi_log_env_var_forces_and_silences(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "step", "start"])
+    monkeypatch.setenv("DS_PLATFORM_UTILS_PYPI_LOG", "1")
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert "@uv_pypi_base" in capsys.readouterr().out, "1 overrides the per-task suppression"
+
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "run"])
+    monkeypatch.setenv("DS_PLATFORM_UTILS_PYPI_LOG", "0")
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == "", "0 silences it even on the client"
 
 
 def test_uv_pypi_base_says_nothing_when_no_lock_is_found(tmp_path: Path, capsys: pytest.CaptureFixture):

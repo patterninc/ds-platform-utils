@@ -49,7 +49,8 @@ class MyFlow(FlowSpec):
 
 ### What it prints
 
-Both decorators print the environment they resolved, so a run records what it actually built:
+`@uv_pypi_base` prints the environment it resolved **once per run**, so the run records what it
+actually built:
 
 ```
 @uv_pypi_base on MyFlow: python 3.10, 10 package(s) from uv.lock
@@ -65,9 +66,33 @@ Both decorators print the environment they resolved, so a run records what it ac
 see [Resolving a universal lockfile](#resolving-a-universal-lockfile). A `disabled=True`
 environment is flagged in the header.
 
-This happens at **import** time, so it prints on any command that loads the flow module, not
-only `run`. Nothing is printed when no `uv.lock` is found — that is the remote task
-re-importing the module inside an already-baked image, where there is nothing to report.
+**Once per run, not once per step.** Metaflow launches a `step` subprocess per task, each of
+which re-imports the flow module and re-evaluates every decorator. Left alone that turns one
+summary into one block per step, so anything running a task stays quiet:
+
+| Context | Prints |
+| --- | --- |
+| `@uv_pypi_base`, client invocation (`run`, `resume`, …) | ✅ |
+| `@uv_pypi_base`, per-task `step` subprocess | ❌ |
+| `@uv_pypi` on a step | ❌ — Outerbounds already prints a package list per baked image |
+| No `uv.lock` found (remote task, `.py`-only code package) | ❌ — nothing was resolved |
+
+Both decorators take `log=` to change that per decorator — `log=True` on `uv_pypi_base`,
+`log=False` on `uv_pypi`:
+
+```python
+@uv_pypi_base(log=False)         # silence this flow's summary
+@uv_pypi(log=True)               # ...or opt one step in
+```
+
+`log=` chooses which decorators report. It does **not** override the per-task suppression, so
+opting a step in still prints once per run rather than once per task. To reach past that, set
+`DS_PLATFORM_UTILS_PYPI_LOG`:
+
+```bash
+DS_PLATFORM_UTILS_PYPI_LOG=0 python flows/my_flow.py run   # silence everything, whatever log= says
+DS_PLATFORM_UTILS_PYPI_LOG=1 python flows/my_flow.py run   # print from every process and decorator
+```
 
 ### Where the Python version comes from
 
@@ -98,6 +123,7 @@ uv_pypi_base(
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
+    log: bool = True,
 )                  # the decorated flow, or a decorator
 
 uv_pypi(
@@ -107,6 +133,7 @@ uv_pypi(
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     disabled: Optional[bool] = None,
+    log: bool = False,
 )                  # the decorated step, or a decorator
 ```
 
@@ -118,6 +145,7 @@ uv_pypi(
 | `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
 | `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
 | `disabled`     | `bool`             |       No | Forwarded to Metaflow to skip environment creation without removing the decorator.                                      |
+| `log`          | `bool`             |       No | Print the resolved environment. Defaults to `True` on `uv_pypi_base`, `False` on `uv_pypi`. See [What it prints](#what-it-prints). |
 
 ## How the packages are derived
 
