@@ -467,6 +467,25 @@ def _get_pypi_kwargs(
     }
 
 
+def _should_log_environment() -> bool:
+    """Say whether this process should report the environment it resolved.
+
+    Metaflow populates `current` when the task runtime starts, so `is_running_flow` separates
+    a process executing a task from the client invocation that launched it.
+
+    It reads False during ordinary decoration, because the flow module is imported -- and these
+    decorators run -- before the task runtime initialises `current`. What it catches is a flow
+    module re-imported while a run is already in progress, such as one flow triggering another.
+
+    Returns:
+        `True` when the resolved environment should be printed.
+
+    """
+    from metaflow import current
+
+    return not current.is_running_flow
+
+
 def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
     """Render a resolved environment as an aligned block, for printing at decoration time.
 
@@ -503,9 +522,10 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
     called, so nothing is read off disk until a flow module is imported.
 
     The resolved environment is printed, so a run records what it actually built rather than
-    leaving you to re-derive it. Nothing is printed when the map came back empty -- that is the
-    remote task re-importing the flow module inside an already-baked image, where there is no
-    lockfile to read and nothing worth reporting.
+    leaving you to re-derive it -- but only from a process that is not itself executing a task,
+    per `_should_log_environment`. Nothing is printed when the map came back empty either, that
+    being the remote task re-importing the flow module inside an already-baked image, where
+    there is no lockfile to read and nothing worth reporting.
 
     Args:
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
@@ -516,16 +536,14 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
         **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
 
     """
-    import metaflow
 
     def decorate(obj):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
         if disabled is not None:
             pypi_kwargs["disabled"] = disabled
-        if pypi_kwargs["packages"]:
+        if pypi_kwargs["packages"] and _should_log_environment():
             named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
-            if not metaflow.current.is_running_flow:
-                print(_format_pypi_environment(named, pypi_kwargs))
+            print(_format_pypi_environment(named, pypi_kwargs))
         return decorator(**pypi_kwargs)(obj)
 
     return decorate if target is None else decorate(target)

@@ -284,6 +284,18 @@ def test_uv_pypi_prints_the_step_it_decorates(project_root: Path, capsys: pytest
     assert "@uv_pypi on train:" in capsys.readouterr().out
 
 
+def test_uv_pypi_base_says_nothing_while_a_flow_is_running(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # `current` is populated once the task runtime starts, so this is the flow module being
+    # re-imported mid-run -- e.g. one flow triggering another -- rather than the client
+    import metaflow
+
+    monkeypatch.setattr(type(metaflow.current), "is_running_flow", property(lambda self: True))
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
 def test_uv_pypi_base_says_nothing_when_no_lock_is_found(tmp_path: Path, capsys: pytest.CaptureFixture):
     # a remote task re-imports the flow module inside an already-baked image, so there is no
     # lockfile and nothing worth reporting -- printing there would just be noise per task

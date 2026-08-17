@@ -66,8 +66,12 @@ see [Resolving a universal lockfile](#resolving-a-universal-lockfile). A `disabl
 environment is flagged in the header.
 
 This happens at **import** time, so it prints on any command that loads the flow module, not
-only `run`. Nothing is printed when no `uv.lock` is found — that is the remote task
-re-importing the module inside an already-baked image, where there is nothing to report.
+only `run`. Two things suppress it:
+
+| Condition | Why |
+| --- | --- |
+| `current.is_running_flow` is true | The flow module was re-imported while a run is already in progress — one flow triggering another — so the environment has already been reported. |
+| No `uv.lock` found | The remote task, re-importing the module inside an already-baked image. Nothing was resolved, so there is nothing to report. |
 
 ### Where the Python version comes from
 
