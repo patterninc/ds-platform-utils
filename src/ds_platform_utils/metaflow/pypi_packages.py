@@ -445,24 +445,10 @@ def _get_pypi_kwargs(
     2. `requires-python` in uv.lock or pyproject.toml -- a range, so its floor is used.
     3. The running interpreter.
 
-    Example usage:
-
-    ```python
-    from metaflow import FlowSpec, pypi_base, step
-
-    from ds_platform_utils.metaflow import _get_pypi_kwargs
-
-
-    @pypi_base(**_get_pypi_kwargs())
-    class MyFlow(FlowSpec):
-        @step
-        def start(self):
-            self.next(self.end)
-
-        @step
-        def end(self):
-            pass
-    ```
+    Internal: [`uv_pypi_base`][ds_platform_utils.metaflow.uv_pypi_base] and
+    [`uv_pypi`][ds_platform_utils.metaflow.uv_pypi] are how a flow reaches this, and they are
+    what the package exports. The result splats into either Metaflow decorator, since both take
+    the same `python` and `packages` arguments.
 
     Args:
         dependency_groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
@@ -565,9 +551,9 @@ def _apply_uv_pypi(decorator, target, label, **kwargs):
 
     The resolved environment is printed, so a run records what it actually built rather than
     leaving you to re-derive it -- but only from a process that is not itself executing a task,
-    per `_should_log_environment`. Nothing is printed when the map came back empty either, that
-    being the remote task re-importing the flow module inside an already-baked image, where
-    there is no lockfile to read and nothing worth reporting.
+    per `_is_running_task`, or the summary would repeat once per step. Nothing is printed when
+    the map came back empty either, that being a task re-importing the flow module inside an
+    already-baked image, where there is no lockfile to read and nothing worth reporting.
 
     Args:
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
