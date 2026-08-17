@@ -33,7 +33,6 @@ when there is something to configure:
 @uv_pypi_base                    # derive everything
 @uv_pypi_base(dependency_groups=["dev"])    # add a dependency group
 @uv_pypi_base(python="3.11")     # override the derived interpreter
-@uv_pypi_base(disabled=True)     # skip environment creation
 ```
 
 ### One step instead of the whole flow
@@ -62,11 +61,11 @@ Both decorators print the environment they resolved, so a run records what it ac
 ```
 
 `(unpinned)` means the lock could not be narrowed to one version, so `@pypi` resolves it —
-see [Resolving a universal lockfile](#resolving-a-universal-lockfile). A `disabled=True`
-environment is flagged in the header.
+see [Resolving a universal lockfile](#resolving-a-universal-lockfile).
 
 This happens at **import** time, so it prints on any command that loads the flow module, not
-only `run`. Two things suppress it:
+only `run`. Four conditions suppress it, so the summary lands once per run rather than once per
+step:
 
 | Condition | Why |
 | --- | --- |
@@ -106,7 +105,6 @@ uv_pypi_base(
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
-    disabled: Optional[bool] = None,
 )                  # the decorated flow, or a decorator
 
 uv_pypi(
@@ -115,7 +113,6 @@ uv_pypi(
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
-    disabled: Optional[bool] = None,
 )                  # the decorated step, or a decorator
 ```
 
@@ -126,7 +123,6 @@ uv_pypi(
 | `dependency_groups` | `str \| list[str]` |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional.  |
 | `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
 | `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
-| `disabled`     | `bool`             |       No | Forwarded to Metaflow to skip environment creation without removing the decorator.                                      |
 
 ## How the packages are derived
 

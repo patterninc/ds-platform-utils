@@ -526,8 +526,6 @@ def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
     """
     packages = pypi_kwargs["packages"]
     header = f"{label}: python {pypi_kwargs['python']}, {len(packages)} package(s) from uv.lock"
-    if pypi_kwargs.get("disabled"):
-        header += "  [environment disabled]"
 
     width = max(len(name) for name in packages)
     lines = [header]
@@ -538,7 +536,7 @@ def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
     return "\n".join(lines)
 
 
-def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
+def _apply_uv_pypi(decorator, target, label, **kwargs):
     """Wrap a Metaflow pypi decorator so its environment comes from the project.
 
     Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(dependency_groups=["dev"])`)
@@ -558,16 +556,12 @@ def _apply_uv_pypi(decorator, target, label, disabled=None, **kwargs):
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
         target: the flow or step being decorated, or `None` in the called form
         label: the decorator's own name, used to say which one resolved the environment
-        disabled: when not `None`, forwarded to the Metaflow decorator to turn the
-            environment off without removing it
         **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
 
     """
 
     def decorate(obj):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
-        if disabled is not None:
-            pypi_kwargs["disabled"] = disabled
         if pypi_kwargs["packages"] and _should_log_environment():
             named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
             print(_format_pypi_environment(named, pypi_kwargs))
@@ -582,7 +576,6 @@ def uv_pypi_base(
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
-    disabled: Optional[bool] = None,
 ):
     """Metaflow's `@pypi_base`, with the flow's environment filled in from uv.lock.
 
@@ -629,7 +622,6 @@ def uv_pypi_base(
             `"3.11"`.
         project_root: directory holding the project files. Defaults to searching upward from
             the directory the flow was launched from.
-        disabled: set `True` to skip environment creation, as on `@pypi_base` itself.
 
     Returns:
         The decorated flow, or a decorator when called with keyword arguments.
@@ -641,7 +633,6 @@ def uv_pypi_base(
         pypi_base,
         flow,
         "@uv_pypi_base",
-        disabled,
         dependency_groups=dependency_groups,
         python=python,
         project_root=project_root,
@@ -654,14 +645,13 @@ def uv_pypi(
     dependency_groups: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
-    disabled: Optional[bool] = None,
 ):
     """Metaflow's `@pypi`, with a single step's environment filled in from uv.lock.
 
     The step-level counterpart to
     [`uv_pypi_base`][ds_platform_utils.metaflow.uv_pypi_base] -- same derived environment,
     scoped to one step instead of the whole flow. Both Metaflow decorators accept the same
-    `python` / `packages` / `disabled` arguments, so the two behave identically apart from
+    `python` and `packages` arguments, so the two behave identically apart from
     where they attach.
 
     Example usage:
@@ -696,7 +686,6 @@ def uv_pypi(
             `"3.11"`.
         project_root: directory holding the project files. Defaults to searching upward from
             the directory the flow was launched from.
-        disabled: set `True` to skip environment creation, as on `@pypi` itself.
 
     Returns:
         The decorated step, or a decorator when called with keyword arguments.
@@ -705,5 +694,5 @@ def uv_pypi(
     from metaflow import pypi
 
     return _apply_uv_pypi(
-        pypi, step, "@uv_pypi", disabled, dependency_groups=dependency_groups, python=python, project_root=project_root
+        pypi, step, "@uv_pypi", dependency_groups=dependency_groups, python=python, project_root=project_root
     )

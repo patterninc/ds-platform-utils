@@ -240,17 +240,6 @@ def test_uv_pypi_base_passes_groups_and_python_through(project_root: Path, pypi_
     assert pypi_base_spy["packages"]["pytest"] == "8.4.1"
 
 
-def test_uv_pypi_base_omits_disabled_unless_asked(project_root: Path, pypi_base_spy: dict):
-    # leaving the key out is what lets a step-level @uv_pypi inherit the flow's setting
-    uv_pypi_base(project_root=project_root)(_build_flow())
-    assert "disabled" not in pypi_base_spy
-
-
-def test_uv_pypi_base_forwards_disabled(project_root: Path, pypi_base_spy: dict):
-    uv_pypi_base(disabled=True, project_root=project_root)(_build_flow())
-    assert pypi_base_spy["disabled"] is True
-
-
 def test_uv_pypi_base_prints_the_resolved_environment(
     project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture
 ):
@@ -336,13 +325,6 @@ def test_uv_pypi_base_says_nothing_when_no_lock_is_found(tmp_path: Path, capsys:
     # lockfile and nothing worth reporting -- printing there would just be noise per task
     uv_pypi_base(project_root=tmp_path)(_build_flow())
     assert capsys.readouterr().out == ""
-
-
-def test_uv_pypi_base_flags_a_disabled_environment(
-    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture
-):
-    uv_pypi_base(disabled=True, project_root=project_root)(_build_flow())
-    assert "[environment disabled]" in capsys.readouterr().out
 
 
 def test_uv_pypi_base_registers_with_metaflow(project_root: Path):
