@@ -136,8 +136,38 @@ def test_uv_lock_rejects_unrecorded_group(project_root: Path):
         _get_packages_from_uv_lock(dependency_groups=["nope"], project_root=project_root)
 
 
-def test_returns_empty_map_when_files_are_missing(tmp_path: Path):
-    # stands in for a remote task, whose code package holds only .py files
+def test_raises_when_no_lockfile_is_found(tmp_path: Path):
+    # an environment that silently resolves to nothing is worse than a failure that says where
+    # it looked, so the client is told rather than handed an empty map
+    with pytest.raises(FileNotFoundError, match="no uv.lock found"):
+        _get_packages_from_uv_lock(project_root=tmp_path)
+
+
+def test_missing_lockfile_error_names_where_it_looked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # an explicit root is reported as the one directory that was checked
+    with pytest.raises(FileNotFoundError, match=str(tmp_path)):
+        _get_packages_from_uv_lock(project_root=tmp_path)
+    # without one, the message has to say the search walked upwards
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="and its parents"):
+        _get_packages_from_uv_lock()
+
+
+@pytest.mark.parametrize(
+    ("env", "argv"),
+    [
+        ({"MF_PATHSPEC": "MyFlow/1/start/2"}, ["my_flow.py", "run"]),
+        ({}, ["my_flow.py", "step", "start"]),
+    ],
+)
+def test_returns_empty_map_when_a_task_finds_no_lockfile(
+    env: dict, argv: list, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # the remote task, re-importing the flow module inside an already-baked image. Raising here
+    # would kill every remote run, since metaflow's code package holds only .py files.
+    monkeypatch.setattr("sys.argv", argv)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
     assert _get_packages_from_uv_lock(project_root=tmp_path) == {}
 
 
@@ -320,11 +350,24 @@ def test_uv_pypi_base_says_nothing_while_a_flow_is_running(
     assert capsys.readouterr().out == ""
 
 
-def test_uv_pypi_base_says_nothing_when_no_lock_is_found(tmp_path: Path, capsys: pytest.CaptureFixture):
-    # a remote task re-imports the flow module inside an already-baked image, so there is no
-    # lockfile and nothing worth reporting -- printing there would just be noise per task
+def test_uv_pypi_base_says_nothing_when_a_task_finds_no_lock(
+    tmp_path: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # a task re-imports the flow module inside an already-baked image, so there is no lockfile
+    # and nothing worth reporting -- and it must not raise there either
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "step", "start"])
     uv_pypi_base(project_root=tmp_path)(_build_flow())
     assert capsys.readouterr().out == ""
+    assert pypi_base_spy["packages"] == {}
+
+
+def test_uv_pypi_base_raises_on_the_client_when_no_lock_is_found(
+    tmp_path: Path, pypi_base_spy: dict, monkeypatch: pytest.MonkeyPatch
+):
+    # decoration is import time, so a misconfigured flow fails before anything is scheduled
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "run"])
+    with pytest.raises(FileNotFoundError, match="no uv.lock found"):
+        uv_pypi_base(project_root=tmp_path)(_build_flow())
 
 
 def test_uv_pypi_base_registers_with_metaflow(project_root: Path):

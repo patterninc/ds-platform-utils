@@ -72,7 +72,7 @@ step:
 | `MF_PATHSPEC` is set | Metaflow exports it into every *remote* task command, so it marks a Kubernetes pod, Batch job, Argo or Step Functions container. |
 | The process is running a task (`step` / `spin-step` in `sys.argv`) | Metaflow runs one of these per task — locally, and again inside the container — each re-importing the flow module. This is the one that covers the **local** worker, whose environment is just a copy of the client's, and it works on every backend. |
 | `current.is_running_flow` is true | The flow module was re-imported while a run is already in progress — one flow triggering another — so the environment has already been reported. |
-| No `uv.lock` found | The remote task, re-importing the module inside an already-baked image. Nothing was resolved, so there is nothing to report. |
+| No `uv.lock` found **and** the process is running a task | The remote task, re-importing the module inside an already-baked image. Nothing was resolved, so there is nothing to report. On the client this raises instead — see [Errors](#errors). |
 
 None of the first three is load-bearing: if a future Metaflow renames a subcommand or drops a
 variable, the failure is a duplicated log block, not a broken run.
@@ -135,10 +135,11 @@ uv_pypi(
   the query string and the resolved commit in the fragment; that gets taken apart and
   reassembled around the **commit SHA**, which is what makes the build repeatable.
 - **Resolves markers** against the environment being built — see below.
-- Emits **nothing** when `uv.lock` cannot be found, which is what makes remote tasks work: a
-  remote task re-imports the flow module — re-evaluating the decorator — inside a container
-  whose code package holds only `.py` files. The image was already baked from the environment
-  resolved on the client, so nothing is lost.
+- **Raises** when `uv.lock` cannot be found, unless the process is already running a task. A
+  task re-imports the flow module — re-evaluating the decorator — inside a container whose code
+  package holds only `.py` files, so the lock is legitimately absent there and an empty map is
+  correct; the image was already baked from the environment resolved on the client. Anywhere
+  else a missing lockfile is a mistake, and silently resolving to nothing would hide it.
 
 Everything above comes from `uv.lock`, so run `uv lock` after changing a dependency or the
 flow will bake the previous version.
@@ -195,10 +196,17 @@ Pass `project_root=` explicitly if the flow is launched from outside the repo.
 
 ## Errors
 
-Decoration raises `ValueError` rather than silently building an environment that will fail at
-bake time, so these surface the moment the flow module is imported:
+Decoration happens at import, so these surface before a run is scheduled — no bake, no tasks —
+rather than silently building an environment that fails later.
 
-- a requested group is not recorded in the lock
+`FileNotFoundError` when no `uv.lock` is found. The message names the directory searched, or
+says it walked upwards from the launch directory, and suggests the three fixes: run `uv lock`,
+launch from inside the repo, or pass `project_root=`. Skipped in a process already running a
+task, where the lock is expected to be absent.
+
+`ValueError` for a lockfile that cannot produce a usable environment:
+
+- a requested dependency group is not recorded in the lock
 - a lock `source` is `path` or `workspace` — local-only, so a remote task cannot fetch it
 - a root dependency is missing from the lock (stale lockfile — run `uv lock`)
 

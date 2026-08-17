@@ -336,9 +336,11 @@ def _get_packages_from_uv_lock(
     Deliberately *not* the full transitive closure: `@pypi` resolves transitives itself from
     these pinned roots, and per-platform wheel availability is its job rather than this one's.
 
-    Returns an empty map when `uv.lock` cannot be found -- a remote task re-imports the flow
-    module inside a container whose code package holds only `.py` files. The image is already
-    baked from the map resolved on the client by then, so nothing is lost.
+    Raises when `uv.lock` cannot be found, since an environment silently resolving to nothing is
+    worse than a failure that names the directory it searched. The exception is a process already
+    running a task: it re-imports the flow module inside an already-baked image, where metaflow's
+    code package carries only `.py` files, so the lock is legitimately absent and an empty map is
+    the right answer.
 
     Args:
         dependency_groups: names of dependency groups to add on top of the runtime dependencies, e.g.
@@ -362,7 +364,17 @@ def _get_packages_from_uv_lock(
 
     lock_path = _find_project_file("uv.lock", project_root)
     if lock_path is None:
-        return {}
+        if _is_running_task():
+            # a task re-imports the flow module inside an already-baked image, and metaflow's
+            # code package carries only .py files -- so the lock is legitimately absent here.
+            # The image was built from the map resolved on the client, so nothing is lost.
+            return {}
+        raise FileNotFoundError(
+            "no uv.lock found, so there is nothing to build a @pypi environment from. Looked in "
+            + (f"{Path(project_root)}" if project_root is not None else f"{Path.cwd()} and its parents")
+            + ". Run `uv lock` if the project has no lockfile yet, launch the flow from inside the "
+            "repo, or pass project_root= to point at the directory holding it."
+        )
 
     lock = _load_toml(lock_path)
 
@@ -478,12 +490,15 @@ def _get_pypi_kwargs(
     }
 
 
-def _should_log_environment() -> bool:
-    """Say whether this process should report the environment it resolved.
+def _is_running_task() -> bool:
+    """Say whether this process is running a task rather than launching one.
 
-    The summary is worth one block per run, and Metaflow re-imports the flow module -- so
-    re-evaluates these decorators -- in every process that touches a task. Three checks answer
-    "am I running a task rather than launching one", because no single one covers every context:
+    Metaflow re-imports the flow module -- so re-evaluates these decorators -- in every process
+    that touches a task. Two things follow from that, and both need this answer: the resolved
+    environment is worth reporting once per run rather than once per task, and a missing
+    lockfile is a mistake on the client but expected inside a task.
+
+    Three checks, because no single one covers every context:
 
     1. `MF_PATHSPEC`, which Metaflow's mflog helper exports into every *remote* task command.
        Present in a Kubernetes pod, Batch job, Argo or Step Functions container; absent from the
@@ -496,21 +511,23 @@ def _should_log_environment() -> bool:
        different one: a flow module re-imported while a run is already in progress, such as one
        flow triggering another.
 
-    None of these is load-bearing. If a future Metaflow renames a subcommand or drops a
-    variable, the failure is a duplicated log block, not a broken run.
+    None of these is load-bearing for the logging. If a future Metaflow renames a subcommand or
+    drops a variable, the worst case there is a duplicated log block. A false *positive* would
+    matter more, since it would turn a missing lockfile into an empty environment instead of an
+    error -- but all three only become true in processes Metaflow itself started.
 
     Returns:
-        `True` when the resolved environment should be printed.
+        `True` when this process is executing a task.
 
     """
     if os.environ.get(_REMOTE_TASK_ENV_VAR):
-        return False
+        return True
     if any(command in sys.argv for command in _TASK_COMMANDS):
-        return False
+        return True
 
     from metaflow import current
 
-    return not current.is_running_flow
+    return current.is_running_flow
 
 
 def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
@@ -562,7 +579,7 @@ def _apply_uv_pypi(decorator, target, label, **kwargs):
 
     def decorate(obj):
         pypi_kwargs = _get_pypi_kwargs(**kwargs)
-        if pypi_kwargs["packages"] and _should_log_environment():
+        if pypi_kwargs["packages"] and not _is_running_task():
             named = f"{label} on {obj.__name__}" if hasattr(obj, "__name__") else label
             print(_format_pypi_environment(named, pypi_kwargs))
         return decorator(**pypi_kwargs)(obj)
