@@ -32,12 +32,23 @@ if sys.version_info >= (3, 11):
 else:
     import tomli as tomllib
 
+import os
 from pathlib import Path
 from typing import Optional, Tuple, Union
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 #: uv.lock `source` keys that mean "this is the local project, not something to install".
 _LOCAL_SOURCE_KEYS = ("virtual", "editable", "directory")
+
+#: Metaflow subcommands that mean "this process is running one task", not the client invocation
+#: that launched it. Metaflow spawns one such process per task -- locally, and again inside the
+#: container -- and each re-imports the flow module, re-evaluating these decorators.
+_TASK_COMMANDS = ("step", "spin-step")
+
+#: Exported by Metaflow's mflog helper into every *remote* task command, so it is set in a
+#: Kubernetes pod, Batch job, Argo or Step Functions container -- but not in the local worker,
+#: whose environment is a plain copy of the client's.
+_REMOTE_TASK_ENV_VAR = "MF_PATHSPEC"
 
 #: Metaflow bakes remote task images for Linux, so that is the platform markers are evaluated
 #: against. A flow that only ever runs locally on a Mac can override it.
@@ -470,17 +481,33 @@ def _get_pypi_kwargs(
 def _should_log_environment() -> bool:
     """Say whether this process should report the environment it resolved.
 
-    Metaflow populates `current` when the task runtime starts, so `is_running_flow` separates
-    a process executing a task from the client invocation that launched it.
+    The summary is worth one block per run, and Metaflow re-imports the flow module -- so
+    re-evaluates these decorators -- in every process that touches a task. Three checks answer
+    "am I running a task rather than launching one", because no single one covers every context:
 
-    It reads False during ordinary decoration, because the flow module is imported -- and these
-    decorators run -- before the task runtime initialises `current`. What it catches is a flow
-    module re-imported while a run is already in progress, such as one flow triggering another.
+    1. `MF_PATHSPEC`, which Metaflow's mflog helper exports into every *remote* task command.
+       Present in a Kubernetes pod, Batch job, Argo or Step Functions container; absent from the
+       local worker, whose environment is a plain copy of the client's.
+    2. The task subcommand in `sys.argv`. Every backend builds its task command around the same
+       subcommand, so this one covers the local worker Metaflow spawns per task *as well as* the
+       container it launches.
+    3. `current.is_running_flow`, which only becomes true once the task runtime has started --
+       after this decorator ran. It therefore cannot see cases 1 or 2 at all, and catches a
+       different one: a flow module re-imported while a run is already in progress, such as one
+       flow triggering another.
+
+    None of these is load-bearing. If a future Metaflow renames a subcommand or drops a
+    variable, the failure is a duplicated log block, not a broken run.
 
     Returns:
         `True` when the resolved environment should be printed.
 
     """
+    if os.environ.get(_REMOTE_TASK_ENV_VAR):
+        return False
+    if any(command in sys.argv for command in _TASK_COMMANDS):
+        return False
+
     from metaflow import current
 
     return not current.is_running_flow

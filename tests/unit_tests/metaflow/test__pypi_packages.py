@@ -284,6 +284,41 @@ def test_uv_pypi_prints_the_step_it_decorates(project_root: Path, capsys: pytest
     assert "@uv_pypi on train:" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("command", ["step", "spin-step"])
+def test_uv_pypi_base_says_nothing_in_a_task_process(
+    command: str,
+    project_root: Path,
+    pypi_base_spy: dict,
+    capsys: pytest.CaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # metaflow runs one of these per task -- locally, and again inside the container -- and each
+    # re-imports the flow module. Without this the summary prints once per step.
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "--quiet", command, "start", "--run-id", "1"])
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
+def test_uv_pypi_base_reports_from_the_client(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # the invocation that launches the run is the one that should report
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "--environment=pypi", "run"])
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert "@uv_pypi_base on MyFlow:" in capsys.readouterr().out
+
+
+def test_uv_pypi_base_says_nothing_in_a_remote_task(
+    project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    # MF_PATHSPEC is exported into every remote task command, so it holds even if argv changes
+    # shape. Set argv to the client's to prove this check stands on its own.
+    monkeypatch.setattr("sys.argv", ["my_flow.py", "run"])
+    monkeypatch.setenv("MF_PATHSPEC", "MyFlow/219386/start/1808602")
+    uv_pypi_base(project_root=project_root)(_build_flow())
+    assert capsys.readouterr().out == ""
+
+
 def test_uv_pypi_base_says_nothing_while_a_flow_is_running(
     project_root: Path, pypi_base_spy: dict, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ):

@@ -70,8 +70,13 @@ only `run`. Two things suppress it:
 
 | Condition | Why |
 | --- | --- |
+| `MF_PATHSPEC` is set | Metaflow exports it into every *remote* task command, so it marks a Kubernetes pod, Batch job, Argo or Step Functions container. |
+| The process is running a task (`step` / `spin-step` in `sys.argv`) | Metaflow runs one of these per task — locally, and again inside the container — each re-importing the flow module. This is the one that covers the **local** worker, whose environment is just a copy of the client's, and it works on every backend. |
 | `current.is_running_flow` is true | The flow module was re-imported while a run is already in progress — one flow triggering another — so the environment has already been reported. |
 | No `uv.lock` found | The remote task, re-importing the module inside an already-baked image. Nothing was resolved, so there is nothing to report. |
+
+None of the first three is load-bearing: if a future Metaflow renames a subcommand or drops a
+variable, the failure is a duplicated log block, not a broken run.
 
 ### Where the Python version comes from
 
