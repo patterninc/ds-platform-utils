@@ -64,7 +64,7 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     # Pull requests build (to catch broken links) but never publish.
-    if: github.event_name != 'pull_request'
+    # if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write # to publish the Pages deployment
