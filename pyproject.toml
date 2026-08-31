@@ -21,6 +21,7 @@ dependencies = [
     "pandas",
     "packaging",
     "seaborn>=0.13.2",
+    "hvplot>=0.12.2",
 ]
 
 [dependency-groups]
