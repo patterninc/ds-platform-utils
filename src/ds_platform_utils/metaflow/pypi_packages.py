@@ -34,7 +34,6 @@ else:
 
 import os
 from pathlib import Path
-from typing import Optional, Tuple, Union
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 #: uv.lock `source` keys that mean "this is the local project, not something to install".
@@ -112,7 +111,7 @@ def _dependency_applies(dep: dict, environment: dict) -> bool:
     return Marker(marker).evaluate(environment)
 
 
-def _select_locked_package(dep: dict, locked: list) -> Optional[dict]:
+def _select_locked_package(dep: dict, locked: list) -> dict | None:
     """Pick the one lock entry a dependency resolves to, or `None` if it cannot be narrowed.
 
     Args:
@@ -133,7 +132,7 @@ def _select_locked_package(dep: dict, locked: list) -> Optional[dict]:
     return next((package for package in locked if package["version"] == version), None)
 
 
-def _find_project_file(filename: str, project_root: Optional[Union[str, Path]] = None) -> Optional[Path]:
+def _find_project_file(filename: str, project_root: str | Path | None = None) -> Path | None:
     """Locate a dependency-declaration file in the flow repo calling this function.
 
     An installed package cannot resolve the project root from `__file__` -- that points into
@@ -173,7 +172,7 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def _requires_python_floor(project_root: Optional[Union[str, Path]] = None) -> Optional[str]:
+def _requires_python_floor(project_root: str | Path | None = None) -> str | None:
     """Read the lowest Python version the project claims to support.
 
     `requires-python` is a range, not a version, so the floor is the only concrete thing in
@@ -214,7 +213,7 @@ def _requires_python_floor(project_root: Optional[Union[str, Path]] = None) -> O
     return f"{floor.major}.{floor.minor}"
 
 
-def _find_python_version(project_root: Optional[Union[str, Path]] = None) -> str:
+def _find_python_version(project_root: str | Path | None = None) -> str:
     """Work out which Python version the flow's environment should be built on.
 
     Checked in order of how concrete each source is:
@@ -284,7 +283,7 @@ def _lock_source_to_direct_reference(name: str, source: dict) -> str:
     )
 
 
-def _split_lock_packages(lock: dict, lock_path: Path) -> Tuple[dict, dict]:
+def _split_lock_packages(lock: dict, lock_path: Path) -> tuple[dict, dict]:
     """Split a parsed uv.lock into its root project entry and its installable packages.
 
     Args:
@@ -314,9 +313,9 @@ def _split_lock_packages(lock: dict, lock_path: Path) -> Tuple[dict, dict]:
 
 
 def _get_packages_from_uv_lock(
-    dependency_groups: Optional[Union[str, list]] = None,
-    project_root: Optional[Union[str, Path]] = None,
-    python: Optional[str] = None,
+    dependency_groups: str | list | None = None,
+    project_root: str | Path | None = None,
+    python: str | None = None,
     sys_platform: str = _DEFAULT_SYS_PLATFORM,
 ) -> dict:
     """Build the `@pypi` packages map from a flow repo's `uv.lock`.
@@ -418,9 +417,9 @@ def _get_packages_from_uv_lock(
 
 
 def _get_pypi_kwargs(
-    dependency_groups: Optional[Union[str, list]] = None,
-    python: Optional[str] = None,
-    project_root: Optional[Union[str, Path]] = None,
+    dependency_groups: str | list | None = None,
+    python: str | None = None,
+    project_root: str | Path | None = None,
     sys_platform: str = _DEFAULT_SYS_PLATFORM,
 ) -> dict:
     """Build every argument `@pypi_base` needs from a flow repo's uv.lock.
@@ -576,9 +575,9 @@ def _apply_uv_pypi(decorator, target, label, **kwargs):
 def uv_pypi_base(
     flow=None,
     *,
-    dependency_groups: Optional[Union[str, list]] = None,
-    python: Optional[str] = None,
-    project_root: Optional[Union[str, Path]] = None,
+    dependency_groups: str | list | None = None,
+    python: str | None = None,
+    project_root: str | Path | None = None,
 ):
     """Metaflow's `@pypi_base`, with the flow's environment filled in from uv.lock.
 
@@ -645,9 +644,9 @@ def uv_pypi_base(
 def uv_pypi(
     step=None,
     *,
-    dependency_groups: Optional[Union[str, list]] = None,
-    python: Optional[str] = None,
-    project_root: Optional[Union[str, Path]] = None,
+    dependency_groups: str | list | None = None,
+    python: str | None = None,
+    project_root: str | Path | None = None,
 ):
     """Metaflow's `@pypi`, with a single step's environment filled in from uv.lock.
 

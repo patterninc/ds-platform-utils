@@ -8,18 +8,19 @@ authors = [
     { name = "Eric Riddoch", email = "eric.riddoch@pattern.com" },
     { name = "Vinay Shende", email = "vinay.shende@pattern.com" }
 ]
-# requires-python = ">=3.7"
+requires-python = ">=3.10"
 dependencies = [
     "outerbounds>=0.3.159",
     "pydantic>=2",
-    "snowflake-connector-python>=3",
+    "snowflake-connector-python[pandas]==4.4.0",
     "PyYAML",
+    "jinja2",
+    "sqlparse==0.5.3",
+    "polars",
     "pyarrow",
     "pandas",
-    "jinja2",
-    "sqlparse>=0.5.3",
-    "polars>=1.36.2",
     "packaging",
+    "seaborn>=0.13.2",
 ]
 
 [dependency-groups]
