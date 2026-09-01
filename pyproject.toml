@@ -10,6 +10,8 @@ authors = [
 ]
 # requires-python = ">=3.7"
 dependencies = [
+    "boto3",
+    "cloudpickle>=3",
     "outerbounds>=0.3.159",
     "pydantic>=2",
     "snowflake-connector-python>=3",
