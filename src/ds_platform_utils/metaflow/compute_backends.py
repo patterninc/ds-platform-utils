@@ -161,12 +161,12 @@ DEFAULT_MAX_RUNTIME_SECONDS = 24 * 60 * 60
 # Changing this means granting the execution role access to the new name explicitly.
 SNOWFLAKE_SECRET_PREFIX = "AmazonSageMaker-remote-step-"
 
+
 # What the *submitting* side needs, for any AWS backend. pandas and pyarrow because the decorator
 # encodes DataFrames as parquet before handing them over; boto3 to submit the job. A flow whose
 # body reads Snowflake adds ds-platform-utils and the connector itself -- see snowflake_access.
 def _self_requirement() -> tuple:
-    """
-    This library, as a pip requirement pinned to the ref that is actually installed.
+    """This library, as a pip requirement pinned to the ref that is actually installed.
 
     ``@pypi_base`` builds an *isolated* environment holding only what it is told, so a flow using
     the decorator has to declare the library the decorator lives in -- otherwise the submitting
