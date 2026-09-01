@@ -164,11 +164,44 @@ SNOWFLAKE_SECRET_PREFIX = "AmazonSageMaker-remote-step-"
 # What the *submitting* side needs, for any AWS backend. pandas and pyarrow because the decorator
 # encodes DataFrames as parquet before handing them over; boto3 to submit the job. A flow whose
 # body reads Snowflake adds ds-platform-utils and the connector itself -- see snowflake_access.
+def _self_requirement() -> tuple:
+    """
+    This library, as a pip requirement pinned to the ref that is actually installed.
+
+    ``@pypi_base`` builds an *isolated* environment holding only what it is told, so a flow using
+    the decorator has to declare the library the decorator lives in -- otherwise the submitting
+    step fails with ``ModuleNotFoundError: ds_platform_utils`` before it reaches any compute.
+
+    The ref is read from the installed distribution rather than hard-coded, because a hard-coded
+    ``@main`` would silently give a branch-testing flow a different version of the decorator on the
+    submitting side than the one it is being tested with.
+
+    :return: ``(name, version)`` in ``@pypi`` shape.
+    """
+    import json
+    from importlib.metadata import distribution
+
+    try:
+        info = json.loads(distribution("ds-platform-utils").read_text("direct_url.json") or "{}")
+        url, vcs = info["url"], info["vcs_info"]
+        return (f"git+{url}", f"@{vcs.get('requested_revision') or vcs['commit_id']}")
+    except Exception:
+        # Installed from an index rather than git, or metadata missing. Fall back to the version.
+        from importlib.metadata import version
+
+        try:
+            return ("ds-platform-utils", version("ds-platform-utils"))
+        except Exception:
+            return ("ds-platform-utils", "")
+
+
 BACKEND_PACKAGES = {
     "boto3": "",
     "cloudpickle": "",
     "pandas": "2.2.3",
     "pyarrow": "",
+    # The decorator itself. Resolved at import so a flow inherits the ref it installed.
+    _self_requirement()[0]: _self_requirement()[1],
 }
 
 # Was SageMaker-specific before Batch existed, and flows still import it by that name.
