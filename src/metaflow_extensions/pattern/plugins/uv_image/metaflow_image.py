@@ -1,6 +1,6 @@
 """Bake a uv project's locked dependencies into an image Metaflow can run tasks in.
 
-[`build_metaflow_image`][ds_platform_utils.docker.build_metaflow_image] is the whole thing --
+`build_metaflow_image` is the whole thing --
 point it at a uv project and it produces a tagged local image:
 
 ```python
@@ -12,12 +12,11 @@ exactly what `uv sync` gives you locally: the same resolved versions, verified a
 hashes. Nothing is re-resolved at build time, which is what makes two builds of one lock produce
 the same environment.
 
-That is the difference from [`uv_pypi_base`][ds_platform_utils.metaflow.uv_pypi_base], which
-emits direct dependencies only and leaves resolution to `@pypi`. It is also why the lock is
+That is the difference from `@pypi`, which is handed a package list and resolves it itself. It is also why the lock is
 copied into the build rather than exported to a requirements.txt first -- an export drops the
 hashes, and `uv sync` is the same operation a developer runs, rather than a translation of it.
 
-[`render_metaflow_dockerfile`][ds_platform_utils.docker.render_metaflow_dockerfile] returns the
+`render_metaflow_dockerfile` returns the
 Dockerfile on its own, for inspecting or committing what a build would run.
 
 The layout of that Dockerfile is dictated by how Metaflow launches a task, per
@@ -33,7 +32,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from ds_platform_utils.docker.image_builder import build_image
+from .image_builder import build_image
 
 #: The uid Metaflow's own example images run tasks as. Nothing in Metaflow requires this
 #: particular number -- what matters is that the task is not root and owns the directories it
@@ -106,38 +105,13 @@ def _normalise_groups(dependency_groups: str | list[str] | None) -> list[str]:
     return list(dependency_groups)
 
 
-def _default_image_name(project_root: Path, python_version: str) -> str:
-    """Name the image after the project it was built from.
-
-    Args:
-        project_root: directory holding `pyproject.toml`
-        python_version: the interpreter baked into the image, used as the tag
-
-    Returns:
-        A tag such as `"my-flow-repo:py3.11"`, falling back to the directory name when
-        pyproject.toml declares no project name.
-
-    """
-    from ds_platform_utils.metaflow.pypi_packages import _load_toml
-
-    name = None
-    pyproject = project_root / "pyproject.toml"
-    if pyproject.is_file():
-        name = _load_toml(pyproject).get("project", {}).get("name")
-    name = name or project_root.name
-
-    # docker rejects an uppercase repository name, and underscores are legal but conventionally
-    # written as hyphens in an image tag.
-    return f"{name.lower().replace('_', '-')}:py{python_version}"
-
-
 def render_metaflow_dockerfile(
     python_version: str,
     base_image: str | None = None,
     dependency_groups: str | list[str] | None = None,
     uv_image: str = _DEFAULT_UV_IMAGE,
 ) -> str:
-    """Render the Dockerfile that [`build_metaflow_image`][ds_platform_utils.docker.build_metaflow_image] builds.
+    """Render the Dockerfile that `build_metaflow_image` builds.
 
     Useful for reviewing or committing what a build would run. The Dockerfile expects
     `pyproject.toml` and `uv.lock` in the build context; `build_metaflow_image` copies both
@@ -173,8 +147,8 @@ def render_metaflow_dockerfile(
 
 def build_metaflow_image(
     project_root: str | Path,
-    python_version: str | None = None,
-    image_name: str | None = None,
+    python_version: str,
+    image_name: str,
     *,
     dependency_groups: str | list[str] | None = None,
     base_image: str | None = None,
@@ -191,7 +165,7 @@ def build_metaflow_image(
     Example usage:
 
     ```python
-    from ds_platform_utils.docker import build_metaflow_image
+    from metaflow_extensions.pattern.plugins.uv_image import build_metaflow_image
 
     image = build_metaflow_image("~/github/my-flow-repo", python_version="3.11")
     ```
@@ -246,12 +220,6 @@ def build_metaflow_image(
             "project_root= at the directory holding it."
         )
 
-    if python_version is None:
-        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
-
-        python_version = _find_python_version(project_root)
-
-    image_name = image_name or _default_image_name(project_root, python_version)
     dockerfile = render_metaflow_dockerfile(
         python_version, base_image, dependency_groups=dependency_groups, uv_image=uv_image
     )

@@ -40,6 +40,13 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# Two top-level packages, so hatchling cannot guess. `metaflow_extensions` is a
+# namespace package shared with every other installed Metaflow extension (Outerbounds
+# ships several), which is why it has no __init__.py -- an __init__.py would hide
+# theirs or ours and Metaflow would silently load nothing.
+[tool.hatch.build.targets.wheel]
+packages = ["src/ds_platform_utils", "src/metaflow_extensions"]
+
 # https://github.com/astral-sh/ruff?tab=readme-ov-file#configuration
 [tool.ruff]
 line-length = 119

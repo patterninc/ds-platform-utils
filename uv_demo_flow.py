@@ -1,36 +1,48 @@
 """Example flow for @uv_base / @uv.
 
-Local steps run in the uv environment that launched the flow. Remote steps run in an image built
-from this project's uv.lock and pushed to ECR, chosen per dependency group.
+Both decorators come from Metaflow itself -- ds-platform-utils ships them as a Metaflow
+extension, so a flow imports nothing from this package:
+
+    @uv_base    builds an image from uv.lock and gives it to every remote step
+    @uv         gives a *local* step its own uv venv, scoped to a dependency group
+
+A local step with no @uv runs in the interpreter that launched the flow -- your own venv, dev
+group and all. A local step with @uv runs in a venv holding only its declared group, which is how
+you catch an import that would be missing from the remote image. Remote steps (@kubernetes or
+@batch) run in the baked image.
 
 Run it from the repo root, so the uv.lock beside this file is the one that gets used:
 
     uv run python uv_demo_flow.py run
 
-Deploy it, where every step becomes a pod and so every step gets the image:
+Deploy it, where every step becomes a pod and so every step gets an image:
 
     uv run python uv_demo_flow.py argo-workflows create
 
-The first run builds and pushes two images -- one for the default dependency set, one for the
-`dev` group -- which takes a few minutes. After that both tags are in the registry and every
-subsequent load is a pair of API calls, until uv.lock changes.
+The first run builds and pushes an image, which takes a few minutes. After that the tag is in the
+registry and every load is one API call, until uv.lock changes.
 """
 
 import os
 import sys
 
-from metaflow import FlowSpec, kubernetes, resources, step
-
-from ds_platform_utils.metaflow import uv, uv_base
+from metaflow import FlowSpec, kubernetes, resources, step, uv, uv_base
 
 
-#: Everything the steps report about themselves, so local and remote can be compared directly.
 def _where_am_i() -> dict:
+    """Report enough to tell an ambient venv, an isolated venv and a container apart."""
+    try:
+        import pytest
+
+        has_pytest = pytest.__version__
+    except ImportError:
+        has_pytest = None
     return {
         "python": sys.version.split()[0],
         "uid": os.getuid(),
         "home": os.environ.get("HOME"),
         "executable": sys.executable,
+        "pytest": has_pytest,
     }
 
 
@@ -38,58 +50,61 @@ def _where_am_i() -> dict:
 class UvDemoFlow(FlowSpec):
     @step
     def start(self):
-        """Local: no @kubernetes, so this runs right here in your uv environment."""
-        self.local = _where_am_i()
-        print(f"[local ] python {self.local['python']}  uid {self.local['uid']}")
-        print(f"[local ] executable {self.local['executable']}")
-        self.next(self.train, self.report)
+        """Local, no @uv: the venv that launched the flow -- dev group included."""
+        self.ambient = _where_am_i()
+        print(f"[ambient ] {self.ambient['executable']}")
+        print(f"[ambient ] pytest={self.ambient['pytest']}")
+        self.next(self.isolated, self.train)
+
+    @uv
+    @step
+    def isolated(self):
+        """Local, with @uv: its own venv, default group only -- so no pytest."""
+        self.isolated_env = _where_am_i()
+        print(f"[isolated] {self.isolated_env['executable']}")
+        print(f"[isolated] pytest={self.isolated_env['pytest']}")
+        self.next(self.join)
 
     @kubernetes(cpu=2, memory=4000)
     @step
     def train(self):
-        """Remote, default dependency group: runs in the baked image."""
+        """Remote: runs in the image @uv_base built from uv.lock."""
         import polars
 
         self.remote = _where_am_i()
         self.polars = polars.__version__
-        # polars is a runtime dependency, so it is in the default image
-        print(f"[remote] python {self.remote['python']}  uid {self.remote['uid']}  polars {self.polars}")
-        self.next(self.join)
-
-    @kubernetes(cpu=2, memory=4000)
-    @uv(group="dev")
-    @step
-    def report(self):
-        """Remote, `dev` group: a different image, because the group changes the resolved set."""
-        import pytest
-
-        self.pytest = pytest.__version__
-        # pytest is only in the dev group -- importing it proves this is not the default image
-        print(f"[remote] dev-group image carries pytest {self.pytest}")
+        print(f"[remote  ] uid={self.remote['uid']} HOME={self.remote['home']} polars={self.polars}")
         self.next(self.join)
 
     @step
     def join(self, inputs):
-        """Local again: joins run wherever the flow is being driven from."""
-        self.local = inputs.train.local
+        """Local: joins run wherever the flow is driven from.
+
+        `inputs` holds only the branches that fan in here -- `isolated` and `train` -- not
+        `start`. What `start` set propagates down both branches instead, so it is read off one of
+        them rather than off `start` directly.
+        """
+        self.ambient = inputs.isolated.ambient
+        self.isolated_env = inputs.isolated.isolated_env
         self.remote = inputs.train.remote
         self.polars = inputs.train.polars
-        self.pytest = inputs.report.pytest
         self.next(self.end)
 
     @resources(cpu=4)
     @step
     def end(self):
-        """Local: @resources sizes a step, it does not place one -- so this stays here."""
-        # the remote steps ran as the unprivileged task user out of /metaflow; the local ones
-        # ran as you. If these ever match, the local/remote split has broken.
+        """Local: @resources sizes a step, it does not place one."""
+        # the three environments must be genuinely different, or the split is not working
+        assert self.ambient["pytest"] is not None, "expected the dev group in the ambient venv"
+        assert self.isolated_env["pytest"] is None, "@uv did not isolate: dev group leaked in"
+        assert self.isolated_env["executable"] != self.ambient["executable"], "@uv reused the ambient venv"
         assert self.remote["uid"] == 1000, self.remote["uid"]
         assert self.remote["home"] == "/metaflow", self.remote["home"]
-        assert self.local["uid"] != 1000, "local step ran as the container user"
-        assert self.polars, "polars missing from the default image"
-        assert self.pytest, "pytest missing from the dev-group image"
-        print(f"UV_DEMO_OK  local uid={self.local['uid']}  remote uid={self.remote['uid']}")
-        print(f"            polars={self.polars} (default group)  pytest={self.pytest} (dev group)")
+        assert self.polars, "polars missing from the image"
+        print("UV_DEMO_OK")
+        print(f"  ambient  {self.ambient['executable']}  pytest={self.ambient['pytest']}")
+        print(f"  isolated {self.isolated_env['executable']}  pytest={self.isolated_env['pytest']}")
+        print(f"  remote   uid={self.remote['uid']} polars={self.polars}")
 
 
 if __name__ == "__main__":
