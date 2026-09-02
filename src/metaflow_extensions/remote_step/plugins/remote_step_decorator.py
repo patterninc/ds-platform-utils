@@ -222,6 +222,48 @@ class RemoteStepDecorator(StepDecorator):
         pending_timeout_minutes: max RUNNABLE wait
     """
 
+    def add_to_package(self):
+        """Bundle uv.lock + pyproject.toml alongside the flow file.
+
+        @uv_pypi_base reads these at class-load time to derive `packages`
+        for the flow. When Metaflow re-imports the flow module inside the
+        Argo driver pod, these files must be present at (or above) the
+        flow's directory — otherwise `packages` comes back empty and the
+        Batch container can't install project deps.
+        """
+        import glob
+
+        # Walk upward from the flow module's file looking for pyproject.toml
+        # / uv.lock. Metaflow already renders the flow module path into the
+        # extracted code root, so we mirror that layout.
+        try:
+            flow_file = self._flow_file_path()
+        except Exception:  # noqa: BLE001
+            return
+        if not flow_file:
+            return
+        start = os.path.dirname(os.path.abspath(flow_file))
+        wanted = ("uv.lock", "pyproject.toml", ".python-version")
+        found: list[tuple[str, str]] = []
+        cur = start
+        for _ in range(6):
+            for name in wanted:
+                p = os.path.join(cur, name)
+                if os.path.isfile(p) and not any(a == name for _, a in found):
+                    found.append((p, name))
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        for full, arcname in found:
+            yield full, arcname
+
+    def _flow_file_path(self) -> str | None:
+        """Best-effort location of the flow's file for add_to_package."""
+        import __main__
+
+        return getattr(__main__, "__file__", None)
+
     name = "remote_step"
     defaults = {
         "placement": "auto",
