@@ -77,6 +77,9 @@ INCLUDE_SUFFIXES = {
     ".toml",
     ".txt",
     ".md",
+    ".lock",
+    ".cfg",
+    ".ini",
 }
 
 

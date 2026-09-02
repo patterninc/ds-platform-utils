@@ -77,7 +77,7 @@ print('\n'.join(out))
 t=$(date +%s)
 if ! /root/.local/bin/uv pip install --python /venv/bin/python \
     --index-strategy unsafe-best-match \
-    boto3 \
+    boto3 /ds-platform-utils \
     ${PACKAGES:+$PACKAGES}; then
     stage uv_pip_install ERR
     exit 4
@@ -102,4 +102,4 @@ fi
 stage fetch_code_pkg OK "$(( $(date +%s) - t ))s"
 
 # 4. Exec runner_entry.
-exec /venv/bin/python -m remote_step.runner_entry /payload/spec.json
+exec /venv/bin/python -m metaflow_extensions.remote_step.runner_entry /payload/spec.json
