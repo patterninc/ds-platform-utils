@@ -175,14 +175,48 @@ def _to_result(job: dict, log_stream: str) -> JobResult:
         )
     exit_code = result.exit_code
     raise RunnerError(
-        _describe_failure(exit_code, reason, log_stream),
+        _describe_failure(
+            exit_code, reason, log_stream, _extract_region(job), _extract_log_group(job)
+        ),
         exit_code=exit_code if exit_code is not None else -1,
         cw_stream=log_stream,
         job_id=result.job_id,
     )
 
 
-def _describe_failure(exit_code: int | None, reason: str, cw_stream: str) -> str:
+def _extract_region(job: dict) -> str:
+    arn = job.get("jobArn", "")
+    parts = arn.split(":")
+    return parts[3] if len(parts) > 3 else "us-west-2"
+
+
+def _extract_log_group(job: dict) -> str:
+    container = job.get("container") or {}
+    log_cfg = container.get("logConfiguration") or {}
+    opts = log_cfg.get("options") or {}
+    return opts.get("awslogs-group") or "/aws/batch/remote-step-dev"
+
+
+def _cw_console_url(region: str, log_group: str, log_stream: str) -> str:
+    """Build a clickable CloudWatch console URL for the log stream."""
+    from urllib.parse import quote
+
+    # CloudWatch console double-encodes slashes as $252F.
+    lg = quote(log_group, safe="").replace("%", "$")
+    ls = quote(log_stream, safe="").replace("%", "$")
+    return (
+        f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
+        f"#logsV2:log-groups/log-group/{lg}/log-events/{ls}"
+    )
+
+
+def _describe_failure(
+    exit_code: int | None,
+    reason: str,
+    cw_stream: str,
+    region: str = "us-west-2",
+    log_group: str = "/aws/batch/remote-step-dev",
+) -> str:
     hint = {
         1: "user code raised. Check the CloudWatch stream for traceback.",
         137: "OOM (SIGKILL). Bump @resources.memory.",
@@ -193,8 +227,10 @@ def _describe_failure(exit_code: int | None, reason: str, cw_stream: str) -> str
         5: "code-package fetch failed. mfconfig creds may be stale.",
         6: "user step body could not be invoked. Signature mismatch.",
     }.get(exit_code or 0, "runner exited non-zero.")
+    url = _cw_console_url(region, log_group, cw_stream)
     return (
         f"Batch job FAILED (exit={exit_code}): {hint}\n"
         f"  reason: {reason}\n"
-        f"  logs:   CloudWatch stream {cw_stream}"
+        f"  logs:   CloudWatch stream {cw_stream}\n"
+        f"  open:   {url}"
     )
