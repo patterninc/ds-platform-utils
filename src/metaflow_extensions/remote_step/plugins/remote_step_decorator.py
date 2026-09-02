@@ -39,8 +39,8 @@ from remote_step.sizing import ResolvedPlacement, format_placement, resolve
 from remote_step.submit import submit as batch_submit
 
 
-DEFAULT_DRIVER_CPU = 1
-DEFAULT_DRIVER_MEMORY_MB = 4000
+DEFAULT_DRIVER_CPU = 2
+DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
 
 
