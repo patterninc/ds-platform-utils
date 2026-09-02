@@ -92,7 +92,7 @@ sys.stdout.buffer.write(('\0'.join(out) + '\0').encode())
 t=$(date +%s)
 if ! /root/.local/bin/uv pip install --python /venv/bin/python \
     --index-strategy unsafe-best-match \
-    boto3 /ds-platform-utils \
+    boto3 \
     "${PKG_SPECS[@]}"; then
     stage uv_pip_install ERR
     exit 4
