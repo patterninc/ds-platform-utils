@@ -88,34 +88,45 @@ def _find_pypi_env(flow, decorators) -> dict:
     def iter_flow_decos(f):
         raw = getattr(type(f), "_flow_decorators", None)
         if raw is None:
-            return []
-        # Access via instance to bypass property wrappers.
-        raw = getattr(f, "_flow_decorators", raw)
-        if isinstance(raw, dict):
-            for v in raw.values():
+            return
+        raw2 = getattr(f, "_flow_decorators", raw)
+        if isinstance(raw2, dict):
+            for v in raw2.values():
                 if isinstance(v, list):
                     yield from v
                 else:
                     yield v
-        else:
-            try:
-                yield from raw
-            except TypeError:
-                return
+            return
+        try:
+            yield from raw2
+        except TypeError:
+            return
 
+    flow_deco_names = []
     for d in iter_flow_decos(flow):
+        flow_deco_names.append(getattr(d, "name", type(d).__name__))
         if getattr(d, "name", "") == "pypi_base":
             attrs = getattr(d, "attributes", {}) or {}
             base_python = attrs.get("python") or base_python
             base_packages.update(attrs.get("packages") or {})
+    sys.stderr.write(
+        f"[remote_step] flow decorators seen: {flow_deco_names}; "
+        f"base_packages={len(base_packages)}\n"
+    )
 
     step_python: str | None = None
     step_packages: dict[str, str] = {}
+    step_deco_names = []
     for d in decorators:
+        step_deco_names.append(getattr(d, "name", type(d).__name__))
         if getattr(d, "name", "") == "pypi":
             attrs = getattr(d, "attributes", {}) or {}
             step_python = attrs.get("python") or step_python
             step_packages.update(attrs.get("packages") or {})
+    sys.stderr.write(
+        f"[remote_step] step decorators seen: {step_deco_names}; "
+        f"step_packages={len(step_packages)}\n"
+    )
 
     merged = {**base_packages, **step_packages}
     return {"python": step_python or base_python, "packages": merged}
