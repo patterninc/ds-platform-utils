@@ -139,11 +139,16 @@ def submit(
         {"name": "REMOTE_STEP_LOG_GROUP", "value": cfg.log_group},
     ]
 
+    import re as _re
+    raw_name = f"remote-step-{flow_name}-{run_id}-{step_name}"
+    # AWS Batch job names accept [a-zA-Z0-9_-] only, up to 128 chars.
+    job_name = _re.sub(r"[^A-Za-z0-9_-]", "-", raw_name)[:128]
+
     delay = 1.0
     for attempt in range(max_attempts):
         try:
             resp = batch.submit_job(
-                jobName=f"remote-step-{flow_name}-{run_id}-{step_name}"[:128],
+                jobName=job_name,
                 jobQueue=queue,
                 jobDefinition=job_def_arn,
                 containerOverrides={"environment": env_overrides},
