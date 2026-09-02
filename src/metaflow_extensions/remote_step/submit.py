@@ -154,6 +154,15 @@ def submit(
             )
             _found = True
             break
+
+    # Also forward the Outerbounds runtime context so user code that talks
+    # to Outerbounds integrations (Snowflake, etc.) can reach them from
+    # inside the Batch container.
+    _obp_forward_prefixes = ("METAFLOW_", "OBP_", "OUTERBOUNDS_")
+    for _key, _val in _os.environ.items():
+        if any(_key.startswith(p) for p in _obp_forward_prefixes):
+            env_overrides.append({"name": _key, "value": _val})
+
     if not _found:
         _relevant = [k for k in _os.environ if any(
             t in k.upper() for t in ("TOKEN", "GITHUB", "GIT", "AWS_")
