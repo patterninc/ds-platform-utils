@@ -45,6 +45,7 @@ from remote_step.artifact import RemoteArtifact
 from remote_step.errors import RemoteStepError
 
 MAX_INLINE_INPUT_BYTES = 100 * 1024 * 1024  # 100 MB total
+INLINE_ATTR_LIMIT_BYTES = 4 * 1024 * 1024  # any single attr over 4 MB is uploaded as a RemoteArtifact ref
 
 
 @dataclass
@@ -69,11 +70,20 @@ def build_spec(
     env_spec: dict,
     inputs: dict[str, Any],
     output_bucket: str,
+    s3_client=None,
 ) -> dict:
-    """Build the spec.json dict (not yet uploaded)."""
+    """Build the spec.json dict.
+
+    Attrs already stored as `RemoteArtifact` pass through as tiny refs.
+    Anything bigger than `INLINE_ATTR_LIMIT_BYTES` when pickled is uploaded
+    to the payload bucket and referenced as a `RemoteArtifact`, so the
+    inline portion of the spec stays tiny even for huge upstream inputs.
+    """
+    from remote_step.artifact import write_artifact
     from remote_step.manifest import output_prefix
 
     prefix = output_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
+    inputs_prefix = f"inputs/{ctx.run_id}/{ctx.task_id}/{ctx.attempt}"
     serialised: dict[str, dict] = {}
     inline_total = 0
     for name, val in inputs.items():
@@ -86,22 +96,37 @@ def build_spec(
                 "sha256": val.sha256,
                 "pickle_protocol": val.pickle_protocol,
             }
-        else:
-            blob = pickle.dumps(val, protocol=5)
-            inline_total += len(blob)
-            if inline_total > MAX_INLINE_INPUT_BYTES:
-                raise RemoteStepError(
-                    f"inline inputs exceed {MAX_INLINE_INPUT_BYTES // 1024 // 1024} "
-                    f"MB (culprit near '{name}'). Produce large upstream artifacts "
-                    f"with @remote_step so they travel as RemoteArtifact refs.",
-                    culprit=name,
-                    size_bytes=inline_total,
-                )
+            continue
+        blob = pickle.dumps(val, protocol=5)
+        if len(blob) > INLINE_ATTR_LIMIT_BYTES:
+            # Big attr — upload as a RemoteArtifact and pass the ref.
+            key = f"{inputs_prefix}/{name}.pkl"
+            ref = write_artifact(
+                val, output_bucket, key, s3_client=s3_client, pickle_protocol=5
+            )
             serialised[name] = {
-                "kind": "inline",
-                "type_kind": type(val).__module__ + "." + type(val).__qualname__,
-                "blob_b64": base64.b64encode(blob).decode("ascii"),
+                "kind": "RemoteArtifact",
+                "s3_uri": ref.s3_uri,
+                "size_bytes": ref.size_bytes,
+                "type_kind": ref.kind,
+                "sha256": ref.sha256,
+                "pickle_protocol": ref.pickle_protocol,
             }
+            continue
+        inline_total += len(blob)
+        if inline_total > MAX_INLINE_INPUT_BYTES:
+            raise RemoteStepError(
+                f"inline inputs exceed {MAX_INLINE_INPUT_BYTES // 1024 // 1024} "
+                f"MB (culprit near '{name}'). Produce large upstream artifacts "
+                f"with @remote_step so they travel as RemoteArtifact refs.",
+                culprit=name,
+                size_bytes=inline_total,
+            )
+        serialised[name] = {
+            "kind": "inline",
+            "type_kind": type(val).__module__ + "." + type(val).__qualname__,
+            "blob_b64": base64.b64encode(blob).decode("ascii"),
+        }
     return {
         "version": 1,
         "flow_module": ctx.flow_module,
@@ -149,6 +174,6 @@ def build_and_upload(
     s3_client=None,
 ) -> tuple[str, dict]:
     """Convenience: build spec + upload. Returns (s3_uri, spec_dict)."""
-    spec = build_spec(ctx, env_spec, inputs, output_bucket)
+    spec = build_spec(ctx, env_spec, inputs, output_bucket, s3_client=s3_client)
     uri = upload_spec(output_bucket, spec, s3_client=s3_client)
     return uri, spec
