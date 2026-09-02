@@ -42,6 +42,7 @@ from remote_step.submit import submit as batch_submit
 DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
+DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
 
 
@@ -314,6 +315,10 @@ class RemoteStepDecorator(StepDecorator):
         # (created by `outerbounds integrations custom-secret create`).
         # Set to None to skip injection (e.g. if using IRSA/OIDC).
         "aws_secret_source": DEFAULT_AWS_SECRET_SOURCE,
+        # Outerbounds custom-secret carrying GITHUB_TOKEN for cloning
+        # private git dependencies inside the Batch container. Set to None
+        # to skip if the driver env already has GITHUB_TOKEN some other way.
+        "github_secret_source": DEFAULT_GITHUB_SECRET_SOURCE,
         "job_timeout_minutes": 240,
         "pending_timeout_minutes": 60,
     }
@@ -383,9 +388,13 @@ class RemoteStepDecorator(StepDecorator):
         _shrink_resources(decorators)
         # Only inject @secrets under Argo — locally the driver uses ambient
         # boto3 creds from the machine's AWS profile / SSO cache.
-        secret_source = self.attributes.get("aws_secret_source")
-        if secret_source and _is_argo_context():
-            _inject_aws_secrets(decorators, secret_source)
+        if _is_argo_context():
+            aws_src = self.attributes.get("aws_secret_source")
+            if aws_src:
+                _inject_aws_secrets(decorators, aws_src)
+            gh_src = self.attributes.get("github_secret_source")
+            if gh_src:
+                _inject_aws_secrets(decorators, gh_src)
 
         logger(
             f"[remote_step] {step_name} resolved to {format_placement(self._placement)}"
