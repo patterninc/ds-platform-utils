@@ -128,6 +128,27 @@ def _drop_kubernetes(decorators) -> None:
             decorators.remove(d)
 
 
+def _shrink_resources(decorators) -> None:
+    """Overwrite sibling @resources with driver-sized values.
+
+    Metaflow reconciles @resources with @kubernetes at task-render time and
+    picks the max of each dimension. If we leave the user's ask on
+    @resources (say cpu=20, memory=65000), Metaflow builds a Large pod for
+    the driver — same OBC tier the flow already had. Rewriting @resources
+    with (cpu=1, memory=2000, gpu=0) keeps the driver at Small tier. The
+    original ask was already captured on `self._placement` for Batch.
+    """
+    for d in decorators:
+        if getattr(d, "name", "") == "resources":
+            attrs = getattr(d, "attributes", None)
+            if attrs is None:
+                continue
+            attrs["cpu"] = DEFAULT_DRIVER_CPU
+            attrs["memory"] = DEFAULT_DRIVER_MEMORY_MB
+            attrs["gpu"] = 0
+            return
+
+
 def _inject_driver_kubernetes(decorators) -> None:
     """Inject a small @kubernetes decorator so the Argo pod is Small tier.
 
@@ -253,6 +274,9 @@ class RemoteStepDecorator(StepDecorator):
 
         _drop_kubernetes(decorators)
         _inject_driver_kubernetes(decorators)
+        # Shrink @resources so Metaflow doesn't render a big pod for the driver.
+        # We've already captured cpu/mem/gpu in self._placement for Batch sizing.
+        _shrink_resources(decorators)
         # Only inject @secrets under Argo — locally the driver uses ambient
         # boto3 creds from the machine's AWS profile / SSO cache.
         secret_source = self.attributes.get("aws_secret_source")
