@@ -198,12 +198,19 @@ def _extract_log_group(job: dict) -> str:
 
 
 def _cw_console_url(region: str, log_group: str, log_stream: str) -> str:
-    """Build a clickable CloudWatch console URL for the log stream."""
+    """Build a clickable CloudWatch console URL for the log stream.
+
+    AWS's console uses double URL-encoding with `$` in place of `%` for
+    fragment paths — so a literal `/` becomes `$252F` (i.e. `%25` for `%`
+    then `2F` for `/`).
+    """
     from urllib.parse import quote
 
-    # CloudWatch console double-encodes slashes as $252F.
-    lg = quote(log_group, safe="").replace("%", "$")
-    ls = quote(log_stream, safe="").replace("%", "$")
+    def _cw_encode(s: str) -> str:
+        return quote(quote(s, safe=""), safe="").replace("%", "$")
+
+    lg = _cw_encode(log_group)
+    ls = _cw_encode(log_stream)
     return (
         f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
         f"#logsV2:log-groups/log-group/{lg}/log-events/{ls}"
