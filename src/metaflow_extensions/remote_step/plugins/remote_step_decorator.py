@@ -1,0 +1,505 @@
+"""@remote_step — the Metaflow StepDecorator that offloads to AWS Batch.
+
+Hooks used:
+  step_init         — validate at flow-init, resolve placement, adjust siblings
+  task_pre_step     — capture the Metaflow code-package URL from the datastore
+  task_decorate     — replace the user's step body with a driver body
+
+The driver body:
+  1. Reads sibling attrs off `self` (mostly RemoteArtifact refs).
+  2. Builds spec.json + uploads to the payload bucket.
+  3. Submits an AWS Batch job sized per the resolved placement.
+  4. Blocks on poll.wait, streaming CloudWatch to stderr.
+  5. Reads output-manifest.json.
+  6. Assigns RemoteArtifact refs back onto `self`.
+
+Metaflow then persists those tiny refs as normal artifacts at task end.
+"""
+
+from __future__ import annotations
+
+import getpass
+import os
+import sys
+
+try:
+    # ob-metaflow / metaflow — same import path.
+    from metaflow.decorators import StepDecorator
+except ImportError:  # pragma: no cover - metaflow always present in prod
+    StepDecorator = object  # type: ignore[assignment,misc]
+
+from remote_step.artifact import RemoteArtifact
+from remote_step.code_package import resolve_code_package
+from remote_step.config import RemoteStepConfig, load as load_config
+from remote_step.errors import ConfigError, RemoteStepError, SizingError
+from remote_step.manifest import read as read_manifest
+from remote_step.payload import DriverContext, build_and_upload
+from remote_step.poll import wait as poll_wait
+from remote_step.sizing import ResolvedPlacement, format_placement, resolve
+from remote_step.submit import submit as batch_submit
+
+
+DEFAULT_DRIVER_CPU = 1
+DEFAULT_DRIVER_MEMORY_MB = 2000
+DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
+
+
+def _is_argo_context() -> bool:
+    """Detect if we're being invoked as part of an Argo deploy or Argo run.
+
+    Signals, first-hit wins:
+      1. `argo-workflows` in sys.argv (deploy time on user's machine)
+      2. `METAFLOW_ARGO_WORKFLOWS` env var (Argo runtime)
+      3. `ARGO_TEMPLATE` env var (inside an Argo pod)
+    """
+    if any("argo-workflows" in arg for arg in sys.argv):
+        return True
+    if os.environ.get("METAFLOW_ARGO_WORKFLOWS"):
+        return True
+    if os.environ.get("ARGO_TEMPLATE"):
+        return True
+    return False
+
+
+def _find_resources(decorators) -> tuple[int, int, int]:
+    """Read cpu, memory, gpu from a sibling @resources decorator.
+
+    Metaflow's @resources stores its kwargs on `decorator.attributes`.
+    """
+    for d in decorators:
+        if getattr(d, "name", "") == "resources":
+            attrs = getattr(d, "attributes", {}) or {}
+            cpu = int(attrs.get("cpu") or 1)
+            memory = int(attrs.get("memory") or 4000)
+            gpu = int(attrs.get("gpu") or 0)
+            return cpu, memory, gpu
+    return 1, 4000, 0
+
+
+def _find_pypi_env(flow, decorators) -> dict:
+    """Merge @pypi_base (on the flow class) and @pypi (on the step).
+
+    Metaflow stores flow-level decorators in `_flow_decorators` — the shape
+    varies across versions (list vs dict). We probe defensively.
+    """
+    base_python = "3.10"
+    base_packages: dict[str, str] = {}
+
+    def iter_flow_decos(f):
+        raw = getattr(type(f), "_flow_decorators", None)
+        if raw is None:
+            return []
+        # Access via instance to bypass property wrappers.
+        raw = getattr(f, "_flow_decorators", raw)
+        if isinstance(raw, dict):
+            for v in raw.values():
+                if isinstance(v, list):
+                    yield from v
+                else:
+                    yield v
+        else:
+            try:
+                yield from raw
+            except TypeError:
+                return
+
+    for d in iter_flow_decos(flow):
+        if getattr(d, "name", "") == "pypi_base":
+            attrs = getattr(d, "attributes", {}) or {}
+            base_python = attrs.get("python") or base_python
+            base_packages.update(attrs.get("packages") or {})
+
+    step_python: str | None = None
+    step_packages: dict[str, str] = {}
+    for d in decorators:
+        if getattr(d, "name", "") == "pypi":
+            attrs = getattr(d, "attributes", {}) or {}
+            step_python = attrs.get("python") or step_python
+            step_packages.update(attrs.get("packages") or {})
+
+    merged = {**base_packages, **step_packages}
+    return {"python": step_python or base_python, "packages": merged}
+
+
+def _drop_kubernetes(decorators) -> None:
+    """Remove any sibling @kubernetes decorator (mutation in place)."""
+    for d in list(decorators):
+        if getattr(d, "name", "") == "kubernetes":
+            decorators.remove(d)
+
+
+def _inject_driver_kubernetes(decorators) -> None:
+    """Inject a small @kubernetes decorator so the Argo pod is Small tier.
+
+    Only applied when we detect an Argo context — locally, Metaflow can run
+    the driver in-process at Local tier (0.1 OBC/min).
+    """
+    if not _is_argo_context():
+        return
+    try:
+        from metaflow.plugins.kubernetes.kubernetes_decorator import KubernetesDecorator
+    except ImportError:  # pragma: no cover
+        return
+    for d in decorators:
+        if getattr(d, "name", "") == "kubernetes":
+            return
+    # Merge with the class defaults so Metaflow's own attr checks pass.
+    # Some defaults are None but Metaflow's step_init dereferences them —
+    # force sensible fallbacks for the ones we've hit in practice.
+    attrs = {**KubernetesDecorator.defaults}
+    attrs["cpu"] = DEFAULT_DRIVER_CPU
+    attrs["memory"] = DEFAULT_DRIVER_MEMORY_MB
+    if attrs.get("gpu_vendor") is None:
+        attrs["gpu_vendor"] = "nvidia"
+    if attrs.get("gpu") is None:
+        attrs["gpu"] = 0
+    if attrs.get("disk") is None:
+        attrs["disk"] = 10240
+    driver_deco = KubernetesDecorator(attributes=attrs)
+    decorators.append(driver_deco)
+
+
+def _inject_aws_secrets(decorators, source_name: str) -> None:
+    """Add @secrets(sources=[source_name]) to the step's decorator list."""
+    try:
+        from metaflow.plugins.secrets.secrets_decorator import SecretsDecorator
+    except ImportError:  # pragma: no cover
+        return
+    for d in decorators:
+        if getattr(d, "name", "") == "secrets":
+            attrs = getattr(d, "attributes", {}) or {}
+            sources = attrs.get("sources") or []
+            if source_name in sources:
+                return
+            attrs["sources"] = list(sources) + [source_name]
+            return
+    decorators.append(
+        SecretsDecorator(attributes={"sources": [source_name]})
+    )
+
+
+class RemoteStepDecorator(StepDecorator):
+    """`@remote_step` — offload one step's compute to AWS Batch.
+
+    Kwargs:
+        placement: 'auto' (default) | 'fargate' | 'ec2'
+        env: environment name (defaults to REMOTE_STEP_ENV or 'dev')
+        ttl_hours: extend payload retention past the default 24h
+        allow_ambient_aws: skip auto-adding @secrets under Argo
+        job_timeout_minutes: max job runtime in Batch
+        pending_timeout_minutes: max RUNNABLE wait
+    """
+
+    name = "remote_step"
+    defaults = {
+        "placement": "auto",
+        "env": None,
+        "ttl_hours": 24,
+        # When running under Argo the driver pod needs AWS creds to call
+        # SubmitJob. Defaults to Outerbounds custom-secret 'remote-step-aws'
+        # (created by `outerbounds integrations custom-secret create`).
+        # Set to None to skip injection (e.g. if using IRSA/OIDC).
+        "aws_secret_source": DEFAULT_AWS_SECRET_SOURCE,
+        "job_timeout_minutes": 240,
+        "pending_timeout_minutes": 60,
+    }
+
+    _placement: ResolvedPlacement
+    _env_spec: dict
+    _config: RemoteStepConfig
+
+    def step_init(
+        self,
+        flow,
+        graph,
+        step_name,
+        decorators,
+        environment,
+        flow_datastore,
+        logger,
+    ):
+        """Runs once at flow init. Fails fast on refusals."""
+        if step_name in ("start", "end"):
+            raise SizingError(
+                f"@remote_step on '{step_name}' — heavy compute must move to a "
+                f"downstream step; start/end run in the Metaflow scheduler.",
+                step_name=step_name,
+            )
+        for d in decorators:
+            if getattr(d, "name", "") == "batch":
+                raise SizingError(
+                    f"@remote_step conflicts with @batch on step '{step_name}'. "
+                    f"Pick one — @batch runs the whole Metaflow task on Batch; "
+                    f"@remote_step keeps the driver on Outerbounds.",
+                    step_name=step_name,
+                )
+            if getattr(d, "name", "") == "parallel":
+                raise SizingError(
+                    f"@remote_step + @parallel not yet supported (step '{step_name}').",
+                    step_name=step_name,
+                )
+        cpu, memory_mb, gpu = _find_resources(decorators)
+        try:
+            self._placement = resolve(
+                cpu, memory_mb, gpu, placement=self.attributes["placement"]
+            )
+        except SizingError:
+            raise
+        self._env_spec = _find_pypi_env(flow, decorators)
+        try:
+            self._config = load_config(self.attributes["env"])
+        except ConfigError:
+            raise
+
+        _drop_kubernetes(decorators)
+        _inject_driver_kubernetes(decorators)
+        # Only inject @secrets under Argo — locally the driver uses ambient
+        # boto3 creds from the machine's AWS profile / SSO cache.
+        secret_source = self.attributes.get("aws_secret_source")
+        if secret_source and _is_argo_context():
+            _inject_aws_secrets(decorators, secret_source)
+
+        logger(
+            f"[remote_step] {step_name} resolved to {format_placement(self._placement)}"
+        )
+
+    def task_pre_step(
+        self,
+        step_name,
+        task_datastore,
+        metadata,
+        run_id,
+        task_id,
+        flow,
+        graph,
+        retry_count,
+        max_user_code_retries,
+        ubf_context,
+        inputs,
+    ):
+        """Called just before user code — capture code-package URL."""
+        # Some Metaflow versions expose the code-package URL via
+        # task_datastore.ca_client or via env vars. Fall back to env.
+        ds_root = os.environ.get("METAFLOW_DATASTORE_SYSROOT_S3") or ""
+        self._runtime_ctx = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "attempt": retry_count,
+            "flow_name": type(flow).__name__,
+            "datastore_root": ds_root,
+        }
+
+    def task_decorate(self, step_func, flow, graph, retry_count, max_user_code_retries, ubf_context):
+        """Wrap the user's step method with the driver body.
+
+        Metaflow calls the returned callable with `()` (or `(inputs)` for
+        join steps), NOT with the flow instance. `flow` is captured in the
+        closure — same pattern @catch's `fallback_step` uses.
+        """
+        cfg = self._config
+        placement = self._placement
+        env_spec = self._env_spec
+        ctx = self._runtime_ctx
+        pending_timeout = self.attributes["pending_timeout_minutes"] * 60
+        step_name = getattr(step_func, "__name__", "unknown_step")
+        # Capture the static graph so we can replay self.next() after Batch.
+        try:
+            node = graph.nodes[step_name]
+            out_funcs = list(node.out_funcs or [])
+        except Exception:  # noqa: BLE001
+            out_funcs = []
+
+        def driver(inputs=None):
+            """The remote_step driver body — small enough to run at Local tier."""
+            user = os.environ.get("METAFLOW_USER") or getpass.getuser()
+            self_flow = flow
+            input_attrs = _collect_flow_attrs(self_flow)
+            sys.stderr.write(
+                f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
+            )
+            code_url, code_sha = resolve_code_package(
+                cfg.payload_bucket, ctx["run_id"]
+            )
+            driver_ctx = DriverContext(
+                flow_module=_flow_module_name(self_flow),
+                flow_class=type(self_flow).__name__,
+                step_name=step_name,
+                flow_name=ctx["flow_name"],
+                run_id=ctx["run_id"],
+                task_id=ctx["task_id"],
+                attempt=ctx["attempt"],
+                code_package_url=code_url,
+                code_package_sha=code_sha,
+                datastore_root=ctx["datastore_root"],
+                mfconfig=_named_mfconfig(),
+            )
+            spec_uri, spec = build_and_upload(
+                driver_ctx, env_spec, input_attrs, cfg.payload_bucket
+            )
+            sys.stderr.write(
+                f"[remote_step] submitted spec {spec_uri}\n"
+                f"[remote_step] placement {format_placement(placement)}\n"
+            )
+            result = batch_submit(
+                cfg,
+                placement,
+                spec_uri,
+                flow_name=ctx["flow_name"],
+                run_id=ctx["run_id"],
+                step_name=step_name,
+                user=user,
+            )
+            sys.stderr.write(
+                f"[remote_step] job {result.job_id} on {result.queue}\n"
+            )
+            poll_wait(result.job_id, cfg, pending_timeout=pending_timeout)
+            outputs = read_manifest(
+                cfg.payload_bucket,
+                ctx["run_id"],
+                ctx["task_id"],
+                ctx["attempt"],
+            )
+            for name, ref in outputs.items():
+                setattr(self_flow, name, ref)
+            sys.stderr.write(
+                f"[remote_step] {step_name} finished, "
+                f"{len(outputs)} artifact(s) linked\n"
+            )
+            # Replay the user step's self.next(...) so Metaflow's transition
+            # tracker sees the same shape it does when the step runs locally.
+            if out_funcs:
+                next_refs = [
+                    getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)
+                ]
+                if next_refs:
+                    self_flow.next(*next_refs)
+
+        driver.__name__ = step_name
+        driver.__wrapped__ = step_func
+        return driver
+
+
+def _pickleable(v) -> bool:
+    """Cheap pre-flight — reject obvious non-picklable inputs."""
+    import types
+
+    if isinstance(v, (types.ModuleType, types.FunctionType, types.MethodType)):
+        return False
+    if type(v).__name__ == "Parameter":  # raw Parameter class-level object
+        return False
+    return True
+
+
+_SKIP_ATTRS = frozenset({
+    "next", "input", "index", "foreach_stack", "checkpoint",
+    "_datastore", "_metadata", "_current_step", "_task", "_flow_state",
+    "_graph", "_transition", "_flow_decorators", "_success", "_flow_state",
+    "logger", "cards", "_cards", "_current",
+})
+
+
+def _collect_flow_attrs(flow) -> dict:
+    """Collect user-visible flow attributes to ship to the runner.
+
+    Sources, in order of precedence (first hit wins for a given name):
+      1. `flow._datastore` — Metaflow's prior-task artifact loader. This is
+         the source for `self.<x>` from all upstream steps, materialised
+         lazily via `flow.__getattr__`. We enumerate `_datastore._objects`.
+      2. `flow.__dict__` — user's own assignments during the current run.
+      3. Class-level `Parameter` / `property` descriptors — Metaflow rewrites
+         `Parameter` as a `property` at runtime.
+
+    Skips: callables, Metaflow-private attrs, step methods, non-pickleable.
+    """
+    import pickle
+
+    out: dict[str, object] = {}
+
+    def _try_add(name: str, val: object) -> None:
+        if callable(val) or not _pickleable(val):
+            return
+        try:
+            pickle.dumps(val, protocol=5)
+        except Exception:  # noqa: BLE001
+            return
+        out[name] = val
+
+    # (1) prior-task artifacts via Metaflow's datastore
+    ds = getattr(flow, "_datastore", None)
+    if ds is not None:
+        try:
+            names = list(getattr(ds, "_objects", {}).keys())
+        except Exception:  # noqa: BLE001
+            names = []
+        for name in names:
+            if name.startswith("_") or name in _SKIP_ATTRS or name in out:
+                continue
+            try:
+                val = getattr(flow, name)
+            except Exception:  # noqa: BLE001
+                continue
+            _try_add(name, val)
+
+    # (2) instance __dict__ — user-set attrs
+    for name, val in vars(flow).items():
+        if name.startswith("_") or name in _SKIP_ATTRS or name in out:
+            continue
+        _try_add(name, val)
+
+    # (3) Parameters — declared as class-level Parameter, wrapped as property
+    _METAFLOW_PROPERTY_SKIPS = {
+        "script_name", "cmd", "index", "input", "foreach_stack",
+        "merge_artifacts", "next",
+    }
+    for cls in type(flow).__mro__:
+        for name, class_attr in vars(cls).items():
+            if (
+                name.startswith("_")
+                or name in out
+                or name in _SKIP_ATTRS
+                or name in _METAFLOW_PROPERTY_SKIPS
+            ):
+                continue
+            attr_type = type(class_attr).__name__
+            if attr_type not in ("Parameter", "property"):
+                continue
+            try:
+                val = getattr(flow, name)
+            except Exception:  # noqa: BLE001
+                continue
+            _try_add(name, val)
+    return out
+
+
+def _flow_module_name(flow) -> str:
+    """Return the importable module name for a flow class.
+
+    When Metaflow runs `python flow.py`, the class lives in `__main__`. The
+    runner container can't import `__main__` — instead we use the file's
+    basename (without .py), which matches how Metaflow's code-package
+    exposes the flow module in /workspace.
+    """
+    mod = type(flow).__module__
+    if mod != "__main__":
+        return mod
+    import sys
+    main_mod = sys.modules.get("__main__")
+    if main_mod is not None and hasattr(main_mod, "__file__"):
+        return os.path.splitext(os.path.basename(main_mod.__file__))[0]
+    return mod
+
+
+def _named_mfconfig() -> dict[str, str]:
+    """Named subset of METAFLOW_* env vars to ship to the runner."""
+    allowed = (
+        "METAFLOW_SERVICE_URL",
+        "METAFLOW_DATASTORE_SYSROOT_S3",
+        "METAFLOW_DEFAULT_METADATA",
+        "METAFLOW_DEFAULT_DATASTORE",
+        "METAFLOW_DEFAULT_ENVIRONMENT",
+        "METAFLOW_USER",
+        "METAFLOW_CODE_URL",
+        "METAFLOW_CODE_SHA",
+        "OBP_AUTH_SERVER",
+    )
+    return {k: os.environ[k] for k in allowed if k in os.environ}
