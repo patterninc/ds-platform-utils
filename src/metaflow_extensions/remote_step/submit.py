@@ -138,6 +138,16 @@ def submit(
         {"name": "REMOTE_STEP_ENV", "value": cfg.env_name},
         {"name": "REMOTE_STEP_LOG_GROUP", "value": cfg.log_group},
     ]
+    # Forward git auth so uv can clone private git dependencies in the
+    # Batch container. Metaflow's argo pod already has these set via the
+    # user's @secrets integration or netrc.
+    import os as _os
+
+    for _forward in ("GITHUB_TOKEN", "GIT_TOKEN", "GH_TOKEN"):
+        _val = _os.environ.get(_forward)
+        if _val:
+            env_overrides.append({"name": _forward, "value": _val})
+            break
 
     import re as _re
     raw_name = f"remote-step-{flow_name}-{run_id}-{step_name}"

@@ -56,7 +56,21 @@ if ! /root/.local/bin/uv venv --python "$PY_VERSION" /venv; then
 fi
 stage uv_venv OK "$(( $(date +%s) - t ))s"
 
-PACKAGES=$($PY -c "
+# Wire GITHUB_TOKEN (forwarded by the driver via containerOverrides.env)
+# into a netrc so `uv pip install git+https://github.com/...` can clone
+# private repos non-interactively.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    printf 'machine github.com login x-oauth-basic password %s\n' "$GITHUB_TOKEN" > ~/.netrc
+    chmod 600 ~/.netrc
+fi
+
+# Emit each package spec as one \0-terminated record so we can read them
+# into a bash array without word-splitting on spaces inside PEP 508 URLs
+# (e.g. "ds-dqv-tool @ git+https://...").
+PKG_SPECS=()
+while IFS= read -r -d '' spec_line; do
+    PKG_SPECS+=("$spec_line")
+done < <($PY -c "
 import json, sys
 spec = json.load(open('/payload/spec.json'))
 packages = spec['env'].get('packages', {})
@@ -64,21 +78,22 @@ sys.stderr.write(f'[remote_step] spec env packages ({len(packages)}): {list(pack
 out = []
 for name, ver in packages.items():
     ver = (ver or '').strip()
-    if ver.startswith(('git+', 'http://', 'https://', 'file://')):
+    if ver.startswith('@'):
+        out.append(f'{name} {ver}')
+    elif ver.startswith(('git+', 'http://', 'https://', 'file://')):
         out.append(f'{name} @ {ver}')
-        continue
-    if name.startswith(('git+', 'http://', 'https://', 'file://')):
+    elif name.startswith(('git+', 'http://', 'https://', 'file://')):
         out.append(name if not ver else f'{name}{ver}')
-        continue
-    out.append(f'{name}=={ver}' if ver else name)
-print('\n'.join(out))
+    else:
+        out.append(f'{name}=={ver}' if ver else name)
+sys.stdout.buffer.write(('\0'.join(out) + '\0').encode())
 ")
 
 t=$(date +%s)
 if ! /root/.local/bin/uv pip install --python /venv/bin/python \
     --index-strategy unsafe-best-match \
     boto3 /ds-platform-utils \
-    ${PACKAGES:+$PACKAGES}; then
+    "${PKG_SPECS[@]}"; then
     stage uv_pip_install ERR
     exit 4
 fi
