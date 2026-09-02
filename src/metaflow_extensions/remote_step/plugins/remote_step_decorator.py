@@ -269,12 +269,12 @@ class RemoteStepDecorator(StepDecorator):
         Argo driver pod, these files must be present at (or above) the
         flow's directory — otherwise `packages` comes back empty and the
         Batch container can't install project deps.
-        """
-        import glob
 
-        # Walk upward from the flow module's file looking for pyproject.toml
-        # / uv.lock. Metaflow already renders the flow module path into the
-        # extracted code root, so we mirror that layout.
+        Metaflow's V1 packager wants (path, arcname) tuples where arcname
+        is what goes on the wire. We yield each wanted file with a bare
+        arcname (e.g. "uv.lock") so it lands next to the flow module in
+        `.mf_code/`.
+        """
         try:
             flow_file = self._flow_file_path()
         except Exception:  # noqa: BLE001
@@ -283,19 +283,20 @@ class RemoteStepDecorator(StepDecorator):
             return
         start = os.path.dirname(os.path.abspath(flow_file))
         wanted = ("uv.lock", "pyproject.toml", ".python-version", CACHED_ENV_FILENAME)
-        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
         cur = start
         for _ in range(6):
             for name in wanted:
+                if name in seen:
+                    continue
                 p = os.path.join(cur, name)
-                if os.path.isfile(p) and not any(a == name for _, a in found):
-                    found.append((p, name))
+                if os.path.isfile(p):
+                    seen.add(name)
+                    yield p, name
             parent = os.path.dirname(cur)
             if parent == cur:
                 break
             cur = parent
-        for full, arcname in found:
-            yield full, arcname
 
     def _flow_file_path(self) -> str | None:
         """Best-effort location of the flow's file for add_to_package."""
