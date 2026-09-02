@@ -142,12 +142,25 @@ def submit(
     # Batch container. Metaflow's argo pod already has these set via the
     # user's @secrets integration or netrc.
     import os as _os
+    import sys as _sys
 
+    _found = False
     for _forward in ("GITHUB_TOKEN", "GIT_TOKEN", "GH_TOKEN"):
         _val = _os.environ.get(_forward)
         if _val:
             env_overrides.append({"name": _forward, "value": _val})
+            _sys.stderr.write(
+                f"[remote_step] forwarding {_forward} to Batch (len={len(_val)})\n"
+            )
+            _found = True
             break
+    if not _found:
+        _relevant = [k for k in _os.environ if any(
+            t in k.upper() for t in ("TOKEN", "GITHUB", "GIT", "AWS_")
+        )]
+        _sys.stderr.write(
+            f"[remote_step] no git token env var found. Related keys: {_relevant}\n"
+        )
 
     import re as _re
     raw_name = f"remote-step-{flow_name}-{run_id}-{step_name}"
