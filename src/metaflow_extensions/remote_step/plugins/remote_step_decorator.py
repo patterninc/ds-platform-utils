@@ -276,6 +276,11 @@ class RemoteStepDecorator(StepDecorator):
         "aws_secret_source": DEFAULT_AWS_SECRET_SOURCE,
         "job_timeout_minutes": 240,
         "pending_timeout_minutes": 60,
+        # Populated at argo-create (when @pypi_base packages are still
+        # visible) so the driver on the argo pod can ship them to Batch
+        # even after Metaflow blanks @pypi_base for the baked image.
+        "_cached_env_packages": None,
+        "_cached_env_python": None,
     }
 
     _placement: ResolvedPlacement
@@ -319,7 +324,20 @@ class RemoteStepDecorator(StepDecorator):
             )
         except SizingError:
             raise
-        self._env_spec = _find_pypi_env(flow, decorators)
+        # Read @pypi_base/@pypi packages. Metaflow blanks these at task-run
+        # time (env already baked into the argo pod image), so we cache the
+        # resolved env in the decorator's own attributes at create-time
+        # when the packages are still populated.
+        env_spec = _find_pypi_env(flow, decorators)
+        if env_spec["packages"]:
+            self.attributes["_cached_env_packages"] = env_spec["packages"]
+            self.attributes["_cached_env_python"] = env_spec["python"]
+        else:
+            env_spec = {
+                "python": self.attributes.get("_cached_env_python") or env_spec["python"],
+                "packages": self.attributes.get("_cached_env_packages") or {},
+            }
+        self._env_spec = env_spec
         try:
             self._config = load_config(self.attributes["env"])
         except ConfigError:
