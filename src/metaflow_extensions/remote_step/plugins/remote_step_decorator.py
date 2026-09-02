@@ -436,6 +436,13 @@ class RemoteStepDecorator(StepDecorator):
 
         def driver(inputs=None):
             """The remote_step driver body — small enough to run at Local tier."""
+            # Line-buffer stdout so mflog sees each `[remote_step] …` line as
+            # it's written — otherwise the Outerbounds UI only shows them
+            # after the task exits.
+            try:
+                sys.stdout.reconfigure(line_buffering=True)
+            except Exception:  # noqa: BLE001
+                pass
             user = os.environ.get("METAFLOW_USER") or getpass.getuser()
             self_flow = flow
             input_attrs = _collect_flow_attrs(self_flow)
