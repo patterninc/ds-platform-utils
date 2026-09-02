@@ -142,31 +142,19 @@ def _find_pypi_env(flow, decorators) -> dict:
         except TypeError:
             return
 
-    flow_deco_names = []
     for d in iter_flow_decos(flow):
-        flow_deco_names.append(getattr(d, "name", type(d).__name__))
         if getattr(d, "name", "") == "pypi_base":
             attrs = getattr(d, "attributes", {}) or {}
             base_python = attrs.get("python") or base_python
             base_packages.update(attrs.get("packages") or {})
-    sys.stderr.write(
-        f"[remote_step] flow decorators seen: {flow_deco_names}; "
-        f"base_packages={len(base_packages)}\n"
-    )
 
     step_python: str | None = None
     step_packages: dict[str, str] = {}
-    step_deco_names = []
     for d in decorators:
-        step_deco_names.append(getattr(d, "name", type(d).__name__))
         if getattr(d, "name", "") == "pypi":
             attrs = getattr(d, "attributes", {}) or {}
             step_python = attrs.get("python") or step_python
             step_packages.update(attrs.get("packages") or {})
-    sys.stderr.write(
-        f"[remote_step] step decorators seen: {step_deco_names}; "
-        f"step_packages={len(step_packages)}\n"
-    )
 
     merged = {**base_packages, **step_packages}
     return {"python": step_python or base_python, "packages": merged}
@@ -451,7 +439,7 @@ class RemoteStepDecorator(StepDecorator):
             user = os.environ.get("METAFLOW_USER") or getpass.getuser()
             self_flow = flow
             input_attrs = _collect_flow_attrs(self_flow)
-            sys.stderr.write(
+            sys.stdout.write(
                 f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
             )
             code_url, code_sha = resolve_code_package(
@@ -473,7 +461,7 @@ class RemoteStepDecorator(StepDecorator):
             spec_uri, spec = build_and_upload(
                 driver_ctx, env_spec, input_attrs, cfg.payload_bucket
             )
-            sys.stderr.write(
+            sys.stdout.write(
                 f"[remote_step] submitted spec {spec_uri}\n"
                 f"[remote_step] placement {format_placement(placement)}\n"
             )
@@ -486,7 +474,7 @@ class RemoteStepDecorator(StepDecorator):
                 step_name=step_name,
                 user=user,
             )
-            sys.stderr.write(
+            sys.stdout.write(
                 f"[remote_step] job {result.job_id} on {result.queue}\n"
             )
             poll_wait(result.job_id, cfg, pending_timeout=pending_timeout)
@@ -498,7 +486,7 @@ class RemoteStepDecorator(StepDecorator):
             )
             for name, ref in outputs.items():
                 setattr(self_flow, name, ref)
-            sys.stderr.write(
+            sys.stdout.write(
                 f"[remote_step] {step_name} finished, "
                 f"{len(outputs)} artifact(s) linked\n"
             )

@@ -63,16 +63,23 @@ def _read_spec(spec_uri: str, s3_client) -> dict:
 
 
 def _hydrate_input(name: str, ref: dict, s3_client) -> Any:
-    """Rebuild an input value from the spec entry."""
+    """Rebuild an input value from the spec entry.
+
+    The Batch container has plenty of memory, so we materialise
+    RemoteArtifact refs into the original Python objects here — the user's
+    step body then sees native `pd.DataFrame`, `int`, etc. exactly as
+    prior steps produced them. Driver on Argo pod never loads them.
+    """
     kind = ref.get("kind")
     if kind == "RemoteArtifact":
-        return RemoteArtifact(
+        artifact = RemoteArtifact(
             s3_uri=ref["s3_uri"],
             size_bytes=ref["size_bytes"],
             kind=ref["type_kind"],
             sha256=ref["sha256"],
             pickle_protocol=ref.get("pickle_protocol", 5),
         )
+        return artifact.load(s3_client=s3_client)
     if kind == "inline":
         return pickle.loads(base64.b64decode(ref["blob_b64"]))
     raise ValueError(f"unknown input kind for {name!r}: {kind}")

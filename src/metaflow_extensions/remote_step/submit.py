@@ -149,7 +149,7 @@ def submit(
         _val = _os.environ.get(_forward)
         if _val:
             env_overrides.append({"name": _forward, "value": _val})
-            _sys.stderr.write(
+            _sys.stdout.write(
                 f"[remote_step] forwarding {_forward} to Batch (len={len(_val)})\n"
             )
             _found = True
@@ -167,7 +167,7 @@ def submit(
         _relevant = [k for k in _os.environ if any(
             t in k.upper() for t in ("TOKEN", "GITHUB", "GIT", "AWS_")
         )]
-        _sys.stderr.write(
+        _sys.stdout.write(
             f"[remote_step] no git token env var found. Related keys: {_relevant}\n"
         )
 
