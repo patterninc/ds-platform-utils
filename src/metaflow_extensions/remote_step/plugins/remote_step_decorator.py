@@ -42,6 +42,45 @@ from remote_step.submit import submit as batch_submit
 DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
+CACHED_ENV_FILENAME = ".remote_step_env.json"
+
+
+def _cached_env_path() -> str | None:
+    """Absolute path to the cached env JSON, next to the flow module."""
+    import __main__
+
+    flow_file = getattr(__main__, "__file__", None)
+    if not flow_file:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(flow_file)), CACHED_ENV_FILENAME)
+
+
+def _write_cached_env(env_spec: dict) -> None:
+    """Write env_spec to `<flow_dir>/.remote_step_env.json`."""
+    import json
+
+    path = _cached_env_path()
+    if not path:
+        return
+    try:
+        with open(path, "w") as f:
+            json.dump(env_spec, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_cached_env() -> dict | None:
+    """Read env_spec from the JSON file if present."""
+    import json
+
+    path = _cached_env_path()
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _is_argo_context() -> bool:
@@ -243,7 +282,7 @@ class RemoteStepDecorator(StepDecorator):
         if not flow_file:
             return
         start = os.path.dirname(os.path.abspath(flow_file))
-        wanted = ("uv.lock", "pyproject.toml", ".python-version")
+        wanted = ("uv.lock", "pyproject.toml", ".python-version", CACHED_ENV_FILENAME)
         found: list[tuple[str, str]] = []
         cur = start
         for _ in range(6):
@@ -276,11 +315,6 @@ class RemoteStepDecorator(StepDecorator):
         "aws_secret_source": DEFAULT_AWS_SECRET_SOURCE,
         "job_timeout_minutes": 240,
         "pending_timeout_minutes": 60,
-        # Populated at argo-create (when @pypi_base packages are still
-        # visible) so the driver on the argo pod can ship them to Batch
-        # even after Metaflow blanks @pypi_base for the baked image.
-        "_cached_env_packages": None,
-        "_cached_env_python": None,
     }
 
     _placement: ResolvedPlacement
@@ -326,17 +360,15 @@ class RemoteStepDecorator(StepDecorator):
             raise
         # Read @pypi_base/@pypi packages. Metaflow blanks these at task-run
         # time (env already baked into the argo pod image), so we cache the
-        # resolved env in the decorator's own attributes at create-time
-        # when the packages are still populated.
+        # resolved env to a JSON file alongside the flow module and ship it
+        # via add_to_package — driver reads it back on the argo pod.
         env_spec = _find_pypi_env(flow, decorators)
-        if env_spec["packages"]:
-            self.attributes["_cached_env_packages"] = env_spec["packages"]
-            self.attributes["_cached_env_python"] = env_spec["python"]
+        if not env_spec["packages"]:
+            cached = _read_cached_env()
+            if cached:
+                env_spec = cached
         else:
-            env_spec = {
-                "python": self.attributes.get("_cached_env_python") or env_spec["python"],
-                "packages": self.attributes.get("_cached_env_packages") or {},
-            }
+            _write_cached_env(env_spec)
         self._env_spec = env_spec
         try:
             self._config = load_config(self.attributes["env"])
