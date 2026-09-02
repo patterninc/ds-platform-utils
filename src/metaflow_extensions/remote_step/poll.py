@@ -73,7 +73,7 @@ def wait(
     job_id: str,
     cfg: RemoteStepConfig,
     *,
-    out: IO = sys.stderr,
+    out: IO = sys.stdout,
     poll_interval: float = 15.0,
     pending_timeout: float = 60 * 60,
     batch_client=None,

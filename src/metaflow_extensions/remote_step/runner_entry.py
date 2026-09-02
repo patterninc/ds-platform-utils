@@ -49,8 +49,8 @@ def _stage(name: str, ok: bool = True, t0: float | None = None) -> None:
     else:
         dur = ""
     status = "OK " if ok else "ERR"
-    sys.stderr.write(f"[remote_step] STAGE={name} {status} {dur}\n")
-    sys.stderr.flush()
+    sys.stdout.write(f"[remote_step] STAGE={name} {status} {dur}\n")
+    sys.stdout.flush()
 
 
 def _read_spec(spec_uri: str, s3_client) -> dict:
@@ -134,7 +134,7 @@ def main(spec_uri: str | None = None) -> int:
     """Runner entry point. Returns POSIX-style exit code."""
     spec_uri = spec_uri or os.environ.get("REMOTE_STEP_SPEC_URI")
     if not spec_uri:
-        sys.stderr.write("[remote_step] REMOTE_STEP_SPEC_URI unset\n")
+        sys.stdout.write("[remote_step] REMOTE_STEP_SPEC_URI unset\n")
         return 3
 
     s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
@@ -144,7 +144,7 @@ def main(spec_uri: str | None = None) -> int:
     try:
         spec = _read_spec(spec_uri, s3)
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=load_spec ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=load_spec ERR {exc}\n")
         traceback.print_exc()
         return 3
     _stage("load_spec", t0=t0)
@@ -156,7 +156,7 @@ def main(spec_uri: str | None = None) -> int:
         for name, ref in spec.get("inputs", {}).items():
             setattr(fake, name, _hydrate_input(name, ref, s3))
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=hydrate_inputs ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=hydrate_inputs ERR {exc}\n")
         traceback.print_exc()
         return 3
     _stage("hydrate_inputs", t0=t0)
@@ -183,7 +183,7 @@ def main(spec_uri: str | None = None) -> int:
         step_fn = getattr(flow_cls, spec["step_name"])
         original = getattr(step_fn, "__wrapped__", step_fn)
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=import_step ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=import_step ERR {exc}\n")
         traceback.print_exc()
         return 6
     _stage("import_step", t0=t0)
@@ -194,7 +194,7 @@ def main(spec_uri: str | None = None) -> int:
     try:
         original(fake)
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         return 1
     _stage("user_step_end", t0=t0)
@@ -232,7 +232,7 @@ def main(spec_uri: str | None = None) -> int:
                 pickle_protocol=5,
             )
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=persist_outputs ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=persist_outputs ERR {exc}\n")
         traceback.print_exc()
         return 1
     _stage("persist_outputs", t0=t0)
@@ -251,7 +251,7 @@ def main(spec_uri: str | None = None) -> int:
             s3_client=s3,
         )
     except Exception as exc:  # noqa: BLE001
-        sys.stderr.write(f"[remote_step] STAGE=write_manifest ERR {exc}\n")
+        sys.stdout.write(f"[remote_step] STAGE=write_manifest ERR {exc}\n")
         traceback.print_exc()
         return 1
     _stage("write_manifest", t0=t0)
