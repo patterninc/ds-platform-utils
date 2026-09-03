@@ -48,25 +48,33 @@ def _describe(batch, job_id: str) -> dict | None:
 
 
 def _stream_logs(logs_client, log_group: str, stream_name: str, out: IO, cursor: str | None):
-    """Fetch new log events since cursor, print to out, return new cursor."""
-    kwargs = {
-        "logGroupName": log_group,
-        "logStreamName": stream_name,
-        "startFromHead": True,
-    }
-    if cursor:
-        kwargs["nextToken"] = cursor
-    try:
-        resp = logs_client.get_log_events(**kwargs)
-    except (ClientError, BotoCoreError):
-        return cursor
-    for event in resp.get("events", []):
-        out.write(event["message"] + "\n")
-    out.flush()
-    next_cursor = resp.get("nextForwardToken")
-    if next_cursor == cursor:
-        return cursor
-    return next_cursor
+    """Drain new log events since cursor, print to out, return new cursor.
+
+    CloudWatch's get_log_events returns at most 1 MB or 10k events per call
+    and always echoes a nextForwardToken — even when empty. To keep the
+    driver's stdout close to realtime, we loop until the token stops
+    advancing (i.e. no new events on the server yet).
+    """
+    while True:
+        kwargs = {
+            "logGroupName": log_group,
+            "logStreamName": stream_name,
+            "startFromHead": True,
+        }
+        if cursor:
+            kwargs["nextToken"] = cursor
+        try:
+            resp = logs_client.get_log_events(**kwargs)
+        except (ClientError, BotoCoreError):
+            return cursor
+        events = resp.get("events", [])
+        for event in events:
+            out.write(event["message"] + "\n")
+        out.flush()
+        next_cursor = resp.get("nextForwardToken")
+        if not events or next_cursor == cursor:
+            return next_cursor or cursor
+        cursor = next_cursor
 
 
 def wait(
@@ -75,6 +83,7 @@ def wait(
     *,
     out: IO = sys.stdout,
     poll_interval: float = 15.0,
+    log_poll_interval: float = 2.0,
     pending_timeout: float = 60 * 60,
     batch_client=None,
     logs_client=None,
@@ -91,50 +100,55 @@ def wait(
     cursor: str | None = None
     pending_since: float | None = time.time()
     log_stream: str | None = None
+    status: str = "SUBMITTED"
+    job: dict | None = None
+    last_describe = 0.0
     try:
         while True:
-            try:
-                job = _describe(batch, job_id)
-            except (ClientError, BotoCoreError) as exc:
-                out.write(f"[remote_step] poll error, retrying: {exc}\n")
-                out.flush()
-                time.sleep(poll_interval)
-                continue
-            if not job:
-                out.write(f"[remote_step] job {job_id} not found, retrying\n")
-                out.flush()
-                time.sleep(poll_interval)
-                continue
+            now = time.time()
+            if now - last_describe >= poll_interval or job is None:
+                try:
+                    job = _describe(batch, job_id)
+                except (ClientError, BotoCoreError) as exc:
+                    out.write(f"[remote_step] poll error, retrying: {exc}\n")
+                    out.flush()
+                    time.sleep(log_poll_interval)
+                    continue
+                last_describe = now
+                if not job:
+                    out.write(f"[remote_step] job {job_id} not found, retrying\n")
+                    out.flush()
+                    time.sleep(log_poll_interval)
+                    continue
 
-            status = job["status"]
-            container = job.get("container", {})
-            log_stream = container.get("logStreamName") or log_stream
+                status = job["status"]
+                container = job.get("container", {})
+                log_stream = container.get("logStreamName") or log_stream
 
-            if status in PENDING_STATES:
-                if pending_since is None:
-                    pending_since = time.time()
-                if time.time() - pending_since > pending_timeout:
-                    _terminate(batch, job_id, "remote-step: pending timeout")
-                    raise PendingTimeoutError(
-                        f"job {job_id} stuck in {status} > {pending_timeout / 60:.0f} min. "
-                        f"Batch has no capacity for the requested resources. "
-                        f"Check compute environment or reduce @resources.",
-                        job_id=job_id,
-                        status=status,
-                    )
-            else:
-                pending_since = None
+                if status in PENDING_STATES:
+                    if pending_since is None:
+                        pending_since = time.time()
+                    if time.time() - pending_since > pending_timeout:
+                        _terminate(batch, job_id, "remote-step: pending timeout")
+                        raise PendingTimeoutError(
+                            f"job {job_id} stuck in {status} > {pending_timeout / 60:.0f} min. "
+                            f"Batch has no capacity for the requested resources. "
+                            f"Check compute environment or reduce @resources.",
+                            job_id=job_id,
+                            status=status,
+                        )
+                else:
+                    pending_since = None
 
-            if status == "RUNNING" and log_stream:
+            if log_stream and status not in PENDING_STATES:
                 cursor = _stream_logs(logs, cfg.log_group, log_stream, out, cursor)
 
             if status in TERMINAL_STATES:
-                # Final log drain.
                 if log_stream:
                     cursor = _stream_logs(logs, cfg.log_group, log_stream, out, cursor)
                 return _to_result(job, log_stream or "")
 
-            time.sleep(poll_interval)
+            time.sleep(log_poll_interval)
 
     except KeyboardInterrupt as exc:
         out.write("\n[remote_step] Ctrl-C detected, terminating Batch job...\n")
