@@ -6,13 +6,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_HTTP_TIMEOUT=120 \
     PATH="/venv/bin:/root/.local/bin:$PATH"
 
+# Debian bookworm (python:3.12-slim base) — note lib renames vs bullseye:
+#   libhdf5-103        -> libhdf5-103-1
+#   libtiff6 stays same
+#   libgeos-c1v5 stays same
+#   libproj25 stays same
+# If a package is missing again on a future Debian bump, use apt-cache
+# search inside the image to find the current concrete name.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl tini git \
     libgomp1 libgfortran5 libstdc++6 libgcc-s1 \
     libblas3 liblapack3 libopenblas0-pthread \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
     libjpeg62-turbo libpng16-16 libfreetype6 libtiff6 libwebp7 zlib1g \
-    libhdf5-103 \
+    libhdf5-103-1 \
     libpq5 \
     libgeos-c1v5 libproj25 \
     librdkafka1 \
