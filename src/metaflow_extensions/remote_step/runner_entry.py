@@ -41,8 +41,26 @@ from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import TransferConfig
+from botocore.config import Config as BotocoreConfig
 
 from remote_step.artifact import RemoteArtifact
+
+
+def _make_s3_client() -> Any:
+    """Create an S3 client with a connection pool sized for our workload.
+
+    The default boto pool of 10 chokes TransferManager runs that fan
+    out to 32 threads for ≥2 GB blobs. Adaptive retries help absorb
+    the occasional S3 throttling on very-parallel multipart uploads.
+    """
+    return boto3.client(
+        "s3",
+        region_name=os.environ.get("AWS_REGION"),
+        config=BotocoreConfig(
+            max_pool_connections=64,
+            retries={"max_attempts": 8, "mode": "adaptive"},
+        ),
+    )
 
 
 # Multipart upload thresholds (bytes) for the runner's output persistence.
@@ -208,7 +226,7 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write("[remote_step] REMOTE_STEP_SPEC_URI unset\n")
         return 3
 
-    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
+    s3 = _make_s3_client()
 
     # 1. Load spec.
     t0 = time.time()
@@ -232,7 +250,7 @@ def main(spec_uri: str | None = None) -> int:
     def _hydrate_worker_s3():
         client = getattr(_hydrate_local, "s3", None)
         if client is None:
-            client = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
+            client = _make_s3_client()
             _hydrate_local.s3 = client
         return client
 
@@ -350,7 +368,7 @@ def main(spec_uri: str | None = None) -> int:
     def _worker_s3():
         client = getattr(_local, "s3", None)
         if client is None:
-            client = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
+            client = _make_s3_client()
             _local.s3 = client
         return client
 
