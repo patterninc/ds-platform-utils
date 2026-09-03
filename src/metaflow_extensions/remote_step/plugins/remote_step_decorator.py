@@ -110,13 +110,56 @@ class _MflogPusher:
 
 
 def _cached_env_path() -> str | None:
-    """Absolute path to the cached env JSON, next to the flow module."""
+    """Absolute path to the cached env JSON, next to the flow module.
+
+    Used by the *writer* on the user's laptop at argo-workflows-create
+    time — the flow module is a real file next to the project's
+    ``uv.lock``/``pyproject.toml``, so this always resolves.
+    """
     import __main__
 
     flow_file = getattr(__main__, "__file__", None)
     if not flow_file:
         return None
     return os.path.join(os.path.dirname(os.path.abspath(flow_file)), CACHED_ENV_FILENAME)
+
+
+def _cached_env_read_candidates() -> list[str]:
+    """Directories to probe for the cached env JSON at read time.
+
+    Metaflow's packager routes ``add_to_package``'s CODE_CONTENT files
+    under ``.mf_code/``, but user-code walked from the flow directory
+    (subject to ``--package-suffixes``) lands at the archive root. Which
+    of the two paths the file ends up on depends on the exact CLI flags
+    passed at ``argo-workflows create``, so at read time we probe every
+    candidate location instead of relying on a single "correct" one.
+    """
+    import __main__
+
+    dirs: list[str] = []
+
+    def _add(d: str | None) -> None:
+        if d and d not in dirs:
+            dirs.append(d)
+
+    flow_file = getattr(__main__, "__file__", None)
+    if flow_file:
+        flow_dir = os.path.dirname(os.path.abspath(flow_file))
+        _add(flow_dir)
+        _add(os.path.join(flow_dir, ".mf_code"))
+
+    # On an Argo pod Metaflow's bootstrap sets METAFLOW_EXTRACTED_ROOT to
+    # the directory it extracted the code package into. The .mf_code
+    # sub-directory holds everything added via ``add_to_package``.
+    mf_root = os.environ.get("METAFLOW_EXTRACTED_ROOT")
+    if mf_root:
+        _add(mf_root)
+        _add(os.path.join(mf_root, ".mf_code"))
+
+    cwd = os.getcwd()
+    _add(cwd)
+    _add(os.path.join(cwd, ".mf_code"))
+    return dirs
 
 
 def _write_cached_env(env_spec: dict) -> None:
@@ -134,17 +177,27 @@ def _write_cached_env(env_spec: dict) -> None:
 
 
 def _read_cached_env() -> dict | None:
-    """Read env_spec from the JSON file if present."""
+    """Read env_spec from the JSON file if present.
+
+    Probes every candidate location in ``_cached_env_read_candidates()``
+    and returns the first one whose parsed body has non-empty
+    ``packages``. Silently skips unreadable / empty entries so a stale
+    file next to the flow doesn't shadow a fresh one in ``.mf_code/``.
+    """
     import json
 
-    path = _cached_env_path()
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:  # noqa: BLE001
-        return None
+    for d in _cached_env_read_candidates():
+        path = os.path.join(d, CACHED_ENV_FILENAME)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                body = json.load(f)
+        except Exception:  # noqa: BLE001
+            continue
+        if isinstance(body, dict) and body.get("packages"):
+            return body
+    return None
 
 
 def _is_argo_context() -> bool:
