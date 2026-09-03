@@ -28,19 +28,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 libkrb5-3 \
     && rm -rf /var/lib/apt/lists/*
 
-# uv — used by both the boot venv here and the per-job venv the entrypoint builds.
+# uv is downloaded at build time but *not executed* here — Rosetta and
+# qemu-user-static both segfault on uv's Rust binary when the build host
+# arch doesn't match the image arch (e.g. building linux/amd64 on Apple
+# Silicon). We only invoke uv at container runtime, where the Fargate
+# host runs the native architecture and uv works normally.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Boot venv used by entrypoint.sh before the per-job venv exists. Installs
-# ds-platform-utils from the local repo copy (no network / auth needed at
-# build time) so `remote_step.*` and `metaflow_extensions.remote_step.*`
+# Boot venv used by entrypoint.sh before the per-job venv exists. Built
+# with the base image's own pip (not uv) so the build step is portable
+# across cross-arch Docker builds. Installs ds-platform-utils from the
+# local repo copy so ``remote_step.*`` / ``metaflow_extensions.remote_step.*``
 # are importable for parsing spec.json, downloading the payload, and
 # building the per-job venv.
-RUN /root/.local/bin/uv venv /venv-runner --python 3.12
+RUN python3 -m venv /venv-runner
 COPY pyproject.toml /ds-platform-utils/pyproject.toml
 COPY README.md /ds-platform-utils/README.md
 COPY src /ds-platform-utils/src
-RUN /root/.local/bin/uv pip install --python /venv-runner/bin/python \
+RUN /venv-runner/bin/pip install --no-cache-dir --disable-pip-version-check \
       boto3 \
       /ds-platform-utils
 
