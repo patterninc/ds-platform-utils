@@ -163,23 +163,35 @@ class _FakeSelf:
 def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
     """Pickle obj, upload to S3, return (size_bytes, sha256_hex).
 
-    S3's ``PutObject`` caps at 5 GB per request, so anything above
-    ``_S3_MULTIPART_THRESHOLD`` goes through ``upload_fileobj`` — boto3's
-    TransferManager, which transparently splits into multipart chunks and
-    parallelises the upload with a per-blob concurrency tuned to size
-    (small: 10 workers, ≥2 GB: 32 workers) to saturate the Fargate
-    task's egress bandwidth.
+    Memory-hot path — we're routinely serialising DataFrames in the 1-30 GB
+    range. Keep peak RAM to a single copy of the pickled bytes by:
+      1. Pickling into a BytesIO (allocation 1).
+      2. Streaming that BytesIO through sha256 in 4 MB chunks
+         (no bytes copy).
+      3. Handing the same BytesIO to boto3 for upload — put_object below
+         100 MB, TransferManager upload_fileobj above (size-tuned
+         multipart concurrency to saturate Fargate egress).
+
+    Previous version did ``blob = buf.getvalue()`` + ``io.BytesIO(blob)``,
+    pushing peak RAM to 3× the pickle size and OOMing the Fargate task on
+    multi-GB outputs.
     """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=5)
-    blob = buf.getvalue()
-    size = len(blob)
-    sha = hashlib.sha256(blob).hexdigest()
+    size = buf.tell()
+
+    buf.seek(0)
+    h = hashlib.sha256()
+    for chunk in iter(lambda: buf.read(4 * 1024 * 1024), b""):
+        h.update(chunk)
+    sha = h.hexdigest()
+
+    buf.seek(0)
     if size <= _S3_MULTIPART_THRESHOLD:
-        s3_client.put_object(Bucket=bucket, Key=key, Body=blob)
+        s3_client.put_object(Bucket=bucket, Key=key, Body=buf)
     else:
         cfg = _transfer_config_for(size)
-        s3_client.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
+        s3_client.upload_fileobj(buf, Bucket=bucket, Key=key, Config=cfg)
     return size, sha
 
 

@@ -81,8 +81,9 @@ def build_spec(
     to the payload bucket and referenced as a `RemoteArtifact`, so the
     inline portion of the spec stays tiny even for huge upstream inputs.
     """
-    from remote_step.artifact import write_artifact_from_blob
+    from remote_step.artifact import write_artifact_from_buf
     from remote_step.manifest import output_prefix
+    import io as _io
 
     prefix = output_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
     inputs_prefix = f"inputs/{ctx.run_id}/{ctx.task_id}/{ctx.attempt}"
@@ -99,15 +100,19 @@ def build_spec(
                 "pickle_protocol": val.pickle_protocol,
             }
             continue
-        blob = pickle.dumps(val, protocol=5)
-        if len(blob) > INLINE_ATTR_LIMIT_BYTES:
-            # Big attr — reuse the pickle we already produced above
-            # instead of re-pickling inside write_artifact, so the
-            # driver pod's memory footprint stays flat.
+        # Pickle into a BytesIO so we can reuse the *same* buffer for
+        # both the size-check and the upload — the driver pod is Small
+        # tier and can't afford the 2-3x peak RAM that a
+        # ``pickle.dumps -> io.BytesIO(bytes)`` round-trip would need.
+        _buf = _io.BytesIO()
+        pickle.dump(val, _buf, protocol=5)
+        size = _buf.tell()
+        if size > INLINE_ATTR_LIMIT_BYTES:
             key = f"{inputs_prefix}/{name}.pkl"
-            ref = write_artifact_from_blob(
+            ref = write_artifact_from_buf(
                 obj_kind=type(val).__module__ + "." + type(val).__qualname__,
-                blob=blob,
+                buf=_buf,
+                size=size,
                 bucket=output_bucket,
                 key=key,
                 s3_client=s3_client,
@@ -123,7 +128,7 @@ def build_spec(
                 "pickle_protocol": ref.pickle_protocol,
             }
             continue
-        inline_total += len(blob)
+        inline_total += size
         if inline_total > MAX_INLINE_INPUT_BYTES:
             raise RemoteStepError(
                 f"inline inputs exceed {MAX_INLINE_INPUT_BYTES // 1024 // 1024} "
@@ -132,10 +137,12 @@ def build_spec(
                 culprit=name,
                 size_bytes=inline_total,
             )
+        # Small attr (< 4 MB): fine to materialise the pickle as bytes
+        # for base64 encoding. The buffer is tiny by construction.
         serialised[name] = {
             "kind": "inline",
             "type_kind": type(val).__module__ + "." + type(val).__qualname__,
-            "blob_b64": base64.b64encode(blob).decode("ascii"),
+            "blob_b64": base64.b64encode(_buf.getvalue()).decode("ascii"),
         }
     return {
         "version": 1,

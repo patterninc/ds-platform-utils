@@ -317,13 +317,33 @@ def _download(s3_client, bucket: str, key: str, size_hint: int) -> bytes:
     return s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
-def _upload_blob(s3, bucket: str, key: str, blob: bytes) -> None:
-    """Send a pre-pickled blob to S3, choosing single-part or multipart."""
-    if len(blob) <= _S3_MULTIPART_THRESHOLD:
-        s3.put_object(Bucket=bucket, Key=key, Body=blob)
+def _sha256_of_buf(buf: io.BytesIO, size: int) -> str:
+    """Stream ``buf`` through sha256 without copying its contents.
+
+    ``buf.seek(0)`` is called on entry so callers can hand us a buffer
+    the pickle was just written to. We leave ``buf`` rewound to 0 on
+    exit so it's ready for the S3 client to read.
+    """
+    buf.seek(0)
+    h = hashlib.sha256()
+    for chunk in iter(lambda: buf.read(4 * 1024 * 1024), b""):
+        h.update(chunk)
+    buf.seek(0)
+    return h.hexdigest()
+
+
+def _upload_buf(s3, bucket: str, key: str, buf: io.BytesIO, size: int) -> None:
+    """Send ``buf`` (rewound to 0) to S3.
+
+    Reuses the same in-memory buffer for both the size-check and the
+    upload — avoids the extra bytes copy an ``io.BytesIO(blob)`` wrap
+    used to introduce on the multipart path.
+    """
+    if size <= _S3_MULTIPART_THRESHOLD:
+        s3.put_object(Bucket=bucket, Key=key, Body=buf)
     else:
-        cfg = _transfer_config_for(len(blob))
-        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
+        cfg = _transfer_config_for(size)
+        s3.upload_fileobj(buf, Bucket=bucket, Key=key, Config=cfg)
 
 
 def write_artifact(
@@ -334,40 +354,48 @@ def write_artifact(
     pickle_protocol: int = 5,
     read_role_arn: str = "",
 ) -> RemoteArtifact:
-    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact."""
+    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact.
+
+    Peak RAM = 1× the pickled size (a single ``BytesIO``). We pickle into
+    the buffer, stream-hash it into sha256 in 4 MB chunks, then hand the
+    same buffer to boto3 for the upload. No intermediate ``bytes`` blob.
+    """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=pickle_protocol)
-    blob = buf.getvalue()
-    return write_artifact_from_blob(
-        obj_kind=type(obj).__module__ + "." + type(obj).__qualname__,
-        blob=blob,
-        bucket=bucket,
-        key=key,
-        s3_client=s3_client,
+    size = buf.tell()
+    sha = _sha256_of_buf(buf, size)
+    s3 = s3_client or boto3.client("s3")
+    _upload_buf(s3, bucket, key, buf, size)
+    return RemoteArtifact(
+        s3_uri=f"s3://{bucket}/{key}",
+        size_bytes=size,
+        kind=type(obj).__module__ + "." + type(obj).__qualname__,
+        sha256=sha,
         pickle_protocol=pickle_protocol,
         read_role_arn=read_role_arn,
     )
 
 
-def write_artifact_from_blob(
+def write_artifact_from_buf(
     obj_kind: str,
-    blob: bytes,
+    buf: io.BytesIO,
+    size: int,
     bucket: str,
     key: str,
     s3_client=None,
     pickle_protocol: int = 5,
     read_role_arn: str = "",
 ) -> RemoteArtifact:
-    """Upload an already-pickled blob and return a RemoteArtifact.
+    """Upload an already-pickled ``BytesIO`` and return a RemoteArtifact.
 
-    Lets callers that need to compute the pickle size *before* deciding
-    inline-vs-remote (see ``payload.build_spec``) skip the second pickle
-    pass. Halves driver-side pickle CPU + RAM for big inputs.
+    For callers that pickled once for a size check and want to reuse the
+    same buffer for the upload (see ``payload.build_spec``). ``buf``
+    must already contain the pickled bytes; we rewind it before hashing
+    and before handing to boto so callers don't need to seek themselves.
     """
-    size = len(blob)
-    sha = hashlib.sha256(blob).hexdigest()
+    sha = _sha256_of_buf(buf, size)
     s3 = s3_client or boto3.client("s3")
-    _upload_blob(s3, bucket, key, blob)
+    _upload_buf(s3, bucket, key, buf, size)
     return RemoteArtifact(
         s3_uri=f"s3://{bucket}/{key}",
         size_bytes=size,
