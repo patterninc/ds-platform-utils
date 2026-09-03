@@ -29,67 +29,125 @@ import pickle
 import time
 from typing import Any
 
+import sys
 import threading
 
 import boto3
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
+from botocore.credentials import RefreshableCredentials
 from botocore.exceptions import BotoCoreError, ClientError
+from botocore.session import get_session as _get_botocore_session
 
 from remote_step.errors import ArtifactLoadError
 
 
-# Cache assumed-role sessions across many RemoteArtifact.load() calls so a
-# non-@remote_step step that reaches through several refs pays for one
-# AssumeRole per role ARN (not one per artifact). Keyed by role ARN.
-# Value: (client, expiry_epoch_seconds).
-_ASSUMED_S3_CLIENTS: dict[str, tuple[Any, float]] = {}
+# Cache assumed-role S3 clients across many RemoteArtifact.load() calls
+# so a non-@remote_step step that reaches through several refs pays for
+# one AssumeRole per role ARN (not one per artifact). Each client is
+# backed by ``botocore.RefreshableCredentials`` — a background refresh
+# fires automatically ~10 minutes before the STS creds expire, so long
+# downloads never fail with an ExpiredToken half-way through the
+# TransferManager's multipart run.
+_ASSUMED_S3_CLIENTS: dict[str, Any] = {}
 _ASSUMED_S3_LOCK = threading.Lock()
-_ASSUME_ROLE_TTL_SEC = 45 * 60  # AssumeRole hands out 1 h creds; refresh at 45 min.
 
 # Connection pool size on the assumed client. Downloads of ≥2 GB blobs
 # spin up 32 TransferManager threads, each of which wants its own HTTPS
-# connection to S3. The boto default of 10 would starve them. Also
-# helps when several concurrent RemoteArtifact.load() calls on the same
-# pod fall back to AssumeRole simultaneously.
+# connection to S3. The boto default of 10 would starve them.
 _ASSUMED_MAX_POOL_CONNECTIONS = 64
 
 
 def _assumed_s3_client(role_arn: str, region: str | None = None) -> Any:
     """Return a boto3 S3 client whose creds come from sts:AssumeRole.
 
-    Cached per role ARN; refreshed a few minutes before the STS creds
-    expire. The read/refresh is guarded by a lock so concurrent
-    threads don't race to issue duplicate ``sts:AssumeRole`` calls
-    when the cache is cold or expiring.
+    Cached per role ARN. Uses ``RefreshableCredentials`` so boto
+    transparently re-issues ``sts:AssumeRole`` before the current
+    session token expires. That matters for pods that pull dozens of
+    refs over a long-running step body — a stale-cached client would
+    otherwise start rejecting requests once the 1 h TTL burned down.
     """
-    now = time.time()
     with _ASSUMED_S3_LOCK:
         cached = _ASSUMED_S3_CLIENTS.get(role_arn)
-        if cached and cached[1] > now + 60:
-            return cached[0]
-        sts = boto3.client("sts", region_name=region)
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName="remote-step-artifact-read",
+        if cached is not None:
+            return cached
+
+        def _refresh() -> dict:
+            sts = boto3.client("sts", region_name=region)
+            resp = sts.assume_role(
+                RoleArn=role_arn,
+                RoleSessionName="remote-step-artifact-read",
+                DurationSeconds=3600,
+            )
+            c = resp["Credentials"]
+            return {
+                "access_key": c["AccessKeyId"],
+                "secret_key": c["SecretAccessKey"],
+                "token": c["SessionToken"],
+                "expiry_time": c["Expiration"].isoformat(),
+            }
+
+        creds = RefreshableCredentials.create_from_metadata(
+            metadata=_refresh(),
+            refresh_using=_refresh,
+            method="sts-assume-role",
         )
-        creds = resp["Credentials"]
-        client = boto3.client(
+        session = _get_botocore_session()
+        session._credentials = creds
+        if region:
+            session.set_config_variable("region", region)
+        client = boto3.Session(botocore_session=session).client(
             "s3",
-            region_name=region,
-            aws_access_key_id=creds["AccessKeyId"],
-            aws_secret_access_key=creds["SecretAccessKey"],
-            aws_session_token=creds["SessionToken"],
             config=BotocoreConfig(
                 max_pool_connections=_ASSUMED_MAX_POOL_CONNECTIONS,
                 retries={"max_attempts": 8, "mode": "adaptive"},
             ),
         )
-        _ASSUMED_S3_CLIENTS[role_arn] = (
-            client,
-            now + _ASSUME_ROLE_TTL_SEC,
-        )
+        _ASSUMED_S3_CLIENTS[role_arn] = client
         return client
+
+
+class _ProgressLogger:
+    """boto3 TransferManager ``Callback`` that prints periodic progress.
+
+    Attached only to multipart uploads/downloads (small transfers finish
+    fast enough that per-call chatter would be noise). Aggregates
+    bytes-transferred across all worker threads under a lock and emits
+    a line at most every ``log_every_sec`` seconds, plus one final
+    line at 100% so the log ends cleanly.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        total_bytes: int,
+        out=sys.stdout,
+        log_every_sec: float = 5.0,
+    ) -> None:
+        self._label = label
+        self._total = max(1, total_bytes)
+        self._done = 0
+        self._out = out
+        self._every = log_every_sec
+        self._last = time.time()
+        self._lock = threading.Lock()
+
+    def __call__(self, bytes_transferred: int) -> None:
+        with self._lock:
+            self._done += bytes_transferred
+            now = time.time()
+            complete = self._done >= self._total
+            if not complete and (now - self._last) < self._every:
+                return
+            pct = min(100.0, 100.0 * self._done / self._total)
+            done_mb = self._done / (1024 * 1024)
+            total_mb = self._total / (1024 * 1024)
+            self._out.write(
+                f"[remote_step] {self._label}: "
+                f"{done_mb:,.1f} / {total_mb:,.1f} MB ({pct:5.1f}%)\n"
+            )
+            self._out.flush()
+            self._last = now
 
 
 @dataclass
@@ -333,11 +391,13 @@ def _download_to_buf(
     """
     buf = io.BytesIO()
     if size_hint and size_hint > _S3_MULTIPART_THRESHOLD:
+        cb = _ProgressLogger(f"download {key}", size_hint)
         s3_client.download_fileobj(
             Bucket=bucket,
             Key=key,
             Fileobj=buf,
             Config=_transfer_config_for(size_hint),
+            Callback=cb,
         )
     else:
         body = s3_client.get_object(Bucket=bucket, Key=key)["Body"]
@@ -368,18 +428,30 @@ def _sha256_of_buf(buf: io.BytesIO, size: int) -> str:
     return h.hexdigest()
 
 
-def _upload_buf(s3, bucket: str, key: str, buf: io.BytesIO, size: int) -> None:
+def _upload_buf(
+    s3,
+    bucket: str,
+    key: str,
+    buf: io.BytesIO,
+    size: int,
+    label: str | None = None,
+) -> None:
     """Send ``buf`` (rewound to 0) to S3.
 
     Reuses the same in-memory buffer for both the size-check and the
     upload — avoids the extra bytes copy an ``io.BytesIO(blob)`` wrap
-    used to introduce on the multipart path.
+    used to introduce on the multipart path. Attaches a
+    ``_ProgressLogger`` on the multipart path so long uploads emit
+    periodic progress to stdout instead of going silent.
     """
     if size <= _S3_MULTIPART_THRESHOLD:
         s3.put_object(Bucket=bucket, Key=key, Body=buf)
     else:
         cfg = _transfer_config_for(size)
-        s3.upload_fileobj(buf, Bucket=bucket, Key=key, Config=cfg)
+        cb = _ProgressLogger(label or f"upload {key}", size) if label is not False else None
+        s3.upload_fileobj(
+            buf, Bucket=bucket, Key=key, Config=cfg, Callback=cb
+        )
 
 
 def write_artifact(

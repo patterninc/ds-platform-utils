@@ -40,10 +40,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import boto3
-from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotocoreConfig
 
-from remote_step.artifact import RemoteArtifact
+from remote_step.artifact import RemoteArtifact, _upload_buf
 
 
 def _make_s3_client() -> Any:
@@ -63,41 +62,13 @@ def _make_s3_client() -> Any:
     )
 
 
-# Multipart upload thresholds (bytes) for the runner's output persistence.
-# - _S3_MULTIPART_THRESHOLD: switch from put_object to upload_fileobj here.
-# - _S3_MULTIPART_CHUNK_SIZE: part size handed to the TransferManager. Larger
-#   parts mean fewer round trips at the cost of more RAM per concurrent
-#   upload. 32 MB is a good balance for 10-100 GB outputs.
-# - _S3_LARGE_BLOB_THRESHOLD: above this we bump per-upload concurrency
-#   from the boto default (10 threads) so a single huge pickle saturates
-#   the Fargate task's egress bandwidth.
-# - _S3_MAX_CONCURRENCY_BIG / _S3_MAX_CONCURRENCY_SMALL: worker counts
-#   inside boto3.s3.transfer.TransferManager per upload.
-_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024        # 100 MB
-_S3_MULTIPART_CHUNK_SIZE = 32 * 1024 * 1024        # 32 MB
-_S3_LARGE_BLOB_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GB
-_S3_MAX_CONCURRENCY_SMALL = 10
-_S3_MAX_CONCURRENCY_BIG = 32
-
 # Number of output attrs we upload in parallel across the outputs loop.
-# Each worker gets its own dedicated boto S3 client (boto clients are not
-# thread-safe for concurrent multipart uploads on the same instance).
+# Each worker gets its own dedicated boto S3 client (boto clients are
+# safe to call from multiple threads, but sharing one across concurrent
+# TransferManager runs has been flaky under load). The multipart /
+# concurrency thresholds themselves live in ``artifact.py`` and are
+# reused via the shared ``_upload_buf`` helper.
 _OUTPUTS_PARALLELISM = 4
-
-
-def _transfer_config_for(size: int) -> TransferConfig:
-    """Return a TransferConfig tuned to the payload's size."""
-    concurrency = (
-        _S3_MAX_CONCURRENCY_BIG
-        if size >= _S3_LARGE_BLOB_THRESHOLD
-        else _S3_MAX_CONCURRENCY_SMALL
-    )
-    return TransferConfig(
-        multipart_threshold=_S3_MULTIPART_THRESHOLD,
-        multipart_chunksize=_S3_MULTIPART_CHUNK_SIZE,
-        max_concurrency=concurrency,
-        use_threads=True,
-    )
 
 
 def _stage(name: str, ok: bool = True, t0: float | None = None) -> None:
@@ -205,11 +176,11 @@ def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
     sha = h.hexdigest()
 
     buf.seek(0)
-    if size <= _S3_MULTIPART_THRESHOLD:
-        s3_client.put_object(Bucket=bucket, Key=key, Body=buf)
-    else:
-        cfg = _transfer_config_for(size)
-        s3_client.upload_fileobj(buf, Bucket=bucket, Key=key, Config=cfg)
+    # Delegate to the shared uploader — same multipart threshold, size-tuned
+    # concurrency, and progress-logging callback. Key name doubles as the
+    # progress label so a multi-attr step logs one interleaved stream of
+    # "download build_df_core_daily/df_core_daily.pkl: 512.3 / 4,096.0 MB (12.5%)".
+    _upload_buf(s3_client, bucket, key, buf, size, label=f"upload {key.rsplit('/', 1)[-1]}")
     return size, sha
 
 
