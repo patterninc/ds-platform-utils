@@ -455,6 +455,12 @@ class RemoteStepDecorator(StepDecorator):
             try:
                 from metaflow import current as _current
                 _tags = list(getattr(_current, "tags", None) or [])
+                # Include system tags too (user:X, runtime:X, project_branch:X, ...)
+                # so downstream code that filters on either kind still works.
+                _tags.extend(
+                    t for t in (getattr(_current, "system_tags", None) or [])
+                    if t not in _tags
+                )
             except Exception:  # noqa: BLE001
                 _tags = []
             driver_ctx = DriverContext(

@@ -177,7 +177,11 @@ def main(spec_uri: str | None = None) -> int:
         _current._step_name = spec.get("step_name")
         _current._task_id = spec.get("task_id")
         _current._retry_count = spec.get("attempt", 0)
-        _current._tags = tuple(spec.get("tags") or [])
+        _all_tags = tuple(spec.get("tags") or [])
+        _current._tags = _all_tags
+        _current._system_tags = tuple(
+            t for t in _all_tags if t.startswith(("user:", "runtime:", "python_version:", "metaflow_version:", "project:", "project_branch:"))
+        )
         _current._is_running = True
     except Exception:  # noqa: BLE001
         pass
