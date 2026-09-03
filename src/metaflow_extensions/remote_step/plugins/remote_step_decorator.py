@@ -569,11 +569,32 @@ class RemoteStepDecorator(StepDecorator):
                     ctx["task_id"],
                     ctx["attempt"],
                 )
+                # Hydrate each output on the driver so downstream steps —
+                # both non-@remote_step and @remote_step — see the real
+                # Python object (`pd.DataFrame`, `dict`, `list`, ...)
+                # rather than a `RemoteArtifact` ref.
+                #
+                # Metaflow's default artifact persistence then ships the
+                # object to the Outerbounds datastore. That's what
+                # downstream non-remote pods read from — they can't reach
+                # our payload bucket (Outerbounds' pod role has a
+                # permissions boundary that denies cross-account S3).
+                # @remote_step downstream drivers re-pickle the fresh
+                # object into our payload bucket in `payload.build_spec`
+                # using the AWS creds injected via @secrets, so the
+                # zero-copy ref stays inside the Batch <-> our-S3 loop.
                 for name, ref in outputs.items():
-                    setattr(self_flow, name, ref)
+                    try:
+                        obj = ref.load()
+                    except Exception as exc:  # noqa: BLE001
+                        sys.stdout.write(
+                            f"[remote_step] failed to hydrate output {name}: {exc}\n"
+                        )
+                        raise
+                    setattr(self_flow, name, obj)
                 sys.stdout.write(
                     f"[remote_step] {step_name} finished, "
-                    f"{len(outputs)} artifact(s) linked\n"
+                    f"{len(outputs)} artifact(s) hydrated\n"
                 )
                 # Replay the user step's self.next(...) so Metaflow's transition
                 # tracker sees the same shape it does when the step runs locally.
