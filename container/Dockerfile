@@ -8,7 +8,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl tini git \
-    libgomp1 \
+    libgomp1 libgfortran5 libstdc++6 libgcc-s1 \
+    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    libblas3 liblapack3 \
     && rm -rf /var/lib/apt/lists/*
 
 # uv — used by both the boot venv here and the per-job venv the entrypoint builds.
