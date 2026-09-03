@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import getpass
 import os
+import subprocess
 import sys
+import threading
+import time
 
 try:
     # ob-metaflow / metaflow — same import path.
@@ -44,6 +47,66 @@ DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
+# The Metaflow mflog sidecar uploads task stdout to the datastore on a
+# sigmoid schedule that slows to a ~30 s cadence for long-running steps.
+# The Outerbounds UI reads the task's stdout from that upload, so users
+# see the driver's log tail lag by that much. We force a save_logs call
+# every ``MFLOG_FORCE_UPLOAD_INTERVAL_SEC`` seconds so the UI is never
+# behind by more than that regardless of the sidecar's own cadence.
+MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
+
+
+class _MflogPusher:
+    """Force `metaflow.mflog.save_logs` to run every N s from the driver.
+
+    Metaflow's built-in ``save_logs_periodically`` sidecar backs off to a
+    ~30 s cadence for long-running tasks (a sigmoid on task age). The
+    Outerbounds UI reads the driver's stdout from those uploads, so at
+    the sidecar's slow end users only see fresh log output tens of
+    seconds after the container wrote it. Running the save_logs subprocess
+    ourselves on a tight cadence keeps the UI within a few seconds of the
+    stream regardless of the sidecar's backoff.
+
+    Only starts if the mflog env vars are set — i.e. we're running inside
+    a Metaflow task pod that has a stdout capture file. Locally the vars
+    are absent and the pusher is a no-op.
+    """
+
+    def __init__(self, interval: float = MFLOG_FORCE_UPLOAD_INTERVAL_SEC) -> None:
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not os.environ.get("MFLOG_STDOUT"):
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="remote-step-mflog-pusher", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        # Small initial delay so the very first stdout writes are buffered
+        # into the mflog file before we ask for an upload.
+        if self._stop.wait(1.0):
+            return
+        while not self._stop.is_set():
+            try:
+                subprocess.run(
+                    ["python", "-m", "metaflow.mflog.save_logs"],
+                    check=False,
+                    capture_output=True,
+                    timeout=15,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
+            if self._stop.wait(self._interval):
+                return
 
 
 def _cached_env_path() -> str | None:
@@ -443,80 +506,85 @@ class RemoteStepDecorator(StepDecorator):
                 sys.stdout.reconfigure(line_buffering=True)
             except Exception:  # noqa: BLE001
                 pass
-            user = os.environ.get("METAFLOW_USER") or getpass.getuser()
-            self_flow = flow
-            input_attrs = _collect_flow_attrs(self_flow)
-            sys.stdout.write(
-                f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
-            )
-            code_url, code_sha = resolve_code_package(
-                cfg.payload_bucket, ctx["run_id"]
-            )
+            mflog_pusher = _MflogPusher()
+            mflog_pusher.start()
             try:
-                from metaflow import current as _current
-                _tags = list(getattr(_current, "tags", None) or [])
-                # Include system tags too (user:X, runtime:X, project_branch:X, ...)
-                # so downstream code that filters on either kind still works.
-                _tags.extend(
-                    t for t in (getattr(_current, "system_tags", None) or [])
-                    if t not in _tags
+                user = os.environ.get("METAFLOW_USER") or getpass.getuser()
+                self_flow = flow
+                input_attrs = _collect_flow_attrs(self_flow)
+                sys.stdout.write(
+                    f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
                 )
-            except Exception:  # noqa: BLE001
-                _tags = []
-            driver_ctx = DriverContext(
-                flow_module=_flow_module_name(self_flow),
-                flow_class=type(self_flow).__name__,
-                step_name=step_name,
-                flow_name=ctx["flow_name"],
-                run_id=ctx["run_id"],
-                task_id=ctx["task_id"],
-                attempt=ctx["attempt"],
-                code_package_url=code_url,
-                code_package_sha=code_sha,
-                datastore_root=ctx["datastore_root"],
-                mfconfig=_named_mfconfig(),
-                tags=_tags,
-            )
-            spec_uri, spec = build_and_upload(
-                driver_ctx, env_spec, input_attrs, cfg.payload_bucket
-            )
-            sys.stdout.write(
-                f"[remote_step] submitted spec {spec_uri}\n"
-                f"[remote_step] placement {format_placement(placement)}\n"
-            )
-            result = batch_submit(
-                cfg,
-                placement,
-                spec_uri,
-                flow_name=ctx["flow_name"],
-                run_id=ctx["run_id"],
-                step_name=step_name,
-                user=user,
-            )
-            sys.stdout.write(
-                f"[remote_step] job {result.job_id} on {result.queue}\n"
-            )
-            poll_wait(result.job_id, cfg, pending_timeout=pending_timeout)
-            outputs = read_manifest(
-                cfg.payload_bucket,
-                ctx["run_id"],
-                ctx["task_id"],
-                ctx["attempt"],
-            )
-            for name, ref in outputs.items():
-                setattr(self_flow, name, ref)
-            sys.stdout.write(
-                f"[remote_step] {step_name} finished, "
-                f"{len(outputs)} artifact(s) linked\n"
-            )
-            # Replay the user step's self.next(...) so Metaflow's transition
-            # tracker sees the same shape it does when the step runs locally.
-            if out_funcs:
-                next_refs = [
-                    getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)
-                ]
-                if next_refs:
-                    self_flow.next(*next_refs)
+                code_url, code_sha = resolve_code_package(
+                    cfg.payload_bucket, ctx["run_id"]
+                )
+                try:
+                    from metaflow import current as _current
+                    _tags = list(getattr(_current, "tags", None) or [])
+                    # Include system tags too (user:X, runtime:X, project_branch:X, ...)
+                    # so downstream code that filters on either kind still works.
+                    _tags.extend(
+                        t for t in (getattr(_current, "system_tags", None) or [])
+                        if t not in _tags
+                    )
+                except Exception:  # noqa: BLE001
+                    _tags = []
+                driver_ctx = DriverContext(
+                    flow_module=_flow_module_name(self_flow),
+                    flow_class=type(self_flow).__name__,
+                    step_name=step_name,
+                    flow_name=ctx["flow_name"],
+                    run_id=ctx["run_id"],
+                    task_id=ctx["task_id"],
+                    attempt=ctx["attempt"],
+                    code_package_url=code_url,
+                    code_package_sha=code_sha,
+                    datastore_root=ctx["datastore_root"],
+                    mfconfig=_named_mfconfig(),
+                    tags=_tags,
+                )
+                spec_uri, spec = build_and_upload(
+                    driver_ctx, env_spec, input_attrs, cfg.payload_bucket
+                )
+                sys.stdout.write(
+                    f"[remote_step] submitted spec {spec_uri}\n"
+                    f"[remote_step] placement {format_placement(placement)}\n"
+                )
+                result = batch_submit(
+                    cfg,
+                    placement,
+                    spec_uri,
+                    flow_name=ctx["flow_name"],
+                    run_id=ctx["run_id"],
+                    step_name=step_name,
+                    user=user,
+                )
+                sys.stdout.write(
+                    f"[remote_step] job {result.job_id} on {result.queue}\n"
+                )
+                poll_wait(result.job_id, cfg, pending_timeout=pending_timeout)
+                outputs = read_manifest(
+                    cfg.payload_bucket,
+                    ctx["run_id"],
+                    ctx["task_id"],
+                    ctx["attempt"],
+                )
+                for name, ref in outputs.items():
+                    setattr(self_flow, name, ref)
+                sys.stdout.write(
+                    f"[remote_step] {step_name} finished, "
+                    f"{len(outputs)} artifact(s) linked\n"
+                )
+                # Replay the user step's self.next(...) so Metaflow's transition
+                # tracker sees the same shape it does when the step runs locally.
+                if out_funcs:
+                    next_refs = [
+                        getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)
+                    ]
+                    if next_refs:
+                        self_flow.next(*next_refs)
+            finally:
+                mflog_pusher.stop()
 
         driver.__name__ = step_name
         driver.__wrapped__ = step_func
@@ -560,7 +628,15 @@ def _collect_flow_attrs(flow) -> dict:
     out: dict[str, object] = {}
 
     def _try_add(name: str, val: object) -> None:
-        if callable(val) or not _pickleable(val):
+        # `callable(v)` is the usual filter for methods/functions that we
+        # never want to serialise into the spec. RemoteArtifact wraps its
+        # proxy dunders around a real object, so a wrapped ``list``/``dict``
+        # etc. never claims callability — but we still want to ship refs
+        # to callable Python objects untouched, so we let RemoteArtifact
+        # slip past the callable guard regardless.
+        if not isinstance(val, RemoteArtifact) and callable(val):
+            return
+        if not _pickleable(val):
             return
         try:
             pickle.dumps(val, protocol=5)

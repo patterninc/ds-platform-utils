@@ -156,8 +156,11 @@ class RemoteArtifact:
     def __bool__(self) -> bool:
         return bool(self._proxy_target())
 
-    def __call__(self, *args, **kwargs):
-        return self._proxy_target()(*args, **kwargs)
+    # No __call__ on purpose. Adding one makes `callable(remote_artifact)`
+    # return True, which trips heuristics elsewhere that skip callables
+    # when serialising (Metaflow's own artifact filters and our own
+    # driver-side attribute capture in `_collect_flow_attrs`). Users who
+    # need to call a wrapped callable can `ref.load()(...)` explicitly.
 
 
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
