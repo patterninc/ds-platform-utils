@@ -164,10 +164,17 @@ class RemoteArtifact:
         return obj
 
     def _fetch(self, bucket: str, key: str, s3_client, region: str | None) -> bytes:
-        """Do the actual S3 GetObject, with an AssumeRole fallback."""
+        """Do the actual S3 GetObject, with an AssumeRole fallback.
+
+        ``get_object().read()`` streams the whole body from a single
+        connection — fine for small refs but leaves multi-gigabyte
+        downloads badly under-utilised on a Fargate task. For blobs
+        above ``_S3_MULTIPART_THRESHOLD`` we ask ``download_fileobj`` to
+        use the size-tuned TransferManager (parallel ranged GETs).
+        """
         direct = s3_client or boto3.client("s3", region_name=region)
         try:
-            return direct.get_object(Bucket=bucket, Key=key)["Body"].read()
+            return _download(direct, bucket, key, self.size_bytes)
         except (ClientError, BotoCoreError) as direct_exc:
             if not self.read_role_arn:
                 raise ArtifactLoadError(
@@ -176,7 +183,7 @@ class RemoteArtifact:
                 ) from direct_exc
             try:
                 assumed = _assumed_s3_client(self.read_role_arn, region=region)
-                return assumed.get_object(Bucket=bucket, Key=key)["Body"].read()
+                return _download(assumed, bucket, key, self.size_bytes)
             except (ClientError, BotoCoreError) as assumed_exc:
                 raise ArtifactLoadError(
                     f"failed to fetch {self.s3_uri} even after assuming "
@@ -286,6 +293,28 @@ def _transfer_config_for(size: int) -> TransferConfig:
         max_concurrency=concurrency,
         use_threads=True,
     )
+
+
+def _download(s3_client, bucket: str, key: str, size_hint: int) -> bytes:
+    """Read s3://bucket/key into memory, parallelising above the multipart threshold.
+
+    ``size_hint`` comes from the RemoteArtifact ref (which was written
+    alongside the sha256), so the caller already knows the payload size
+    and doesn't need a HEAD round trip. Small blobs stay on the
+    single-connection ``get_object`` fast path; big ones use
+    ``download_fileobj`` + the size-aware TransferConfig so a 10 GB
+    pickle streams in with ~32 parallel ranged GETs.
+    """
+    if size_hint and size_hint > _S3_MULTIPART_THRESHOLD:
+        buf = io.BytesIO()
+        s3_client.download_fileobj(
+            Bucket=bucket,
+            Key=key,
+            Fileobj=buf,
+            Config=_transfer_config_for(size_hint),
+        )
+        return buf.getvalue()
+    return s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
 def write_artifact(

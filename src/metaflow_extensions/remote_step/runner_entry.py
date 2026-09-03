@@ -208,12 +208,37 @@ def main(spec_uri: str | None = None) -> int:
         return 3
     _stage("load_spec", t0=t0)
 
-    # 2. Hydrate inputs onto fake_self.
+    # 2. Hydrate inputs onto fake_self. Parallel across attrs so a step
+    # with a handful of multi-GB DataFrames doesn't serialise the
+    # downloads; each worker gets its own thread-local boto client for
+    # the same reason as the outputs loop.
     t0 = time.time()
     fake = _FakeSelf()
+    inputs_dict = spec.get("inputs", {}) or {}
+    _hydrate_local = threading.local()
+
+    def _hydrate_worker_s3():
+        client = getattr(_hydrate_local, "s3", None)
+        if client is None:
+            client = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
+            _hydrate_local.s3 = client
+        return client
+
+    def _hydrate_one(item: tuple[str, dict]) -> tuple[str, Any]:
+        name, ref = item
+        return name, _hydrate_input(name, ref, _hydrate_worker_s3())
+
     try:
-        for name, ref in spec.get("inputs", {}).items():
-            setattr(fake, name, _hydrate_input(name, ref, s3))
+        if inputs_dict:
+            workers = min(_OUTPUTS_PARALLELISM, len(inputs_dict))
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="remote-step-hydrate"
+            ) as pool:
+                for fut in concurrent.futures.as_completed(
+                    [pool.submit(_hydrate_one, item) for item in inputs_dict.items()]
+                ):
+                    name, val = fut.result()
+                    setattr(fake, name, val)
     except Exception as exc:  # noqa: BLE001
         sys.stdout.write(f"[remote_step] STAGE=hydrate_inputs ERR {exc}\n")
         traceback.print_exc()
