@@ -81,7 +81,7 @@ def build_spec(
     to the payload bucket and referenced as a `RemoteArtifact`, so the
     inline portion of the spec stays tiny even for huge upstream inputs.
     """
-    from remote_step.artifact import write_artifact
+    from remote_step.artifact import write_artifact_from_blob
     from remote_step.manifest import output_prefix
 
     prefix = output_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
@@ -101,12 +101,15 @@ def build_spec(
             continue
         blob = pickle.dumps(val, protocol=5)
         if len(blob) > INLINE_ATTR_LIMIT_BYTES:
-            # Big attr — upload as a RemoteArtifact and pass the ref.
+            # Big attr — reuse the pickle we already produced above
+            # instead of re-pickling inside write_artifact, so the
+            # driver pod's memory footprint stays flat.
             key = f"{inputs_prefix}/{name}.pkl"
-            ref = write_artifact(
-                val,
-                output_bucket,
-                key,
+            ref = write_artifact_from_blob(
+                obj_kind=type(val).__module__ + "." + type(val).__qualname__,
+                blob=blob,
+                bucket=output_bucket,
+                key=key,
                 s3_client=s3_client,
                 pickle_protocol=5,
                 read_role_arn=ctx.artifact_read_role_arn,

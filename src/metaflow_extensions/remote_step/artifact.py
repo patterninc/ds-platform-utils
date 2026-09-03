@@ -317,6 +317,15 @@ def _download(s3_client, bucket: str, key: str, size_hint: int) -> bytes:
     return s3_client.get_object(Bucket=bucket, Key=key)["Body"].read()
 
 
+def _upload_blob(s3, bucket: str, key: str, blob: bytes) -> None:
+    """Send a pre-pickled blob to S3, choosing single-part or multipart."""
+    if len(blob) <= _S3_MULTIPART_THRESHOLD:
+        s3.put_object(Bucket=bucket, Key=key, Body=blob)
+    else:
+        cfg = _transfer_config_for(len(blob))
+        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
+
+
 def write_artifact(
     obj: Any,
     bucket: str,
@@ -325,30 +334,44 @@ def write_artifact(
     pickle_protocol: int = 5,
     read_role_arn: str = "",
 ) -> RemoteArtifact:
-    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact.
-
-    Anything larger than ``_S3_MULTIPART_THRESHOLD`` is uploaded via
-    ``upload_fileobj`` (boto3 TransferManager, transparent multipart)
-    since S3's ``PutObject`` caps at 5 GB per request. Concurrency is
-    scaled by payload size so a single multi-GB input can push through
-    the pipe as fast as the network allows.
-    """
+    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact."""
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=pickle_protocol)
     blob = buf.getvalue()
+    return write_artifact_from_blob(
+        obj_kind=type(obj).__module__ + "." + type(obj).__qualname__,
+        blob=blob,
+        bucket=bucket,
+        key=key,
+        s3_client=s3_client,
+        pickle_protocol=pickle_protocol,
+        read_role_arn=read_role_arn,
+    )
+
+
+def write_artifact_from_blob(
+    obj_kind: str,
+    blob: bytes,
+    bucket: str,
+    key: str,
+    s3_client=None,
+    pickle_protocol: int = 5,
+    read_role_arn: str = "",
+) -> RemoteArtifact:
+    """Upload an already-pickled blob and return a RemoteArtifact.
+
+    Lets callers that need to compute the pickle size *before* deciding
+    inline-vs-remote (see ``payload.build_spec``) skip the second pickle
+    pass. Halves driver-side pickle CPU + RAM for big inputs.
+    """
     size = len(blob)
     sha = hashlib.sha256(blob).hexdigest()
     s3 = s3_client or boto3.client("s3")
-    if size <= _S3_MULTIPART_THRESHOLD:
-        s3.put_object(Bucket=bucket, Key=key, Body=blob)
-    else:
-        cfg = _transfer_config_for(size)
-        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
-    kind = type(obj).__module__ + "." + type(obj).__qualname__
+    _upload_blob(s3, bucket, key, blob)
     return RemoteArtifact(
         s3_uri=f"s3://{bucket}/{key}",
         size_bytes=size,
-        kind=kind,
+        kind=obj_kind,
         sha256=sha,
         pickle_protocol=pickle_protocol,
         read_role_arn=read_role_arn,
