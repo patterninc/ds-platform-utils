@@ -30,6 +30,7 @@ import time
 from typing import Any
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
 from remote_step.errors import ArtifactLoadError
@@ -260,7 +261,31 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-_S3_SINGLEPART_LIMIT = 100 * 1024 * 1024  # 100 MB: switch to multipart above this
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024        # 100 MB
+_S3_MULTIPART_CHUNK_SIZE = 32 * 1024 * 1024        # 32 MB
+_S3_LARGE_BLOB_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GB
+_S3_MAX_CONCURRENCY_SMALL = 10
+_S3_MAX_CONCURRENCY_BIG = 32
+
+
+def _transfer_config_for(size: int) -> TransferConfig:
+    """TransferManager config tuned to the payload size.
+
+    Small blobs use the boto default 10-thread concurrency; anything at
+    or above 2 GB gets 32 threads so a single huge input saturates the
+    Fargate task's egress bandwidth on the driver side too.
+    """
+    concurrency = (
+        _S3_MAX_CONCURRENCY_BIG
+        if size >= _S3_LARGE_BLOB_THRESHOLD
+        else _S3_MAX_CONCURRENCY_SMALL
+    )
+    return TransferConfig(
+        multipart_threshold=_S3_MULTIPART_THRESHOLD,
+        multipart_chunksize=_S3_MULTIPART_CHUNK_SIZE,
+        max_concurrency=concurrency,
+        use_threads=True,
+    )
 
 
 def write_artifact(
@@ -273,10 +298,11 @@ def write_artifact(
 ) -> RemoteArtifact:
     """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact.
 
-    Anything larger than ``_S3_SINGLEPART_LIMIT`` is uploaded via
+    Anything larger than ``_S3_MULTIPART_THRESHOLD`` is uploaded via
     ``upload_fileobj`` (boto3 TransferManager, transparent multipart)
-    since S3's ``PutObject`` caps at 5 GB per request. Below that, the
-    single-part path stays hot for the common case.
+    since S3's ``PutObject`` caps at 5 GB per request. Concurrency is
+    scaled by payload size so a single multi-GB input can push through
+    the pipe as fast as the network allows.
     """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=pickle_protocol)
@@ -284,10 +310,11 @@ def write_artifact(
     size = len(blob)
     sha = hashlib.sha256(blob).hexdigest()
     s3 = s3_client or boto3.client("s3")
-    if size <= _S3_SINGLEPART_LIMIT:
+    if size <= _S3_MULTIPART_THRESHOLD:
         s3.put_object(Bucket=bucket, Key=key, Body=blob)
     else:
-        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key)
+        cfg = _transfer_config_for(size)
+        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
     kind = type(obj).__module__ + "." + type(obj).__qualname__
     return RemoteArtifact(
         s3_uri=f"s3://{bucket}/{key}",

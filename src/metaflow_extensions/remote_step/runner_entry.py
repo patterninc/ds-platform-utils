@@ -25,6 +25,7 @@ from __future__ import annotations
 from __future__ import annotations
 
 import base64
+import concurrent.futures
 import hashlib
 import importlib
 import io
@@ -32,14 +33,53 @@ import json
 import os
 import pickle
 import sys
+import threading
 import time
 import traceback
 from typing import Any
 from urllib.parse import urlparse
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 
 from remote_step.artifact import RemoteArtifact
+
+
+# Multipart upload thresholds (bytes) for the runner's output persistence.
+# - _S3_MULTIPART_THRESHOLD: switch from put_object to upload_fileobj here.
+# - _S3_MULTIPART_CHUNK_SIZE: part size handed to the TransferManager. Larger
+#   parts mean fewer round trips at the cost of more RAM per concurrent
+#   upload. 32 MB is a good balance for 10-100 GB outputs.
+# - _S3_LARGE_BLOB_THRESHOLD: above this we bump per-upload concurrency
+#   from the boto default (10 threads) so a single huge pickle saturates
+#   the Fargate task's egress bandwidth.
+# - _S3_MAX_CONCURRENCY_BIG / _S3_MAX_CONCURRENCY_SMALL: worker counts
+#   inside boto3.s3.transfer.TransferManager per upload.
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024        # 100 MB
+_S3_MULTIPART_CHUNK_SIZE = 32 * 1024 * 1024        # 32 MB
+_S3_LARGE_BLOB_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GB
+_S3_MAX_CONCURRENCY_SMALL = 10
+_S3_MAX_CONCURRENCY_BIG = 32
+
+# Number of output attrs we upload in parallel across the outputs loop.
+# Each worker gets its own dedicated boto S3 client (boto clients are not
+# thread-safe for concurrent multipart uploads on the same instance).
+_OUTPUTS_PARALLELISM = 4
+
+
+def _transfer_config_for(size: int) -> TransferConfig:
+    """Return a TransferConfig tuned to the payload's size."""
+    concurrency = (
+        _S3_MAX_CONCURRENCY_BIG
+        if size >= _S3_LARGE_BLOB_THRESHOLD
+        else _S3_MAX_CONCURRENCY_SMALL
+    )
+    return TransferConfig(
+        multipart_threshold=_S3_MULTIPART_THRESHOLD,
+        multipart_chunksize=_S3_MULTIPART_CHUNK_SIZE,
+        max_concurrency=concurrency,
+        use_threads=True,
+    )
 
 
 def _stage(name: str, ok: bool = True, t0: float | None = None) -> None:
@@ -123,20 +163,23 @@ class _FakeSelf:
 def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
     """Pickle obj, upload to S3, return (size_bytes, sha256_hex).
 
-    S3's ``PutObject`` caps at 5 GB per request, so anything above 100 MB
-    goes through ``upload_fileobj`` — boto3's TransferManager, which
-    transparently splits the payload into multipart chunks (default
-    8 MB) and parallelises the upload.
+    S3's ``PutObject`` caps at 5 GB per request, so anything above
+    ``_S3_MULTIPART_THRESHOLD`` goes through ``upload_fileobj`` — boto3's
+    TransferManager, which transparently splits into multipart chunks and
+    parallelises the upload with a per-blob concurrency tuned to size
+    (small: 10 workers, ≥2 GB: 32 workers) to saturate the Fargate
+    task's egress bandwidth.
     """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=5)
     blob = buf.getvalue()
     size = len(blob)
     sha = hashlib.sha256(blob).hexdigest()
-    if size <= 100 * 1024 * 1024:
+    if size <= _S3_MULTIPART_THRESHOLD:
         s3_client.put_object(Bucket=bucket, Key=key, Body=blob)
     else:
-        s3_client.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key)
+        cfg = _transfer_config_for(size)
+        s3_client.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key, Config=cfg)
     return size, sha
 
 
@@ -249,7 +292,12 @@ def main(spec_uri: str | None = None) -> int:
         if k not in input_ids or id(v) != input_ids[k]
     }
 
-    # 6. Persist outputs.
+    # 6. Persist outputs. Parallelise across attrs so a step with many
+    # multi-GB DataFrames doesn't pay the per-upload wall-clock N times
+    # over. Each worker gets its own boto3 S3 client — the botocore
+    # client's connection pool is thread-safe for calls, but sharing one
+    # client across concurrent multipart uploads has been flaky in
+    # practice, so we spend the ~200 KB per extra client to be safe.
     t0 = time.time()
     bucket = spec["output_bucket"]
     prefix = spec["output_prefix"]
@@ -259,18 +307,42 @@ def main(spec_uri: str | None = None) -> int:
     # account directly.
     read_role_arn = spec.get("artifact_read_role_arn", "") or ""
     manifest_outputs: dict[str, RemoteArtifact] = {}
+    manifest_lock = threading.Lock()
+    _local = threading.local()
+
+    def _worker_s3():
+        client = getattr(_local, "s3", None)
+        if client is None:
+            client = boto3.client("s3", region_name=os.environ.get("AWS_REGION"))
+            _local.s3 = client
+        return client
+
+    def _upload_one(item: tuple[str, Any]) -> None:
+        name, val = item
+        key = f"{prefix}/{name}.pkl"
+        size, sha = _put_pickle(val, bucket, key, _worker_s3())
+        ref = RemoteArtifact(
+            s3_uri=f"s3://{bucket}/{key}",
+            size_bytes=size,
+            kind=type(val).__module__ + "." + type(val).__qualname__,
+            sha256=sha,
+            pickle_protocol=5,
+            read_role_arn=read_role_arn,
+        )
+        with manifest_lock:
+            manifest_outputs[name] = ref
+
+    workers = min(_OUTPUTS_PARALLELISM, max(1, len(outputs)))
     try:
-        for name, val in outputs.items():
-            key = f"{prefix}/{name}.pkl"
-            size, sha = _put_pickle(val, bucket, key, s3)
-            manifest_outputs[name] = RemoteArtifact(
-                s3_uri=f"s3://{bucket}/{key}",
-                size_bytes=size,
-                kind=type(val).__module__ + "." + type(val).__qualname__,
-                sha256=sha,
-                pickle_protocol=5,
-                read_role_arn=read_role_arn,
-            )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="remote-step-upload"
+        ) as pool:
+            for fut in concurrent.futures.as_completed(
+                [pool.submit(_upload_one, item) for item in outputs.items()]
+            ):
+                # Re-raise the first worker exception; the executor will
+                # cancel remaining futures on ThreadPoolExecutor exit.
+                fut.result()
     except Exception as exc:  # noqa: BLE001
         sys.stdout.write(f"[remote_step] STAGE=persist_outputs ERR {exc}\n")
         traceback.print_exc()
