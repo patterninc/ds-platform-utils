@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -27,7 +27,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 # build time) so `remote_step.*` and `metaflow_extensions.remote_step.*`
 # are importable for parsing spec.json, downloading the payload, and
 # building the per-job venv.
-RUN /root/.local/bin/uv venv /venv-runner --python 3.10
+RUN /root/.local/bin/uv venv /venv-runner --python 3.12
 COPY pyproject.toml /ds-platform-utils/pyproject.toml
 COPY README.md /ds-platform-utils/README.md
 COPY src /ds-platform-utils/src

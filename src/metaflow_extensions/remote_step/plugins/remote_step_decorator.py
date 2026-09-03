@@ -238,7 +238,7 @@ def _find_pypi_env(flow, decorators) -> dict:
     Metaflow stores flow-level decorators in `_flow_decorators` — the shape
     varies across versions (list vs dict). We probe defensively.
     """
-    base_python = "3.10"
+    base_python = "3.12"
     base_packages: dict[str, str] = {}
 
     def iter_flow_decos(f):
