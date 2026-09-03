@@ -1,7 +1,8 @@
 """Block-and-poll loop for AWS Batch jobs.
 
-Called by the driver body after SubmitJob. Polls DescribeJobs every ~15 s,
-tails CloudWatch once the container starts, exits on a terminal state.
+Called by the driver body after SubmitJob. Polls DescribeJobs every ~15 s
+for state, streams CloudWatch logs via `start_live_tail` (sub-second
+latency once CW has ingested the event), and exits on a terminal state.
 Network flakes are absorbed indefinitely.
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import sys
+import threading
 import time
 from typing import IO
 
@@ -47,33 +49,137 @@ def _describe(batch, job_id: str) -> dict | None:
     return jobs[0] if jobs else None
 
 
-def _stream_logs(logs_client, log_group: str, stream_name: str, out: IO, cursor: str | None):
-    """Drain new log events since cursor, print to out, return new cursor.
+def _log_group_arn(region: str, account_id: str, log_group: str) -> str:
+    """Build the ARN required by StartLiveTail's logGroupIdentifiers."""
+    return f"arn:aws:logs:{region}:{account_id}:log-group:{log_group}"
 
-    CloudWatch's get_log_events returns at most 1 MB or 10k events per call
-    and always echoes a nextForwardToken — even when empty. To keep the
-    driver's stdout close to realtime, we loop until the token stops
-    advancing (i.e. no new events on the server yet).
+
+class _LiveTail:
+    """Streams CloudWatch log events to ``out`` in near-realtime.
+
+    Runs `start_live_tail` in a background thread. CloudWatch pushes each
+    ingested event as a `sessionUpdate` (sub-second delivery once CW has
+    the event), so the only remaining lag is upstream: Fargate's awslogs
+    driver batches ~5 s before flushing to CloudWatch — that's a floor
+    we can't beat without swapping log drivers.
+
+    The live-tail session is capped at 3 h by AWS; on expiry or transient
+    error the loop reconnects. `.stop()` sets an event both the outer
+    loop and the boto EventStream iterator check.
     """
+
+    RECONNECT_BACKOFF_SEC = 2.0
+
+    def __init__(
+        self,
+        logs_client,
+        log_group_arn: str,
+        stream_name: str,
+        out: IO,
+    ) -> None:
+        self._logs = logs_client
+        self._log_group_arn = log_group_arn
+        self._stream_name = stream_name
+        self._out = out
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_ts: int = 0  # ms — for the final get_log_events drain
+        self._event_stream = None  # holds the in-flight EventStream so stop() can close it
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._run, name="remote-step-live-tail", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        stream = self._event_stream
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+
+    @property
+    def last_event_ms(self) -> int:
+        return self._last_ts
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                resp = self._logs.start_live_tail(
+                    logGroupIdentifiers=[self._log_group_arn],
+                    logStreamNames=[self._stream_name],
+                )
+            except (ClientError, BotoCoreError):
+                # Stream may not exist yet — retry.
+                if self._stop.wait(self.RECONNECT_BACKOFF_SEC):
+                    return
+                continue
+            self._event_stream = resp["responseStream"]
+            try:
+                for event in self._event_stream:
+                    if self._stop.is_set():
+                        break
+                    update = event.get("sessionUpdate")
+                    if not update:
+                        continue
+                    for record in update.get("sessionResults", []) or []:
+                        msg = record.get("message", "")
+                        ts = record.get("timestamp", 0)
+                        if ts:
+                            self._last_ts = max(self._last_ts, ts)
+                        self._out.write(msg + "\n")
+                    self._out.flush()
+            except (ClientError, BotoCoreError, Exception):  # noqa: BLE001
+                # Session ended / expired / network glitch — reconnect.
+                if self._stop.wait(self.RECONNECT_BACKOFF_SEC):
+                    return
+                continue
+            finally:
+                self._event_stream = None
+
+
+def _drain_after(
+    logs_client,
+    log_group: str,
+    stream_name: str,
+    out: IO,
+    start_time_ms: int,
+) -> None:
+    """Final get_log_events sweep to catch anything the live-tail dropped.
+
+    Live-tail sessions can end abruptly (session cap, transient errors);
+    on terminal state we do one paginated sweep from ``start_time_ms``
+    forward to make sure nothing is missing before we return.
+    """
+    kwargs = {
+        "logGroupName": log_group,
+        "logStreamName": stream_name,
+        "startFromHead": True,
+    }
+    if start_time_ms:
+        kwargs["startTime"] = start_time_ms + 1
+    cursor: str | None = None
     while True:
-        kwargs = {
-            "logGroupName": log_group,
-            "logStreamName": stream_name,
-            "startFromHead": True,
-        }
         if cursor:
             kwargs["nextToken"] = cursor
         try:
             resp = logs_client.get_log_events(**kwargs)
         except (ClientError, BotoCoreError):
-            return cursor
+            return
         events = resp.get("events", [])
         for event in events:
             out.write(event["message"] + "\n")
         out.flush()
         next_cursor = resp.get("nextForwardToken")
         if not events or next_cursor == cursor:
-            return next_cursor or cursor
+            return
         cursor = next_cursor
 
 
@@ -83,10 +189,10 @@ def wait(
     *,
     out: IO = sys.stdout,
     poll_interval: float = 15.0,
-    log_poll_interval: float = 2.0,
     pending_timeout: float = 60 * 60,
     batch_client=None,
     logs_client=None,
+    sts_client=None,
 ) -> JobResult:
     """Block until the Batch job reaches a terminal state.
 
@@ -97,64 +203,92 @@ def wait(
     batch = batch_client or boto3.client("batch", region_name=cfg.region)
     logs = logs_client or boto3.client("logs", region_name=cfg.region)
 
-    cursor: str | None = None
     pending_since: float | None = time.time()
     log_stream: str | None = None
-    status: str = "SUBMITTED"
+    live_tail: _LiveTail | None = None
     job: dict | None = None
-    last_describe = 0.0
+    account_id: str | None = None
     try:
         while True:
-            now = time.time()
-            if now - last_describe >= poll_interval or job is None:
-                try:
-                    job = _describe(batch, job_id)
-                except (ClientError, BotoCoreError) as exc:
-                    out.write(f"[remote_step] poll error, retrying: {exc}\n")
-                    out.flush()
-                    time.sleep(log_poll_interval)
-                    continue
-                last_describe = now
-                if not job:
-                    out.write(f"[remote_step] job {job_id} not found, retrying\n")
-                    out.flush()
-                    time.sleep(log_poll_interval)
-                    continue
+            try:
+                job = _describe(batch, job_id)
+            except (ClientError, BotoCoreError) as exc:
+                out.write(f"[remote_step] poll error, retrying: {exc}\n")
+                out.flush()
+                time.sleep(poll_interval)
+                continue
+            if not job:
+                out.write(f"[remote_step] job {job_id} not found, retrying\n")
+                out.flush()
+                time.sleep(poll_interval)
+                continue
 
-                status = job["status"]
-                container = job.get("container", {})
-                log_stream = container.get("logStreamName") or log_stream
+            status = job["status"]
+            container = job.get("container", {})
+            new_stream = container.get("logStreamName") or log_stream
 
-                if status in PENDING_STATES:
-                    if pending_since is None:
-                        pending_since = time.time()
-                    if time.time() - pending_since > pending_timeout:
-                        _terminate(batch, job_id, "remote-step: pending timeout")
-                        raise PendingTimeoutError(
-                            f"job {job_id} stuck in {status} > {pending_timeout / 60:.0f} min. "
-                            f"Batch has no capacity for the requested resources. "
-                            f"Check compute environment or reduce @resources.",
-                            job_id=job_id,
-                            status=status,
-                        )
-                else:
-                    pending_since = None
+            if new_stream and new_stream != log_stream:
+                log_stream = new_stream
+                if account_id is None:
+                    account_id = _account_id_from_job(job) or _sts_account(
+                        sts_client, cfg.region
+                    )
+                if account_id and live_tail is None:
+                    live_tail = _LiveTail(
+                        logs,
+                        _log_group_arn(cfg.region, account_id, cfg.log_group),
+                        log_stream,
+                        out,
+                    )
+                    live_tail.start()
 
-            if log_stream and status not in PENDING_STATES:
-                cursor = _stream_logs(logs, cfg.log_group, log_stream, out, cursor)
+            if status in PENDING_STATES:
+                if pending_since is None:
+                    pending_since = time.time()
+                if time.time() - pending_since > pending_timeout:
+                    _terminate(batch, job_id, "remote-step: pending timeout")
+                    raise PendingTimeoutError(
+                        f"job {job_id} stuck in {status} > {pending_timeout / 60:.0f} min. "
+                        f"Batch has no capacity for the requested resources. "
+                        f"Check compute environment or reduce @resources.",
+                        job_id=job_id,
+                        status=status,
+                    )
+            else:
+                pending_since = None
 
             if status in TERMINAL_STATES:
+                last_ts = live_tail.last_event_ms if live_tail else 0
+                if live_tail is not None:
+                    live_tail.stop()
                 if log_stream:
-                    cursor = _stream_logs(logs, cfg.log_group, log_stream, out, cursor)
+                    _drain_after(logs, cfg.log_group, log_stream, out, last_ts)
                 return _to_result(job, log_stream or "")
 
-            time.sleep(log_poll_interval)
+            time.sleep(poll_interval)
 
     except KeyboardInterrupt as exc:
+        if live_tail is not None:
+            live_tail.stop()
         out.write("\n[remote_step] Ctrl-C detected, terminating Batch job...\n")
         out.flush()
         _terminate(batch, job_id, "remote-step: user Ctrl-C")
         raise KilledByUser(f"job {job_id} terminated by user", job_id=job_id) from exc
+
+
+def _account_id_from_job(job: dict) -> str | None:
+    """Pull the account id from the job ARN (arn:aws:batch:region:acct:...)."""
+    arn = job.get("jobArn", "")
+    parts = arn.split(":")
+    return parts[4] if len(parts) > 4 else None
+
+
+def _sts_account(sts_client, region: str) -> str | None:
+    try:
+        sts = sts_client or boto3.client("sts", region_name=region)
+        return sts.get_caller_identity().get("Account")
+    except (ClientError, BotoCoreError):
+        return None
 
 
 def _terminate(batch, job_id: str, reason: str) -> None:
