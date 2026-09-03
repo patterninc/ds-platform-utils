@@ -243,6 +243,11 @@ def main(spec_uri: str | None = None) -> int:
     t0 = time.time()
     bucket = spec["output_bucket"]
     prefix = spec["output_prefix"]
+    # Every ref we write out inherits the cross-account read role from the
+    # spec so downstream non-@remote_step consumers on the Outerbounds pod
+    # can lazy-load without our bucket having to be readable from OB's
+    # account directly.
+    read_role_arn = spec.get("artifact_read_role_arn", "") or ""
     manifest_outputs: dict[str, RemoteArtifact] = {}
     try:
         for name, val in outputs.items():
@@ -254,6 +259,7 @@ def main(spec_uri: str | None = None) -> int:
                 kind=type(val).__module__ + "." + type(val).__qualname__,
                 sha256=sha,
                 pickle_protocol=5,
+                read_role_arn=read_role_arn,
             )
     except Exception as exc:  # noqa: BLE001
         sys.stdout.write(f"[remote_step] STAGE=persist_outputs ERR {exc}\n")

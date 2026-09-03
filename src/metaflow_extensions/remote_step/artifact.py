@@ -2,10 +2,21 @@
 
 The driver task stores these on `self.<attr>` instead of the raw object,
 keeping the Metaflow driver's memory footprint constant regardless of the
-step's output size. Consumers call `.load()` to materialise the object.
+step's output size. Consumers call `.load()` (or reach through the
+proxy dunders) to materialise the object.
+
+Cross-account read (Outerbounds pod → our payload bucket) happens via
+`read_role_arn`: when set, `.load()` calls `sts:AssumeRole` on that ARN
+and uses the returned temp credentials to fetch the blob. The role is
+created by our terraform (`ob_artifact_reader`) with a trust policy that
+allows Outerbounds' pod task role to assume it — so downstream non-
+@remote_step pods can lazy-load refs without our bucket having to be
+readable from Outerbounds' account directly.
 
 Instances are pickle-clean so Metaflow's own artifact persistence works
-without special handling.
+without special handling; `read_role_arn` is preserved across the pickle
+roundtrip so the downstream pod that pulls the ref out of the Metaflow
+datastore can still hop into our account to fetch the payload.
 """
 
 from __future__ import annotations
@@ -13,12 +24,55 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import io
+import os
 import pickle
+import time
 from typing import Any
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 from remote_step.errors import ArtifactLoadError
+
+
+# Cache assumed-role sessions across many RemoteArtifact.load() calls so a
+# non-@remote_step step that reaches through several refs pays for one
+# AssumeRole per role ARN (not one per artifact). Keyed by role ARN.
+# Value: (client, expiry_epoch_seconds).
+_ASSUMED_S3_CLIENTS: dict[str, tuple[Any, float]] = {}
+_ASSUME_ROLE_TTL_SEC = 45 * 60  # AssumeRole hands out 1 h creds; refresh at 45 min.
+
+
+def _assumed_s3_client(role_arn: str, region: str | None = None) -> Any:
+    """Return a boto3 S3 client whose creds come from sts:AssumeRole.
+
+    Cached per role ARN; refreshed a few minutes before the STS creds
+    expire. Falls back to the caller-provided s3 client if AssumeRole
+    itself fails — the caller then sees the underlying S3 error, which
+    is more actionable than an opaque "assume role failed".
+    """
+    now = time.time()
+    cached = _ASSUMED_S3_CLIENTS.get(role_arn)
+    if cached and cached[1] > now + 60:
+        return cached[0]
+    sts = boto3.client("sts", region_name=region)
+    resp = sts.assume_role(
+        RoleArn=role_arn,
+        RoleSessionName="remote-step-artifact-read",
+    )
+    creds = resp["Credentials"]
+    client = boto3.client(
+        "s3",
+        region_name=region,
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+    )
+    _ASSUMED_S3_CLIENTS[role_arn] = (
+        client,
+        now + _ASSUME_ROLE_TTL_SEC,
+    )
+    return client
 
 
 @dataclass
@@ -31,6 +85,8 @@ class RemoteArtifact:
         kind: 'module.QualName' of the pickled object's type.
         sha256: Hex digest of the blob, verified on load.
         pickle_protocol: Protocol used when writing (5 by default).
+        read_role_arn: Optional IAM role ARN to assume before fetching
+            the blob. Empty string means "use ambient credentials".
     """
 
     s3_uri: str
@@ -38,6 +94,7 @@ class RemoteArtifact:
     kind: str
     sha256: str
     pickle_protocol: int = 5
+    read_role_arn: str = ""
 
     _cached: Any = field(default=None, repr=False, compare=False)
     _loaded: bool = field(default=False, repr=False, compare=False)
@@ -58,27 +115,33 @@ class RemoteArtifact:
             "kind": self.kind,
             "sha256": self.sha256,
             "pickle_protocol": self.pickle_protocol,
+            "read_role_arn": self.read_role_arn,
         }
 
     def __setstate__(self, state: dict) -> None:
+        # Backfill missing keys so old pickled refs still deserialise.
+        state.setdefault("read_role_arn", "")
         self.__dict__.update(state)
         self._cached = None
         self._loaded = False
 
     def load(self, s3_client=None) -> Any:
-        """Download the blob, verify sha256, unpickle, cache in-instance."""
+        """Download the blob, verify sha256, unpickle, cache in-instance.
+
+        If ``read_role_arn`` is set, first tries a direct fetch with the
+        caller-provided client (or the ambient boto3 default) — this is
+        the fast path for pods that already have direct S3 access, e.g.
+        the Batch runner or the driver on the Outerbounds pod when its
+        @secrets creds allow it. Falls back to assuming ``read_role_arn``
+        and retrying with the returned temporary credentials. That
+        fallback is what makes non-@remote_step consumers work across
+        the Outerbounds → our-account boundary.
+        """
         if self._loaded:
             return self._cached
-        s3 = s3_client or boto3.client("s3")
         bucket, key = _parse_s3_uri(self.s3_uri)
-        try:
-            resp = s3.get_object(Bucket=bucket, Key=key)
-            blob = resp["Body"].read()
-        except Exception as exc:  # noqa: BLE001
-            raise ArtifactLoadError(
-                f"failed to fetch {self.s3_uri}: {exc}",
-                s3_uri=self.s3_uri,
-            ) from exc
+        region = os.environ.get("AWS_REGION") or None
+        blob = self._fetch(bucket, key, s3_client, region)
         got = hashlib.sha256(blob).hexdigest()
         if got != self.sha256:
             raise ArtifactLoadError(
@@ -98,6 +161,28 @@ class RemoteArtifact:
         self._cached = obj
         self._loaded = True
         return obj
+
+    def _fetch(self, bucket: str, key: str, s3_client, region: str | None) -> bytes:
+        """Do the actual S3 GetObject, with an AssumeRole fallback."""
+        direct = s3_client or boto3.client("s3", region_name=region)
+        try:
+            return direct.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except (ClientError, BotoCoreError) as direct_exc:
+            if not self.read_role_arn:
+                raise ArtifactLoadError(
+                    f"failed to fetch {self.s3_uri}: {direct_exc}",
+                    s3_uri=self.s3_uri,
+                ) from direct_exc
+            try:
+                assumed = _assumed_s3_client(self.read_role_arn, region=region)
+                return assumed.get_object(Bucket=bucket, Key=key)["Body"].read()
+            except (ClientError, BotoCoreError) as assumed_exc:
+                raise ArtifactLoadError(
+                    f"failed to fetch {self.s3_uri} even after assuming "
+                    f"{self.read_role_arn}: {assumed_exc} "
+                    f"(direct attempt: {direct_exc})",
+                    s3_uri=self.s3_uri,
+                ) from assumed_exc
 
     # ------------------------------------------------------------------
     # Transparent-proxy dunders.
@@ -121,6 +206,7 @@ class RemoteArtifact:
             "kind",
             "sha256",
             "pickle_protocol",
+            "read_role_arn",
             "_cached",
             "_loaded",
             "load",
@@ -180,6 +266,7 @@ def write_artifact(
     key: str,
     s3_client=None,
     pickle_protocol: int = 5,
+    read_role_arn: str = "",
 ) -> RemoteArtifact:
     """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact."""
     buf = io.BytesIO()
@@ -195,4 +282,5 @@ def write_artifact(
         kind=kind,
         sha256=sha,
         pickle_protocol=pickle_protocol,
+        read_role_arn=read_role_arn,
     )

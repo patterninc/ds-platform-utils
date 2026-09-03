@@ -64,6 +64,7 @@ class DriverContext:
     datastore_root: str
     mfconfig: dict[str, str]
     tags: list[str] = None  # type: ignore[assignment]
+    artifact_read_role_arn: str = ""
 
 
 def build_spec(
@@ -103,7 +104,12 @@ def build_spec(
             # Big attr — upload as a RemoteArtifact and pass the ref.
             key = f"{inputs_prefix}/{name}.pkl"
             ref = write_artifact(
-                val, output_bucket, key, s3_client=s3_client, pickle_protocol=5
+                val,
+                output_bucket,
+                key,
+                s3_client=s3_client,
+                pickle_protocol=5,
+                read_role_arn=ctx.artifact_read_role_arn,
             )
             serialised[name] = {
                 "kind": "RemoteArtifact",
@@ -146,6 +152,7 @@ def build_spec(
         "output_prefix": prefix,
         "mfconfig": ctx.mfconfig,
         "tags": list(ctx.tags or []),
+        "artifact_read_role_arn": ctx.artifact_read_role_arn,
     }
 
 

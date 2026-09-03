@@ -52,6 +52,7 @@ def write(
                 "kind": ref.kind,
                 "sha256": ref.sha256,
                 "pickle_protocol": ref.pickle_protocol,
+                "read_role_arn": ref.read_role_arn,
             }
             for name, ref in outputs.items()
         },
@@ -105,6 +106,7 @@ def read(
             kind=ref["kind"],
             sha256=ref["sha256"],
             pickle_protocol=ref.get("pickle_protocol", 5),
+            read_role_arn=ref.get("read_role_arn", ""),
         )
     return outputs
 

@@ -42,6 +42,11 @@ class RemoteStepConfig:
     job_execution_role_arn: str
     runner_image: str
     log_group: str
+    # ARN of the IAM role in our account that Outerbounds' pod task role can
+    # sts:AssumeRole into, so non-@remote_step pods (which live in the
+    # Outerbounds AWS account and can't read our bucket directly) can lazy-
+    # load RemoteArtifact refs via a role hop. Empty string when absent.
+    artifact_read_role_arn: str = ""
 
 
 def _config_dir() -> Path:
@@ -108,6 +113,7 @@ def load(env_name: str | None = None) -> RemoteStepConfig:
         job_execution_role_arn=body["job_execution_role_arn"],
         runner_image=body["runner_image"],
         log_group=body["log_group"],
+        artifact_read_role_arn=body.get("artifact_read_role_arn", ""),
     )
 
 
