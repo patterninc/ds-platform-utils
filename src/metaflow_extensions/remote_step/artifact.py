@@ -99,6 +99,66 @@ class RemoteArtifact:
         self._loaded = True
         return obj
 
+    # ------------------------------------------------------------------
+    # Transparent-proxy dunders.
+    #
+    # A `@remote_step` writes its outputs as RemoteArtifact refs so the
+    # driver's memory footprint stays flat. Downstream *non-remote* steps
+    # still expect to interact with the underlying object (`df[col]`,
+    # `df.merge(...)`, `list(items)`), so we lazy-load the blob the first
+    # time the user reaches through the ref and delegate every proxy-y
+    # operation to the materialised object.
+    #
+    # `@remote_step` downstream consumers keep zero-copy semantics —
+    # `payload.build_spec` re-uses the same S3 ref without touching this
+    # code path.
+    # ------------------------------------------------------------------
+
+    _PROXY_SKIP = frozenset(
+        {
+            "s3_uri",
+            "size_bytes",
+            "kind",
+            "sha256",
+            "pickle_protocol",
+            "_cached",
+            "_loaded",
+            "load",
+        }
+    )
+
+    def _proxy_target(self) -> Any:
+        return self.load()
+
+    def __getattr__(self, name: str) -> Any:
+        # __getattr__ only fires when normal lookup fails, so our own
+        # fields never route here. Guard against dunders / private names
+        # so pickle/copy/introspection don't accidentally materialise us.
+        if name.startswith("_") or name in RemoteArtifact._PROXY_SKIP:
+            raise AttributeError(name)
+        return getattr(self._proxy_target(), name)
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._proxy_target()[key]
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._proxy_target()[key] = value
+
+    def __contains__(self, item: Any) -> bool:
+        return item in self._proxy_target()
+
+    def __iter__(self):
+        return iter(self._proxy_target())
+
+    def __len__(self) -> int:
+        return len(self._proxy_target())
+
+    def __bool__(self) -> bool:
+        return bool(self._proxy_target())
+
+    def __call__(self, *args, **kwargs):
+        return self._proxy_target()(*args, **kwargs)
+
 
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
     """Split 's3://bucket/key/parts' into ('bucket', 'key/parts')."""
