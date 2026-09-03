@@ -26,7 +26,15 @@ REPO_URI="${IMAGE_URI%:*}"
 REGISTRY="${REPO_URI%%/*}"
 TAG="$(date -u +%Y%m%d-%H%M%S)"
 
-echo "building multi-arch (linux/amd64 + linux/arm64) $REPO_URI:$TAG (also tagging :latest)"
+# PLATFORMS controls which architectures we build for. Default is
+# x86_64 only. `uv`'s Rust binary crashes under QEMU cross-emulation
+# on non-Apple-Silicon Docker hosts, so building linux/arm64 requires
+# a native ARM builder — CodeBuild, GitHub Actions arm runner, or an
+# Apple Silicon Mac. Set PLATFORMS=linux/amd64,linux/arm64 when on
+# such a host to produce a multi-arch manifest list.
+PLATFORMS="${PLATFORMS:-linux/amd64}"
+
+echo "building $PLATFORMS  $REPO_URI:$TAG (also tagging :latest)"
 aws ecr get-login-password --region "$REGION" \
     | docker login --username AWS --password-stdin "$REGISTRY"
 
@@ -37,11 +45,11 @@ else
     docker buildx use remote-step-builder
 fi
 
-# `--push` uploads the multi-arch manifest list in one shot. AWS
-# Batch/Fargate picks the right variant based on the job def's
+# `--push` uploads the manifest list in one shot. AWS Batch/Fargate
+# picks the right variant based on the job def's
 # runtimePlatform.cpuArchitecture (X86_64 or ARM64).
 docker buildx build \
-    --platform linux/amd64,linux/arm64 \
+    --platform "$PLATFORMS" \
     -t "$REPO_URI:$TAG" \
     -t "$REPO_URI:latest" \
     -f "$REPO_ROOT/container/Dockerfile" \
@@ -49,5 +57,6 @@ docker buildx build \
     "$REPO_ROOT"
 
 echo ""
-echo "pushed multi-arch  $REPO_URI:$TAG"
-echo "                    $REPO_URI:latest"
+echo "pushed  $REPO_URI:$TAG"
+echo "        $REPO_URI:latest"
+echo "platforms: $PLATFORMS"
