@@ -491,11 +491,26 @@ class RemoteStepDecorator(StepDecorator):
         pending_timeout = self.attributes["pending_timeout_minutes"] * 60
         step_name = getattr(step_func, "__name__", "unknown_step")
         # Capture the static graph so we can replay self.next() after Batch.
+        # Preserve the transition *shape* (linear / split / split-switch /
+        # foreach), not just the target names, so control-flow constructs
+        # like `self.next({True: X, False: Y}, condition="run_dqv")` route
+        # correctly downstream.
+        node_type = "linear"
+        out_funcs: list[str] = []
+        switch_cases: dict = {}
+        condition: str | None = None
+        foreach_param: str | None = None
+        num_parallel: int | None = None
         try:
             node = graph.nodes[step_name]
+            node_type = getattr(node, "type", "linear") or "linear"
             out_funcs = list(node.out_funcs or [])
+            switch_cases = dict(getattr(node, "switch_cases", {}) or {})
+            condition = getattr(node, "condition", None)
+            foreach_param = getattr(node, "foreach_param", None)
+            num_parallel = getattr(node, "num_parallel", None)
         except Exception:  # noqa: BLE001
-            out_funcs = []
+            pass
 
         def driver(inputs=None):
             """The remote_step driver body — small enough to run at Local tier."""
@@ -585,13 +600,39 @@ class RemoteStepDecorator(StepDecorator):
                     f"{len(outputs)} artifact(s) linked\n"
                 )
                 # Replay the user step's self.next(...) so Metaflow's transition
-                # tracker sees the same shape it does when the step runs locally.
+                # tracker sees the same shape it does when the step runs
+                # locally — including the transition *type* (linear / split /
+                # split-switch / foreach). Passing every out_func positionally
+                # would silently turn a `self.next({True: X, False: Y},
+                # condition="foo")` into a parallel split that always runs
+                # both branches — which is exactly how ``dqv_step_input``
+                # ended up running even when ``run_dqv=False``.
                 if out_funcs:
-                    next_refs = [
-                        getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)
-                    ]
-                    if next_refs:
-                        self_flow.next(*next_refs)
+                    if node_type == "split-switch" and switch_cases and condition:
+                        case_map = {
+                            case: getattr(self_flow, fn)
+                            for case, fn in switch_cases.items()
+                            if hasattr(self_flow, fn)
+                        }
+                        if case_map:
+                            self_flow.next(case_map, condition=condition)
+                    elif node_type == "foreach" and len(out_funcs) == 1:
+                        target = out_funcs[0]
+                        if hasattr(self_flow, target):
+                            kwargs = {}
+                            if num_parallel is not None:
+                                kwargs["num_parallel"] = num_parallel
+                            elif foreach_param is not None:
+                                kwargs["foreach"] = foreach_param
+                            self_flow.next(getattr(self_flow, target), **kwargs)
+                    else:
+                        next_refs = [
+                            getattr(self_flow, f)
+                            for f in out_funcs
+                            if hasattr(self_flow, f)
+                        ]
+                        if next_refs:
+                            self_flow.next(*next_refs)
             finally:
                 mflog_pusher.stop()
 
