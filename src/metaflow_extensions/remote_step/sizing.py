@@ -53,6 +53,7 @@ class ResolvedPlacement:
     instance_type: str | None  # only set for EC2 queues
     hourly_usd: float
     rounded_from: tuple[int, int, int] | None  # (cpu, mem_mb, gpu) original ask
+    cpu_arch: str = "x86_64"  # "x86_64" or "arm64" — controls Fargate runtimePlatform
 
 
 def _round_up_fargate(cpu: int, memory_mb: int) -> tuple[float, int] | None:
@@ -76,6 +77,7 @@ def resolve(
     memory_mb: int,
     gpu: int = 0,
     placement: Placement = "auto",
+    cpu_arch: str = "x86_64",
 ) -> ResolvedPlacement:
     """Resolve (cpu, memory_mb, gpu) to a concrete placement.
 
@@ -85,9 +87,14 @@ def resolve(
         gpu: requested GPU count (0 for CPU-only).
         placement: routing override. 'auto' picks best; 'fargate' refuses
             if the ask cannot fit Fargate; 'ec2' skips Fargate.
+        cpu_arch: "x86_64" (default) or "arm64". Selects the Fargate
+            runtimePlatform.cpuArchitecture. arm64 currently only
+            supported on Fargate — EC2 arm queues aren't provisioned
+            yet, so combining `cpu_arch='arm64'` with an EC2-only ask
+            (over Fargate limits, or GPU) is refused.
 
     Returns:
-        ResolvedPlacement with queue, sizing, and estimated hourly USD.
+        ResolvedPlacement with queue, sizing, cpu_arch, and estimated hourly USD.
 
     Raises:
         SizingError with named alternatives on refusal.
@@ -111,6 +118,21 @@ def resolve(
         raise SizingError(
             f"placement={placement!r} — must be one of 'auto', 'fargate', 'ec2'",
             placement=placement,
+        )
+    if cpu_arch not in ("x86_64", "arm64"):
+        raise SizingError(
+            f"cpu_arch={cpu_arch!r} — must be 'x86_64' or 'arm64'",
+            cpu_arch=cpu_arch,
+        )
+    if cpu_arch == "arm64" and (gpu > 0 or placement == "ec2"):
+        raise SizingError(
+            f"cpu_arch='arm64' is only supported on Fargate today "
+            f"(EC2 arm compute env not provisioned). Ask: cpu={cpu}, "
+            f"mem={memory_mb} MB, gpu={gpu}, placement={placement}. "
+            f"Either drop the GPU/EC2 routing or stick with cpu_arch='x86_64'.",
+            cpu_arch=cpu_arch,
+            placement=placement,
+            gpu=gpu,
         )
 
     ask = (cpu, memory_mb, gpu)
@@ -137,6 +159,7 @@ def resolve(
             instance_type=fit.name,
             hourly_usd=ec2_hourly_usd(fit.name),
             rounded_from=rounded,
+            cpu_arch="x86_64",
         )
 
     # No GPU: try Fargate first (unless forced to EC2)
@@ -152,6 +175,7 @@ def resolve(
                 instance_type=None,
                 hourly_usd=fargate_hourly_usd(f_cpu, f_mem_mb),
                 rounded_from=ask,
+                cpu_arch=cpu_arch,
             )
         if placement == "fargate":
             raise SizingError(
@@ -181,13 +205,15 @@ def resolve(
         instance_type=fit.name,
         hourly_usd=ec2_hourly_usd(fit.name),
         rounded_from=ask,
+        cpu_arch="x86_64",
     )
 
 
 def format_placement(p: ResolvedPlacement) -> str:
     """Human-readable one-line summary — used in dry-run and submit output."""
     if p.queue == "fargate":
-        base = f"Fargate {p.cpu} vCPU / {p.memory_mb // 1024} GB"
+        arch_tag = " arm64" if p.cpu_arch == "arm64" else ""
+        base = f"Fargate{arch_tag} {p.cpu} vCPU / {p.memory_mb // 1024} GB"
     else:
         base = f"EC2 {p.instance_type} ({p.cpu} vCPU / {p.memory_mb // 1024} GB"
         if p.gpus:

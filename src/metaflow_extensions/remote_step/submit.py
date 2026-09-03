@@ -32,11 +32,16 @@ class SubmitResult:
 
 
 def job_def_name(cfg: RemoteStepConfig, placement: ResolvedPlacement) -> str:
-    """Deterministic job-def name so repeated submits reuse the same def."""
+    """Deterministic job-def name so repeated submits reuse the same def.
+
+    Includes ``cpu_arch`` so x86 and arm64 variants of the same
+    (queue, cpu, memory, gpu) combination get distinct job defs — no
+    registration conflict.
+    """
     digest = hashlib.sha1(
         f"{cfg.runner_image}|{placement.queue}|{placement.cpu}|"
         f"{placement.memory_mb}|{placement.gpus}|{placement.instance_type or ''}|"
-        f"{cfg.log_group}|v2".encode()
+        f"{placement.cpu_arch}|{cfg.log_group}|v3".encode()
     ).hexdigest()[:12]
     return f"remote-step-{cfg.env_name}-{placement.queue}-{digest}"
 
@@ -72,6 +77,12 @@ def ensure_job_definition(
             "executionRoleArn": cfg.job_execution_role_arn,
             "networkConfiguration": {"assignPublicIp": "ENABLED"},
             "fargatePlatformConfiguration": {"platformVersion": "1.4.0"},
+            "runtimePlatform": {
+                "cpuArchitecture": (
+                    "ARM64" if placement.cpu_arch == "arm64" else "X86_64"
+                ),
+                "operatingSystemFamily": "LINUX",
+            },
             "resourceRequirements": [
                 {"type": "VCPU", "value": str(placement.cpu)},
                 {"type": "MEMORY", "value": str(placement.memory_mb)},

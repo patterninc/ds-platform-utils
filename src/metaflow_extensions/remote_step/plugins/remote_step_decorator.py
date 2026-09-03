@@ -425,6 +425,12 @@ class RemoteStepDecorator(StepDecorator):
         "github_secret_source": DEFAULT_GITHUB_SECRET_SOURCE,
         "job_timeout_minutes": 240,
         "pending_timeout_minutes": 60,
+        # CPU architecture for the Batch container. "x86_64" (default) or
+        # "arm64" — arm64 routes to Graviton-backed Fargate and picks the
+        # arm64 variant of the multi-arch runner image. Cheaper (~20%) +
+        # often faster for ML CPU kernels. Only supported on Fargate;
+        # EC2 arm compute env is not provisioned.
+        "cpu_arch": "x86_64",
     }
 
     _placement: ResolvedPlacement
@@ -464,7 +470,11 @@ class RemoteStepDecorator(StepDecorator):
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._placement = resolve(
-                cpu, memory_mb, gpu, placement=self.attributes["placement"]
+                cpu,
+                memory_mb,
+                gpu,
+                placement=self.attributes["placement"],
+                cpu_arch=self.attributes["cpu_arch"],
             )
         except SizingError:
             raise
