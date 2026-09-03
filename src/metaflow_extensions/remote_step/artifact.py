@@ -260,6 +260,9 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
+_S3_SINGLEPART_LIMIT = 100 * 1024 * 1024  # 100 MB: switch to multipart above this
+
+
 def write_artifact(
     obj: Any,
     bucket: str,
@@ -268,17 +271,27 @@ def write_artifact(
     pickle_protocol: int = 5,
     read_role_arn: str = "",
 ) -> RemoteArtifact:
-    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact."""
+    """Pickle `obj`, upload to s3://bucket/key, return a RemoteArtifact.
+
+    Anything larger than ``_S3_SINGLEPART_LIMIT`` is uploaded via
+    ``upload_fileobj`` (boto3 TransferManager, transparent multipart)
+    since S3's ``PutObject`` caps at 5 GB per request. Below that, the
+    single-part path stays hot for the common case.
+    """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=pickle_protocol)
     blob = buf.getvalue()
+    size = len(blob)
     sha = hashlib.sha256(blob).hexdigest()
     s3 = s3_client or boto3.client("s3")
-    s3.put_object(Bucket=bucket, Key=key, Body=blob)
+    if size <= _S3_SINGLEPART_LIMIT:
+        s3.put_object(Bucket=bucket, Key=key, Body=blob)
+    else:
+        s3.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key)
     kind = type(obj).__module__ + "." + type(obj).__qualname__
     return RemoteArtifact(
         s3_uri=f"s3://{bucket}/{key}",
-        size_bytes=len(blob),
+        size_bytes=size,
         kind=kind,
         sha256=sha,
         pickle_protocol=pickle_protocol,

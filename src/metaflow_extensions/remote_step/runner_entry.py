@@ -121,13 +121,23 @@ class _FakeSelf:
 
 
 def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
-    """Pickle obj, upload to S3, return (size_bytes, sha256_hex)."""
+    """Pickle obj, upload to S3, return (size_bytes, sha256_hex).
+
+    S3's ``PutObject`` caps at 5 GB per request, so anything above 100 MB
+    goes through ``upload_fileobj`` — boto3's TransferManager, which
+    transparently splits the payload into multipart chunks (default
+    8 MB) and parallelises the upload.
+    """
     buf = io.BytesIO()
     pickle.dump(obj, buf, protocol=5)
     blob = buf.getvalue()
+    size = len(blob)
     sha = hashlib.sha256(blob).hexdigest()
-    s3_client.put_object(Bucket=bucket, Key=key, Body=blob)
-    return len(blob), sha
+    if size <= 100 * 1024 * 1024:
+        s3_client.put_object(Bucket=bucket, Key=key, Body=blob)
+    else:
+        s3_client.upload_fileobj(io.BytesIO(blob), Bucket=bucket, Key=key)
+    return size, sha
 
 
 def main(spec_uri: str | None = None) -> int:
