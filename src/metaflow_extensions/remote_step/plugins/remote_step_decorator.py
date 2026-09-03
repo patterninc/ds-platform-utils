@@ -452,6 +452,11 @@ class RemoteStepDecorator(StepDecorator):
             code_url, code_sha = resolve_code_package(
                 cfg.payload_bucket, ctx["run_id"]
             )
+            try:
+                from metaflow import current as _current
+                _tags = list(getattr(_current, "tags", None) or [])
+            except Exception:  # noqa: BLE001
+                _tags = []
             driver_ctx = DriverContext(
                 flow_module=_flow_module_name(self_flow),
                 flow_class=type(self_flow).__name__,
@@ -464,6 +469,7 @@ class RemoteStepDecorator(StepDecorator):
                 code_package_sha=code_sha,
                 datastore_root=ctx["datastore_root"],
                 mfconfig=_named_mfconfig(),
+                tags=_tags,
             )
             spec_uri, spec = build_and_upload(
                 driver_ctx, env_spec, input_attrs, cfg.payload_bucket

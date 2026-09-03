@@ -132,6 +132,12 @@ def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
 
 def main(spec_uri: str | None = None) -> int:
     """Runner entry point. Returns POSIX-style exit code."""
+    # Line-buffer so mflog / Outerbounds UI sees each line as it's written.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:  # noqa: BLE001
+        pass
     spec_uri = spec_uri or os.environ.get("REMOTE_STEP_SPEC_URI")
     if not spec_uri:
         sys.stdout.write("[remote_step] REMOTE_STEP_SPEC_URI unset\n")
@@ -161,6 +167,20 @@ def main(spec_uri: str | None = None) -> int:
         return 3
     _stage("hydrate_inputs", t0=t0)
     inputs_snapshot = set(vars(fake).keys())
+
+    # Patch metaflow.current with the flow's context so user code that
+    # reads `current.tags`, `current.run_id`, etc. works inside Batch.
+    try:
+        from metaflow import current as _current
+        _current._flow_name = spec.get("flow_name")
+        _current._run_id = spec.get("run_id")
+        _current._step_name = spec.get("step_name")
+        _current._task_id = spec.get("task_id")
+        _current._retry_count = spec.get("attempt", 0)
+        _current._tags = tuple(spec.get("tags") or [])
+        _current._is_running = True
+    except Exception:  # noqa: BLE001
+        pass
 
     # 3. Import user step. Find the flow module file anywhere under /workspace.
     t0 = time.time()

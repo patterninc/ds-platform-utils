@@ -63,6 +63,7 @@ class DriverContext:
     code_package_sha: str
     datastore_root: str
     mfconfig: dict[str, str]
+    tags: list[str] = None  # type: ignore[assignment]
 
 
 def build_spec(
@@ -144,6 +145,7 @@ def build_spec(
         "output_bucket": output_bucket,
         "output_prefix": prefix,
         "mfconfig": ctx.mfconfig,
+        "tags": list(ctx.tags or []),
     }
 
 
