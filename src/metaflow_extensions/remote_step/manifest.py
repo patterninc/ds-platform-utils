@@ -17,25 +17,28 @@ import boto3
 from remote_step.artifact import RemoteArtifact
 from remote_step.errors import ManifestMissingError
 
-# Key layout lives in remote_step.keys — see that module for the shape and
-# why. Re-exported here because callers (and tests) already import these
-# names from manifest.
 from remote_step.keys import (  # noqa: E402
     MANIFEST_FILENAME as MANIFEST_KEY,
     manifest_key,
-    output_prefix,
 )
 
 
 def write(
     bucket: str,
+    output_prefix: str,
     run_id: str,
     task_id: str,
     attempt: int,
     outputs: dict[str, RemoteArtifact],
     s3_client=None,
 ) -> None:
-    """Write output-manifest.json to S3 with the runner's outputs."""
+    """Write output-manifest.json under `output_prefix`.
+
+    The prefix is passed in rather than rebuilt from the identifiers: the
+    runner gets it from spec.json, which is the same value the driver used
+    when it uploaded the inputs. That way the key layout is decided in one
+    place and the two sides cannot disagree about it.
+    """
     s3 = s3_client or boto3.client("s3")
     body = {
         "version": 1,
@@ -56,7 +59,7 @@ def write(
     }
     s3.put_object(
         Bucket=bucket,
-        Key=manifest_key(run_id, task_id, attempt),
+        Key=manifest_key(output_prefix),
         Body=json.dumps(body).encode("utf-8"),
         ContentType="application/json",
     )
@@ -64,14 +67,12 @@ def write(
 
 def read(
     bucket: str,
-    run_id: str,
-    task_id: str,
-    attempt: int,
+    output_prefix: str,
     s3_client=None,
 ) -> dict[str, RemoteArtifact]:
-    """Read the manifest and return the outputs dict."""
+    """Read the manifest under `output_prefix` and return the outputs dict."""
     s3 = s3_client or boto3.client("s3")
-    key = manifest_key(run_id, task_id, attempt)
+    key = manifest_key(output_prefix)
     try:
         resp = s3.get_object(Bucket=bucket, Key=key)
         blob = resp["Body"].read()

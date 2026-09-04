@@ -382,6 +382,9 @@ def main(spec_uri: str | None = None) -> int:
 
         write_manifest(
             bucket,
+            # Straight from the spec: the driver decided the layout, so the
+            # runner does not reconstruct it.
+            prefix,
             spec["run_id"],
             spec["task_id"],
             spec["attempt"],

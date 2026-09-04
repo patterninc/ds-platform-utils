@@ -11,7 +11,7 @@ spec.json shape:
         "run_id": "224221",
         "task_id": "abc123",
         "attempt": 0,
-        "code_package_url": "s3://outerbounds-datastore/.../code.tgz",
+        "code_package_url": "s3://pattern-ml-platform/outerbounds/default/WeeklyForecastFlow/224221/code/9f3ab21c/code.tgz",
         "code_package_sha": "...",
         "datastore_root": "s3://outerbounds-datastore/",
         "env": {
@@ -22,8 +22,8 @@ spec.json shape:
             "df_train": {"kind": "RemoteArtifact", "s3_uri": "...", ...},
             "config": {"kind": "inline", "blob_b64": "..."}
         },
-        "output_bucket": "remote-step-dev-payloads-...",
-        "output_prefix": "outputs/224221/abc123/0",
+        "output_bucket": "pattern-ml-platform",
+        "output_prefix": "outerbounds/default/WeeklyForecastFlow/224221/outputs/abc123/0",
         "mfconfig": {"METAFLOW_SERVICE_URL": "...", ...}
     }
 """
@@ -66,6 +66,9 @@ class DriverContext:
     mfconfig: dict[str, str]
     tags: list[str] = None  # type: ignore[assignment]
     artifact_read_role_arn: str = ""
+    # Outerbounds perimeter. Part of the S3 prefix because run ids are only
+    # unique within a perimeter.
+    perimeter: str = keys.DEFAULT_PERIMETER
 
 
 def build_spec(
@@ -83,11 +86,14 @@ def build_spec(
     inline portion of the spec stays tiny even for huge upstream inputs.
     """
     from remote_step.artifact import write_artifact_from_buf
-    from remote_step.manifest import output_prefix
     import io as _io
 
-    prefix = output_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
-    in_prefix = keys.inputs_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
+    prefix = keys.output_prefix(
+        ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt
+    )
+    in_prefix = keys.inputs_prefix(
+        ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt
+    )
     serialised: dict[str, dict] = {}
     inline_total = 0
     for name, val in inputs.items():
@@ -161,21 +167,26 @@ def build_spec(
         "inputs": serialised,
         "output_bucket": output_bucket,
         "output_prefix": prefix,
+        "perimeter": ctx.perimeter,
         "mfconfig": ctx.mfconfig,
         "tags": list(ctx.tags or []),
         "artifact_read_role_arn": ctx.artifact_read_role_arn,
     }
 
 
-# Key layout lives in remote_step.keys. Re-exported so existing callers and
-# tests can keep importing spec_key from payload.
-from remote_step.keys import spec_key  # noqa: E402
+
 
 
 def upload_spec(bucket: str, spec: dict, s3_client=None) -> str:
     """Upload spec.json to S3, return full s3:// URI."""
     s3 = s3_client or boto3.client("s3")
-    key = spec_key(spec["run_id"], spec["task_id"], spec["attempt"])
+    key = keys.spec_key(
+        spec.get("perimeter", keys.DEFAULT_PERIMETER),
+        spec["flow_name"],
+        spec["run_id"],
+        spec["task_id"],
+        spec["attempt"],
+    )
     body = json.dumps(spec).encode("utf-8")
     s3.put_object(
         Bucket=bucket,

@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - metaflow always present in prod
     StepDecorator = object  # type: ignore[assignment,misc]
 
 from remote_step.artifact import RemoteArtifact
+from remote_step import keys
 from remote_step.code_package import resolve_code_package
 from remote_step.config import RemoteStepConfig, load as load_config
 from remote_step.eks_auth import acquire as eks_acquire, api_client as eks_api_client
@@ -651,8 +652,13 @@ class RemoteStepDecorator(StepDecorator):
                 )
                 driver_s3 = access.session.client("s3", region_name=cfg.region)
 
+                perimeter = keys.resolve_perimeter()
                 code_url, code_sha = resolve_code_package(
-                    cfg.payload_bucket, ctx["run_id"], s3_client=driver_s3
+                    cfg.payload_bucket,
+                    ctx["run_id"],
+                    ctx["flow_name"],
+                    perimeter=perimeter,
+                    s3_client=driver_s3,
                 )
                 try:
                     from metaflow import current as _current
@@ -679,6 +685,7 @@ class RemoteStepDecorator(StepDecorator):
                     mfconfig=_named_mfconfig(),
                     tags=_tags,
                     artifact_read_role_arn=cfg.artifact_read_role_arn,
+                    perimeter=perimeter,
                 )
                 spec_uri, spec = build_and_upload(
                     driver_ctx,
@@ -727,9 +734,7 @@ class RemoteStepDecorator(StepDecorator):
                     )
                 outputs = read_manifest(
                     cfg.payload_bucket,
-                    ctx["run_id"],
-                    ctx["task_id"],
-                    ctx["attempt"],
+                    spec["output_prefix"],
                     s3_client=driver_s3,
                 )
                 # Keep zero-copy semantics: assign each ref directly onto

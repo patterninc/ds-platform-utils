@@ -134,6 +134,8 @@ def build_tarball(root: str) -> bytes:
 def resolve_code_package(
     payload_bucket: str,
     run_id: str,
+    flow_name: str,
+    perimeter: str = keys.DEFAULT_PERIMETER,
     s3_client=None,
     root: str | None = None,
 ) -> tuple[str, str]:
@@ -155,7 +157,7 @@ def resolve_code_package(
             root = os.getcwd()
     blob = build_tarball(root)
     sha = hashlib.sha256(blob).hexdigest()
-    key = keys.code_key(run_id, uuid.uuid4().hex[:8])
+    key = keys.code_key(perimeter, flow_name, run_id, uuid.uuid4().hex[:8])
     s3 = s3_client or boto3.client("s3")
     s3.put_object(Bucket=payload_bucket, Key=key, Body=blob)
     return f"s3://{payload_bucket}/{key}", sha
