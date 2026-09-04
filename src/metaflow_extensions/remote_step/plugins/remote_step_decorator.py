@@ -636,6 +636,13 @@ class RemoteStepDecorator(StepDecorator):
             f"[remote_step] {step_name} -> {team} · "
             f"{format_resources(self._resources)}\n"
         )
+        # Flush explicitly. step_init runs in the CLI process, where stdout is
+        # block-buffered whenever it is a pipe rather than a tty — so without
+        # this the lines sit in the buffer until interpreter exit and surface
+        # *after* everything Metaflow printed, including the "triggered ...
+        # (run-id ...)" line. The driver body does not need this because it
+        # reconfigures stdout to line buffering first.
+        sys.stdout.flush()
 
     def task_pre_step(
         self,
