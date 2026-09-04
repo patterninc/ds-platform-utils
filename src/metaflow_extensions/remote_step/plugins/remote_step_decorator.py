@@ -627,9 +627,14 @@ class RemoteStepDecorator(StepDecorator):
             if gh_src:
                 _inject_secrets(decorators, gh_src)
 
-        logger(
+        # sys.stdout.write, not logger(): Metaflow's logger stamps every
+        # line with "YYYY-MM-DD HH:MM:SS.mmm ", which every other
+        # [remote_step] line — all written from the driver body — does not
+        # carry. Using it here made flow-init output look like a different
+        # subsystem from the rest.
+        sys.stdout.write(
             f"[remote_step] {step_name} -> {team} · "
-            f"{format_resources(self._resources)}"
+            f"{format_resources(self._resources)}\n"
         )
 
     def task_pre_step(
