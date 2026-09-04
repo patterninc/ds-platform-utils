@@ -227,6 +227,23 @@ def _is_argo_context() -> bool:
     return False
 
 
+def _is_k8s_task_runtime() -> bool:
+    """Whether this process *is* the task, already executing inside a pod.
+
+    Distinct from _is_argo_context(), which only fires at deploy time: of its
+    three signals, `argo-workflows` in sys.argv is true while building the
+    template and false inside the pod, and neither `METAFLOW_ARGO_WORKFLOWS`
+    nor `ARGO_TEMPLATE` is ever set by Metaflow — so it reports False for a
+    running task.
+
+    METAFLOW_KUBERNETES_WORKLOAD is set on every Argo task pod
+    (argo_workflows.py) and is the same flag KubernetesDecorator.task_pre_step
+    itself gates on, so it is exactly the right signal for "the @kubernetes
+    lifecycle hooks would do something useful here".
+    """
+    return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD"))
+
+
 def _find_resources(decorators) -> tuple[int, int, int]:
     """Read cpu, memory, gpu from a sibling @resources decorator.
 
@@ -402,8 +419,22 @@ def _inject_driver_kubernetes(decorators) -> None:
 
     Only applied when we detect an Argo context — locally, Metaflow can run
     the driver in-process at Local tier (0.1 OBC/min).
+
+    _is_k8s_task_runtime() is checked as well, and it is not redundant. The
+    injection has two jobs, and they happen in different processes:
+
+      deploy time   sizes the Argo template's pod    (_is_argo_context)
+      task  time    runs KubernetesDecorator's       (_is_k8s_task_runtime)
+                    task_pre_step, which records
+                    kubernetes-pod-name / -pod-id /
+                    -node-ip as task metadata
+
+    Only the first was firing. Outerbounds joins its per-task CPU/memory
+    panel to cluster metrics through that pod metadata, so @remote_step
+    driver tasks recorded none of it and showed no resource usage at all,
+    while ordinary steps — which carry a real @kubernetes decorator — did.
     """
-    if not _is_argo_context():
+    if not (_is_argo_context() or _is_k8s_task_runtime()):
         return
     try:
         from metaflow.plugins.kubernetes.kubernetes_decorator import KubernetesDecorator
