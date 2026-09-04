@@ -1,8 +1,8 @@
 """Package the user's project code and upload to our payload S3 bucket.
 
-We tar the code and re-upload to our bucket so the Batch container's IAM
+We tar the code and re-upload to our bucket so the runner pod's IAM
 role can fetch it. If we forwarded Metaflow's own code-package URL (which
-lives in the Outerbounds account), the Batch task role would need
+lives in the Outerbounds account), the runner's role would need
 cross-account read on the Outerbounds datastore — a change we don't own.
 
 Strategy:
@@ -26,6 +26,8 @@ import uuid
 from typing import Iterable
 
 import boto3
+
+from remote_step import keys
 
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -153,7 +155,7 @@ def resolve_code_package(
             root = os.getcwd()
     blob = build_tarball(root)
     sha = hashlib.sha256(blob).hexdigest()
-    key = f"code/{run_id}/{uuid.uuid4().hex[:8]}/code.tgz"
+    key = keys.code_key(run_id, uuid.uuid4().hex[:8])
     s3 = s3_client or boto3.client("s3")
     s3.put_object(Bucket=payload_bucket, Key=key, Body=blob)
     return f"s3://{payload_bucket}/{key}", sha

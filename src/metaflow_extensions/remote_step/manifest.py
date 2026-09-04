@@ -17,17 +17,14 @@ import boto3
 from remote_step.artifact import RemoteArtifact
 from remote_step.errors import ManifestMissingError
 
-MANIFEST_KEY = "output-manifest.json"
-
-
-def output_prefix(run_id: str, task_id: str, attempt: int) -> str:
-    """Canonical prefix for a task attempt's output blobs."""
-    return f"outputs/{run_id}/{task_id}/{attempt}"
-
-
-def manifest_key(run_id: str, task_id: str, attempt: int) -> str:
-    """Full S3 key for the manifest file."""
-    return f"{output_prefix(run_id, task_id, attempt)}/{MANIFEST_KEY}"
+# Key layout lives in remote_step.keys — see that module for the shape and
+# why. Re-exported here because callers (and tests) already import these
+# names from manifest.
+from remote_step.keys import (  # noqa: E402
+    MANIFEST_FILENAME as MANIFEST_KEY,
+    manifest_key,
+    output_prefix,
+)
 
 
 def write(
@@ -81,7 +78,7 @@ def read(
     except s3.exceptions.NoSuchKey as exc:
         raise ManifestMissingError(
             f"expected manifest not found at s3://{bucket}/{key}. "
-            f"Batch job may have exited before writing outputs. "
+            f"The pod may have exited before writing outputs. "
             f"Retry via @retry(times=1).",
             s3_uri=f"s3://{bucket}/{key}",
         ) from exc

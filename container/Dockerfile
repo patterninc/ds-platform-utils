@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # uv is downloaded at build time but *not executed* here — Rosetta and
 # qemu-user-static both segfault on uv's Rust binary when the build host
 # arch doesn't match the image arch (e.g. building linux/amd64 on Apple
-# Silicon). We only invoke uv at container runtime, where the Fargate
+# Silicon). We only invoke uv at container runtime, where the pod
 # host runs the native architecture and uv works normally.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 

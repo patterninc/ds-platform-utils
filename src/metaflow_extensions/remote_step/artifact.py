@@ -357,7 +357,7 @@ def _transfer_config_for(size: int) -> TransferConfig:
 
     Small blobs use the boto default 10-thread concurrency; anything at
     or above 2 GB gets 32 threads so a single huge input saturates the
-    Fargate task's egress bandwidth on the driver side too.
+    driver pod's egress bandwidth too.
     """
     concurrency = (
         _S3_MAX_CONCURRENCY_BIG

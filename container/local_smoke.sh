@@ -3,7 +3,7 @@
 # fake spec.json BEFORE pushing to ECR. Skips the AWS SubmitJob loop.
 #
 # Usage:
-#   bash container/local_smoke.sh [dev]
+#   bash container/local_smoke.sh
 #
 # Env vars:
 #   GITHUB_TOKEN     for cloning private git deps (falls back to `gh auth token`)
@@ -11,9 +11,9 @@
 
 set -euo pipefail
 
-ENV_NAME="${1:-dev}"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_JSON="$REPO_ROOT/src/metaflow_extensions/remote_step/environments/${ENV_NAME}.json"
+ENV_JSON="$REPO_ROOT/src/metaflow_extensions/remote_step/config.json"
 IMAGE_URI="$(python3 -c "import json; print(json.load(open('$ENV_JSON'))['runner_image'])")"
 IMAGE_URI="${IMAGE_URI%:*}:latest"
 

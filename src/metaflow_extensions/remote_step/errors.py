@@ -20,7 +20,7 @@ class RemoteStepError(Exception):
 
 
 class SizingError(RemoteStepError):
-    """Placement resolver refused the ask. Not retriable."""
+    """The resource ask cannot be satisfied by any NodePool. Not retriable."""
 
     retriable = False
 
@@ -32,13 +32,19 @@ class ConfigError(RemoteStepError):
 
 
 class SubmitError(RemoteStepError):
-    """AWS Batch SubmitJob failed after retries. Not retriable by default."""
+    """Creating the Kubernetes Job failed. Not retriable by default."""
 
     retriable = False
 
 
 class PendingTimeoutError(RemoteStepError):
-    """Batch job stuck in RUNNABLE beyond timeout. Retriable."""
+    """Pod never started within the timeout. Retriable.
+
+    Two distinguishable causes, both reported in the message: the Workload
+    was never admitted by Kueue (the team's ClusterQueue is at quota), or it
+    was admitted but Karpenter could not provide a node (no capacity in any
+    listed instance family, in any AZ the NodePool can reach).
+    """
 
     retriable = True
 
@@ -60,14 +66,18 @@ class RunnerError(RemoteStepError):
         self.cw_stream = cw_stream
 
 
-class SpotInterruptionError(RunnerError):
-    """EC2 spot instance terminated mid-job. Retriable."""
+class NodeLostError(RunnerError):
+    """The pod's node disappeared mid-step. Retriable.
+
+    We run no spot capacity, so the causes are node expiry (Karpenter's
+    `expireAfter: 24h`), consolidation racing a step, or instance failure.
+    """
 
     retriable = True
 
 
 class ManifestMissingError(RemoteStepError):
-    """Batch reported SUCCESS but output-manifest.json not in S3. Retriable."""
+    """Pod exited 0 but output-manifest.json is not in S3. Retriable."""
 
     retriable = True
 

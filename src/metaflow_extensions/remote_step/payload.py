@@ -41,6 +41,7 @@ from typing import Any
 
 import boto3
 
+from remote_step import keys
 from remote_step.artifact import RemoteArtifact
 from remote_step.errors import RemoteStepError
 
@@ -86,7 +87,7 @@ def build_spec(
     import io as _io
 
     prefix = output_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
-    inputs_prefix = f"inputs/{ctx.run_id}/{ctx.task_id}/{ctx.attempt}"
+    in_prefix = keys.inputs_prefix(ctx.run_id, ctx.task_id, ctx.attempt)
     serialised: dict[str, dict] = {}
     inline_total = 0
     for name, val in inputs.items():
@@ -108,7 +109,7 @@ def build_spec(
         pickle.dump(val, _buf, protocol=5)
         size = _buf.tell()
         if size > INLINE_ATTR_LIMIT_BYTES:
-            key = f"{inputs_prefix}/{name}.pkl"
+            key = f"{in_prefix}/{name}.pkl"
             ref = write_artifact_from_buf(
                 obj_kind=type(val).__module__ + "." + type(val).__qualname__,
                 buf=_buf,
@@ -166,9 +167,9 @@ def build_spec(
     }
 
 
-def spec_key(run_id: str, task_id: str, attempt: int) -> str:
-    """Canonical S3 key for a task attempt's spec.json."""
-    return f"specs/{run_id}/{task_id}/{attempt}/spec.json"
+# Key layout lives in remote_step.keys. Re-exported so existing callers and
+# tests can keep importing spec_key from payload.
+from remote_step.keys import spec_key  # noqa: E402
 
 
 def upload_spec(bucket: str, spec: dict, s3_client=None) -> str:

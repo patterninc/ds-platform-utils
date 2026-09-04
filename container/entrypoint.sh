@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-step runner entrypoint. Runs inside the AWS Batch container.
+# remote-step runner entrypoint. Runs inside the Kubernetes runner pod.
 #
 # Life:
 #   1. Fetch spec.json from S3.
@@ -86,7 +86,15 @@ for name, ver in packages.items():
         out.append(name if not ver else f'{name}{ver}')
     else:
         out.append(f'{name}=={ver}' if ver else name)
-sys.stdout.buffer.write(('\0'.join(out) + '\0').encode())
+if out:
+    # Only terminate when there is something to terminate. Writing the
+    # trailing NUL unconditionally emits one empty record for an empty
+    # package set, which lands in PKG_SPECS as \"\" and makes uv fail with
+    #   error: Failed to parse: \`\`
+    #   Caused by: Empty field is not allowed for PEP508
+    # A step that needs only the standard library is legitimate, so an
+    # empty set has to mean 'install nothing', not 'install \"\"'.
+    sys.stdout.buffer.write(('\0'.join(out) + '\0').encode())
 ")
 
 t=$(date +%s)
@@ -99,6 +107,27 @@ if ! /root/.local/bin/uv pip install --python /venv/bin/python \
 fi
 stage uv_pip_install OK "$(( $(date +%s) - t ))s"
 
+# The runner itself has to be importable by the job venv's interpreter.
+#
+# The image installs ds-platform-utils into /venv-runner, but the job venv
+# created above is isolated, so `/venv/bin/python -m
+# metaflow_extensions.remote_step.runner_entry` cannot see it:
+#   ModuleNotFoundError: No module named 'metaflow_extensions'
+#
+# --no-deps is deliberate and load-bearing. ds-platform-utils depends on
+# outerbounds, pandas, polars, pyarrow, snowflake-connector and kubernetes;
+# resolving those here would both cost minutes and fight the flow's own
+# pinned versions. runner_entry needs only boto3/botocore (installed above)
+# plus the standard library — metaflow is imported under try/except and comes
+# from the flow's own packages when present.
+t=$(date +%s)
+if ! /root/.local/bin/uv pip install --python /venv/bin/python \
+    --no-deps /ds-platform-utils; then
+    stage install_runner ERR
+    exit 4
+fi
+stage install_runner OK "$(( $(date +%s) - t ))s"
+
 # 3. Fetch Metaflow code package.
 t=$(date +%s)
 if [ -n "$CODE_URL" ]; then
@@ -107,8 +136,14 @@ import boto3, sys, urllib.parse, os, tarfile
 u = urllib.parse.urlparse('$CODE_URL')
 s3 = boto3.client('s3', region_name=os.environ.get('AWS_REGION'))
 s3.download_file(u.netloc, u.path.lstrip('/'), '/payload/code.tgz')
-with tarfile.open('/payload/code.tgz') as t:
-    t.extractall('/workspace')
+with tarfile.open('/payload/code.tgz') as tf:
+    # filter='data' silences the 3.12+ DeprecationWarning and, more to the
+    # point, is the behaviour Python 3.14 makes the default. It refuses
+    # absolute paths, '..' escapes and links pointing outside /workspace, and
+    # drops owner/group and special files — so a malformed or hostile archive
+    # cannot write outside the extraction directory. Executable bits on
+    # regular files survive, which is all this archive needs.
+    tf.extractall('/workspace', filter='data')
 "; then
         stage fetch_code_pkg ERR
         exit 5

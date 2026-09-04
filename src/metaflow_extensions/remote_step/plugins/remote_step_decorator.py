@@ -1,15 +1,15 @@
-"""@remote_step — the Metaflow StepDecorator that offloads to AWS Batch.
+"""@remote_step — the Metaflow StepDecorator that offloads to Kubernetes.
 
 Hooks used:
-  step_init         — validate at flow-init, resolve placement, adjust siblings
+  step_init         — validate at flow-init, resolve resources, adjust siblings
   task_pre_step     — capture the Metaflow code-package URL from the datastore
   task_decorate     — replace the user's step body with a driver body
 
 The driver body:
   1. Reads sibling attrs off `self` (mostly RemoteArtifact refs).
   2. Builds spec.json + uploads to the payload bucket.
-  3. Submits an AWS Batch job sized per the resolved placement.
-  4. Blocks on poll.wait, streaming CloudWatch to stderr.
+  3. Creates a Kubernetes Job, queued through Kueue.
+  4. Blocks on poll.wait, streaming the pod's log to stderr.
   5. Reads output-manifest.json.
   6. Assigns RemoteArtifact refs back onto `self`.
 
@@ -34,17 +34,26 @@ except ImportError:  # pragma: no cover - metaflow always present in prod
 from remote_step.artifact import RemoteArtifact
 from remote_step.code_package import resolve_code_package
 from remote_step.config import RemoteStepConfig, load as load_config
-from remote_step.errors import ConfigError, RemoteStepError, SizingError
+from remote_step.eks_auth import acquire as eks_acquire, api_client as eks_api_client
+from remote_step.errors import (
+    ConfigError,
+    RemoteStepError,
+    RunnerError,
+    SizingError,
+)
 from remote_step.manifest import read as read_manifest
 from remote_step.payload import DriverContext, build_and_upload
 from remote_step.poll import wait as poll_wait
-from remote_step.sizing import ResolvedPlacement, format_placement, resolve
-from remote_step.submit import submit as batch_submit
+from remote_step.submit import (
+    StepResources,
+    format_resources,
+    resolve,
+    submit as k8s_submit,
+)
 
 
 DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
-DEFAULT_AWS_SECRET_SOURCE = "outerbounds.remote-step-aws"
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
 # The Metaflow mflog sidecar uploads task stdout to the datastore on a
@@ -291,7 +300,7 @@ def _shrink_resources(decorators) -> None:
     @resources (say cpu=20, memory=65000), Metaflow builds a Large pod for
     the driver — same OBC tier the flow already had. Rewriting @resources
     with (cpu=1, memory=2000, gpu=0) keeps the driver at Small tier. The
-    original ask was already captured on `self._placement` for Batch.
+    original ask was already captured on `self._resources` for the pod.
     """
     for d in decorators:
         if getattr(d, "name", "") == "resources":
@@ -335,7 +344,7 @@ def _inject_driver_kubernetes(decorators) -> None:
     decorators.append(driver_deco)
 
 
-def _inject_aws_secrets(decorators, source_name: str) -> None:
+def _inject_secrets(decorators, source_name: str) -> None:
     """Add @secrets(sources=[source_name]) to the step's decorator list."""
     try:
         from metaflow.plugins.secrets.secrets_decorator import SecretsDecorator
@@ -355,15 +364,19 @@ def _inject_aws_secrets(decorators, source_name: str) -> None:
 
 
 class RemoteStepDecorator(StepDecorator):
-    """`@remote_step` — offload one step's compute to AWS Batch.
+    """`@remote_step` — offload one step's compute to Kubernetes.
 
     Kwargs:
-        placement: 'auto' (default) | 'fargate' | 'ec2'
-        env: environment name (defaults to REMOTE_STEP_ENV or 'dev')
-        ttl_hours: extend payload retention past the default 24h
-        allow_ambient_aws: skip auto-adding @secrets under Argo
-        job_timeout_minutes: max job runtime in Batch
-        pending_timeout_minutes: max RUNNABLE wait
+        team: namespace to run in. Selects the team's Kueue ClusterQueue and
+            therefore its quota. Required — there is no safe default, since
+            picking the wrong one spends another team's capacity.
+        cpu_arch: 'x86_64' (default) | 'arm64'
+        priority: 'low' | 'normal' (default) | 'high' — WorkloadPriorityClass
+            used for preemption within the team's own queue.
+        ephemeral_gb: pod scratch space; raise it if the step unpacks large
+            wheels or writes big temp files.
+        pending_timeout_minutes: how long to wait for Kueue admission plus
+            Karpenter provisioning before giving up.
     """
 
     def add_to_package(self):
@@ -373,7 +386,7 @@ class RemoteStepDecorator(StepDecorator):
         for the flow. When Metaflow re-imports the flow module inside the
         Argo driver pod, these files must be present at (or above) the
         flow's directory — otherwise `packages` comes back empty and the
-        Batch container can't install project deps.
+        runner pod can't install project deps.
 
         Metaflow's V1 packager wants (path, arcname) tuples where arcname
         is what goes on the wire. We yield each wanted file with a bare
@@ -411,29 +424,32 @@ class RemoteStepDecorator(StepDecorator):
 
     name = "remote_step"
     defaults = {
-        "placement": "auto",
-        "env": None,
+        # Kubernetes namespace == team. No default: the namespace decides
+        # whose Kueue quota is consumed, so guessing is worse than failing.
+        "team": None,
         "ttl_hours": 24,
-        # When running under Argo the driver pod needs AWS creds to call
-        # SubmitJob. Defaults to Outerbounds custom-secret 'remote-step-aws'
-        # (created by `outerbounds integrations custom-secret create`).
-        # Set to None to skip injection (e.g. if using IRSA/OIDC).
-        "aws_secret_source": DEFAULT_AWS_SECRET_SOURCE,
         # Outerbounds custom-secret carrying GITHUB_TOKEN for cloning
-        # private git dependencies inside the Batch container. Set to None
-        # to skip if the driver env already has GITHUB_TOKEN some other way.
+        # private git dependencies inside the runner pod. Set to None to
+        # skip if the driver env already has GITHUB_TOKEN some other way.
         "github_secret_source": DEFAULT_GITHUB_SECRET_SOURCE,
         "job_timeout_minutes": 240,
-        "pending_timeout_minutes": 60,
-        # CPU architecture for the Batch container. "x86_64" (default) or
-        # "arm64" — arm64 routes to Graviton-backed Fargate and picks the
-        # arm64 variant of the multi-arch runner image. Cheaper (~20%) +
-        # often faster for ML CPU kernels. Only supported on Fargate;
-        # EC2 arm compute env is not provisioned.
+        # Covers Kueue admission + Karpenter node provisioning. A cold GPU
+        # node pulling a large image is the slow case.
+        "pending_timeout_minutes": 20,
+        # Kueue WorkloadPriorityClass. Only affects preemption inside the
+        # team's own ClusterQueue, not across teams.
+        "priority": "normal",
+        # Pod scratch space (ephemeral-storage request and limit).
+        "ephemeral_gb": 40,
+        # CPU architecture. "x86_64" (default) or "arm64" — arm64 lands on
+        # the Graviton NodePool (c9g/m9g/r9g/x8g) and picks the arm64 variant
+        # of the multi-arch runner image. Cheaper (~20%) and often faster for
+        # ML CPU kernels. Cannot be combined with a GPU ask: the gpu NodePool
+        # is x86 only.
         "cpu_arch": "x86_64",
     }
 
-    _placement: ResolvedPlacement
+    _resources: StepResources
     _env_spec: dict
     _config: RemoteStepConfig
 
@@ -467,14 +483,23 @@ class RemoteStepDecorator(StepDecorator):
                     f"@remote_step + @parallel not yet supported (step '{step_name}').",
                     step_name=step_name,
                 )
+        team = self.attributes.get("team")
+        if not team:
+            raise SizingError(
+                f"@remote_step on '{step_name}' needs team=. It names the "
+                f"Kubernetes namespace and therefore whose Kueue quota the "
+                f"step spends, so there is no safe default.\n"
+                f"  e.g. @remote_step(team=\"forecasting\")",
+                step_name=step_name,
+            )
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
-            self._placement = resolve(
+            self._resources = resolve(
                 cpu,
                 memory_mb,
                 gpu,
-                placement=self.attributes["placement"],
                 cpu_arch=self.attributes["cpu_arch"],
+                ephemeral_gb=self.attributes["ephemeral_gb"],
             )
         except SizingError:
             raise
@@ -491,27 +516,33 @@ class RemoteStepDecorator(StepDecorator):
             _write_cached_env(env_spec)
         self._env_spec = env_spec
         try:
-            self._config = load_config(self.attributes["env"])
+            self._config = load_config()
         except ConfigError:
             raise
 
         _drop_kubernetes(decorators)
         _inject_driver_kubernetes(decorators)
         # Shrink @resources so Metaflow doesn't render a big pod for the driver.
-        # We've already captured cpu/mem/gpu in self._placement for Batch sizing.
+        # We've already captured cpu/mem/gpu in self._resources for the pod.
         _shrink_resources(decorators)
-        # Only inject @secrets under Argo — locally the driver uses ambient
-        # boto3 creds from the machine's AWS profile / SSO cache.
+        # No AWS secret is injected. The driver reaches this cluster by
+        # assuming ob-submitter with the Outerbounds pod's own OIDC task
+        # role, so it needs no static credentials — and injecting any would
+        # be actively harmful: AWS_ACCESS_KEY_ID in the environment shadows
+        # the task role, and that static identity is in no trust policy, so
+        # sts:AssumeRole would fail.
+        #
+        # GitHub is different: uv needs a token to clone private git
+        # dependencies inside the runner pod, and there is no ambient
+        # equivalent.
         if _is_argo_context():
-            aws_src = self.attributes.get("aws_secret_source")
-            if aws_src:
-                _inject_aws_secrets(decorators, aws_src)
             gh_src = self.attributes.get("github_secret_source")
             if gh_src:
-                _inject_aws_secrets(decorators, gh_src)
+                _inject_secrets(decorators, gh_src)
 
         logger(
-            f"[remote_step] {step_name} resolved to {format_placement(self._placement)}"
+            f"[remote_step] {step_name} -> {team} · "
+            f"{format_resources(self._resources)}"
         )
 
     def task_pre_step(
@@ -548,12 +579,13 @@ class RemoteStepDecorator(StepDecorator):
         closure — same pattern @catch's `fallback_step` uses.
         """
         cfg = self._config
-        placement = self._placement
+        resources = self._resources
         env_spec = self._env_spec
+        team = self.attributes["team"]
         ctx = self._runtime_ctx
         pending_timeout = self.attributes["pending_timeout_minutes"] * 60
         step_name = getattr(step_func, "__name__", "unknown_step")
-        # Capture the static graph so we can replay self.next() after Batch.
+        # Capture the static graph so we can replay self.next() afterwards.
         # Preserve the transition *shape* (linear / split / split-switch /
         # foreach), not just the target names, so control-flow constructs
         # like `self.next({True: X, False: Y}, condition="run_dqv")` route
@@ -627,21 +659,52 @@ class RemoteStepDecorator(StepDecorator):
                 )
                 sys.stdout.write(
                     f"[remote_step] submitted spec {spec_uri}\n"
-                    f"[remote_step] placement {format_placement(placement)}\n"
+                    f"[remote_step] {format_resources(resources)}\n"
                 )
-                result = batch_submit(
+                access = eks_acquire(
+                    cluster_name=cfg.cluster_name,
+                    region=cfg.region,
+                    submitter_role_arn=cfg.submitter_role_arn,
+                    endpoint_hint=cfg.cluster_endpoint,
+                    session_name=f"rs-{ctx['run_id']}-{step_name}",
+                )
+                api, refresher = eks_api_client(
+                    access, cfg.cluster_name, cfg.region
+                )
+                result = k8s_submit(
                     cfg,
-                    placement,
+                    resources,
                     spec_uri,
                     flow_name=ctx["flow_name"],
                     run_id=ctx["run_id"],
                     step_name=step_name,
+                    task_id=ctx["task_id"],
+                    attempt=ctx["attempt"],
                     user=user,
+                    team=team,
+                    priority=self.attributes["priority"],
+                    api_client=api,
                 )
                 sys.stdout.write(
-                    f"[remote_step] job {result.job_id} on {result.queue}\n"
+                    f"[remote_step] job {result.job_name} "
+                    f"in {result.namespace} (queue {result.queue})\n"
                 )
-                poll_wait(result.job_id, cfg, pending_timeout=pending_timeout)
+                outcome = poll_wait(
+                    api,
+                    result.namespace,
+                    result.job_name,
+                    pending_timeout_sec=pending_timeout,
+                    refresher=refresher,
+                )
+                if not outcome.succeeded:
+                    detail = "\n  ".join(outcome.events) if outcome.events else ""
+                    raise RunnerError(
+                        f"step '{step_name}' failed: {outcome.reason}"
+                        + (f" (exit {outcome.exit_code})" if outcome.exit_code is not None else "")
+                        + (f"\n  {detail}" if detail else ""),
+                        exit_code=outcome.exit_code,
+                        job_name=outcome.job_name,
+                    )
                 outputs = read_manifest(
                     cfg.payload_bucket,
                     ctx["run_id"],

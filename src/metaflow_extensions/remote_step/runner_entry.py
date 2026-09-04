@@ -1,4 +1,4 @@
-"""Runs inside the AWS Batch container.
+"""Runs inside the runner pod.
 
 Life of a run:
   1. Read spec.json (URI passed via env or argv).
@@ -94,7 +94,7 @@ def _read_spec(spec_uri: str, s3_client) -> dict:
 def _hydrate_input(name: str, ref: dict, s3_client) -> Any:
     """Rebuild an input value from the spec entry.
 
-    The Batch container has plenty of memory, so we materialise
+    The runner pod has plenty of memory, so we materialise
     RemoteArtifact refs into the original Python objects here — the user's
     step body then sees native `pd.DataFrame`, `int`, etc. exactly as
     prior steps produced them. Driver on Argo pod never loads them.
@@ -159,10 +159,10 @@ def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
          (no bytes copy).
       3. Handing the same BytesIO to boto3 for upload — put_object below
          100 MB, TransferManager upload_fileobj above (size-tuned
-         multipart concurrency to saturate Fargate egress).
+         multipart concurrency to saturate node egress).
 
     Previous version did ``blob = buf.getvalue()`` + ``io.BytesIO(blob)``,
-    pushing peak RAM to 3× the pickle size and OOMing the Fargate task on
+    pushing peak RAM to 3× the pickle size and OOM-killing the pod on
     multi-GB outputs.
     """
     buf = io.BytesIO()
@@ -248,7 +248,7 @@ def main(spec_uri: str | None = None) -> int:
     inputs_snapshot = set(vars(fake).keys())
 
     # Patch metaflow.current with the flow's context so user code that
-    # reads `current.tags`, `current.run_id`, etc. works inside Batch.
+    # reads `current.tags`, `current.run_id`, etc. works inside the pod.
     try:
         from metaflow import current as _current
         _current._flow_name = spec.get("flow_name")
