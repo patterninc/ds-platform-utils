@@ -21,9 +21,12 @@ dependencies = [
     "polars>=1.36.2",
     "packaging",
     "boto3>=1.34",
-    # Kubernetes API client — @remote_step creates the step's Job and
-    # streams its pod log through it.
-    "kubernetes>=31",
+    # @remote_step talks to the Kubernetes API over urllib3 directly rather
+    # than through the official `kubernetes` client — see the rationale in
+    # metaflow_extensions/remote_step/k8s.py. urllib3 is already a hard
+    # requirement of botocore, so this only declares what we import; the
+    # narrower bound botocore carries is what actually resolves.
+    "urllib3",
 ]
 
 [dependency-groups]
