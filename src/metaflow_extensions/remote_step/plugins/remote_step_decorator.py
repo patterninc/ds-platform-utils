@@ -286,6 +286,50 @@ def _find_pypi_env(flow, decorators) -> dict:
     return {"python": step_python or base_python, "packages": merged}
 
 
+# Distributions that provide the `metaflow` module. Outerbounds ships a fork
+# under a different distribution name, so checking for "metaflow" alone would
+# miss it and pin a second, conflicting copy.
+_METAFLOW_DISTS = ("ob-metaflow", "metaflow")
+
+
+def _ensure_metaflow_in_env(env_spec: dict) -> dict:
+    """Guarantee the runner can import the flow module.
+
+    The runner imports the user's flow module to get at the step function,
+    and any real Metaflow flow does `from metaflow import step, ...` at
+    module scope. Without metaflow installed in the runner's venv that import
+    raises, and a flow whose fallback only defines some names then fails at
+    class-definition time with e.g.
+
+        NameError: name 'pypi_base' is not defined
+
+    Most flows carry metaflow transitively (ds-platform-utils -> outerbounds
+    -> ob-metaflow) so their resolved package set already has it. A flow that
+    declares no packages does not, which is a legitimate configuration — so
+    pin the driver's own distribution and version rather than leaving it to
+    chance. Matching the driver's version also avoids the runner and driver
+    disagreeing about artifact formats.
+    """
+    packages = dict(env_spec.get("packages") or {})
+    if any(d in packages for d in _METAFLOW_DISTS):
+        return env_spec
+
+    import importlib.metadata as _md
+
+    for dist in _METAFLOW_DISTS:
+        try:
+            packages[dist] = _md.version(dist)
+        except Exception:  # noqa: BLE001
+            continue
+        break
+    else:
+        # No metaflow distribution on the driver at all. Nothing sensible to
+        # pin; leave the set alone rather than guess a version.
+        return env_spec
+
+    return {**env_spec, "packages": packages}
+
+
 def _drop_kubernetes(decorators) -> None:
     """Remove any sibling @kubernetes decorator (mutation in place)."""
     for d in list(decorators):
@@ -515,6 +559,9 @@ class RemoteStepDecorator(StepDecorator):
                 env_spec = cached
         else:
             _write_cached_env(env_spec)
+        # Applied after the cache round-trip so the cached file keeps the
+        # user's declared set verbatim and the pin is re-derived each time.
+        env_spec = _ensure_metaflow_in_env(env_spec)
         self._env_spec = env_spec
         try:
             self._config = load_config()
