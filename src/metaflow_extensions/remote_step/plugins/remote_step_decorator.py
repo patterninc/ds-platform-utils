@@ -297,8 +297,8 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
 
     The runner imports the user's flow module to get at the step function,
     and any real Metaflow flow does `from metaflow import step, ...` at
-    module scope. Without metaflow installed in the runner's venv that import
-    raises, and a flow whose fallback only defines some names then fails at
+    module scope. Without metaflow in the runner's venv that import raises,
+    and a flow whose fallback defines only some names then fails at
     class-definition time with e.g.
 
         NameError: name 'pypi_base' is not defined
@@ -306,27 +306,66 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     Most flows carry metaflow transitively (ds-platform-utils -> outerbounds
     -> ob-metaflow) so their resolved package set already has it. A flow that
     declares no packages does not, which is a legitimate configuration — so
-    pin the driver's own distribution and version rather than leaving it to
-    chance. Matching the driver's version also avoids the runner and driver
-    disagreeing about artifact formats.
+    pin the driver's own version rather than leaving it to chance. Matching
+    the driver also avoids the two sides disagreeing about artifact formats.
     """
     packages = dict(env_spec.get("packages") or {})
     if any(d in packages for d in _METAFLOW_DISTS):
         return env_spec
 
+    # Installed-distribution metadata first: correct when the driver runs in
+    # an environment where metaflow was pip-installed.
     import importlib.metadata as _md
 
     for dist in _METAFLOW_DISTS:
         try:
             packages[dist] = _md.version(dist)
+            return {**env_spec, "packages": packages}
         except Exception:  # noqa: BLE001
             continue
-        break
-    else:
-        # No metaflow distribution on the driver at all. Nothing sensible to
-        # pin; leave the set alone rather than guess a version.
+
+    # On an Argo pod metaflow is not a distribution at all — it is shipped
+    # as CODE under /metaflow/.mf_code/metaflow/, so importlib.metadata sees
+    # nothing and the loop above finds no version. Read the module instead.
+    try:
+        import metaflow as _mf
+
+        version = str(getattr(_mf, "__version__", "") or "").split("+")[0].strip()
+    except Exception:  # noqa: BLE001
+        return env_spec
+    if not version:
         return env_spec
 
+    # Pick the right distribution name. Outerbounds publishes its fork as
+    # `ob-metaflow`; pinning plain `metaflow` next to the fork's extensions
+    # installs an incompatible core, so getting this wrong is worse than
+    # doing nothing.
+    #
+    # `metaflow.__version__` is the bare number on both, so it cannot
+    # discriminate. `metaflow_version.get_version()` carries the decorated
+    # string the CLI banner prints —
+    #   2.19.37.2+obcheckpoint(0.2.10);<unk>(<unk>);ob(v1)
+    # — which names the fork explicitly.
+    decorated = ""
+    try:
+        from metaflow.metaflow_version import get_version as _get_version
+
+        decorated = str(_get_version() or "")
+    except Exception:  # noqa: BLE001
+        pass
+
+    is_ob = "ob(" in decorated or "obcheckpoint" in decorated
+    if not is_ob:
+        # Second signal: the fork ships this extension module.
+        try:
+            import metaflow_extensions.obcheckpoint  # noqa: F401
+
+            is_ob = True
+        except Exception:  # noqa: BLE001
+            pass
+
+    dist = "ob-metaflow" if is_ob else "metaflow"
+    packages[dist] = version
     return {**env_spec, "packages": packages}
 
 
