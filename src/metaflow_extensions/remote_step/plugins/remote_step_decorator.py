@@ -625,8 +625,34 @@ class RemoteStepDecorator(StepDecorator):
                 sys.stdout.write(
                     f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
                 )
+                # Acquire cluster access before anything touches S3.
+                #
+                # The Outerbounds pod's own task role has no rights on our
+                # payload bucket — it is their role in their perimeter, and
+                # granting it ours is not on the table. Every S3 call the
+                # driver makes therefore has to use the assumed submitter
+                # role, whose PayloadBucketReadWrite policy covers exactly
+                # these objects. Using ambient credentials fails with
+                #
+                #   assumed-role/obp-...-task is not authorized to perform:
+                #   s3:PutObject ... because no identity-based policy allows
+                #
+                # which is why this hop happens up here rather than just
+                # before the Job is created.
+                access = eks_acquire(
+                    cluster_name=cfg.cluster_name,
+                    region=cfg.region,
+                    submitter_role_arn=cfg.submitter_role_arn,
+                    endpoint_hint=cfg.cluster_endpoint,
+                    session_name=f"rs-{ctx['run_id']}-{step_name}",
+                )
+                api, refresher = eks_api_client(
+                    access, cfg.cluster_name, cfg.region
+                )
+                driver_s3 = access.session.client("s3", region_name=cfg.region)
+
                 code_url, code_sha = resolve_code_package(
-                    cfg.payload_bucket, ctx["run_id"]
+                    cfg.payload_bucket, ctx["run_id"], s3_client=driver_s3
                 )
                 try:
                     from metaflow import current as _current
@@ -655,21 +681,15 @@ class RemoteStepDecorator(StepDecorator):
                     artifact_read_role_arn=cfg.artifact_read_role_arn,
                 )
                 spec_uri, spec = build_and_upload(
-                    driver_ctx, env_spec, input_attrs, cfg.payload_bucket
+                    driver_ctx,
+                    env_spec,
+                    input_attrs,
+                    cfg.payload_bucket,
+                    s3_client=driver_s3,
                 )
                 sys.stdout.write(
                     f"[remote_step] submitted spec {spec_uri}\n"
                     f"[remote_step] {format_resources(resources)}\n"
-                )
-                access = eks_acquire(
-                    cluster_name=cfg.cluster_name,
-                    region=cfg.region,
-                    submitter_role_arn=cfg.submitter_role_arn,
-                    endpoint_hint=cfg.cluster_endpoint,
-                    session_name=f"rs-{ctx['run_id']}-{step_name}",
-                )
-                api, refresher = eks_api_client(
-                    access, cfg.cluster_name, cfg.region
                 )
                 result = k8s_submit(
                     cfg,
@@ -710,6 +730,7 @@ class RemoteStepDecorator(StepDecorator):
                     ctx["run_id"],
                     ctx["task_id"],
                     ctx["attempt"],
+                    s3_client=driver_s3,
                 )
                 # Keep zero-copy semantics: assign each ref directly onto
                 # ``self``. Metaflow's artifact persistence stores the
