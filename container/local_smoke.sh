@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local runner smoke-test — validate entrypoint's install path against a
-# fake spec.json BEFORE pushing to ECR. Skips the AWS SubmitJob loop.
+# fake spec.json BEFORE pushing to ECR. Skips the cluster entirely.
 #
 # Usage:
 #   bash container/local_smoke.sh
@@ -36,7 +36,7 @@ DEFAULT_SPEC='{
   "env": {
     "python": "3.12.13",
     "packages": {
-      "ds-platform-utils": "@ git+https://github.com/patterninc/ds-platform-utils.git@remote-step",
+      "ds-platform-utils": "@ git+https://github.com/patterninc/ds-platform-utils.git@remote-step-eks",
       "requests": "2.34.2"
     }
   },
@@ -96,7 +96,7 @@ for s in "${PKG_SPECS[@]}"; do echo "  [$s]"; done
 echo "smoke: install OK"
 /venv/bin/python -c "
 import metaflow_extensions.remote_step
-from remote_step.sizing import resolve
-print(\"smoke: import OK, resolve:\", resolve(1, 2048).queue)
+from remote_step.submit import format_resources, resolve
+print(\"smoke: import OK, resolve:\", format_resources(resolve(1, 2048)))
 "
 '

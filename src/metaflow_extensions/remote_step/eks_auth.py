@@ -1,9 +1,9 @@
 """Authenticate to the EKS API from the Outerbounds driver pod.
 
-Three hops, because the driver and the cluster live in different AWS
-accounts:
+Three hops, because the driver and the cluster sit behind different
+identities:
 
-    Outerbounds pod task role          (their account)
+    Outerbounds pod task role          (OIDC federated)
       -> sts:AssumeRole                 pattern-ml-platform-ob-submitter
       -> EKS bearer token               presigned sts:GetCallerIdentity
       -> Kubernetes API                 scoped by an EKS access entry
@@ -15,8 +15,14 @@ identity and matches that against the cluster's access entries. This is
 exactly what `aws eks get-token` produces — reimplemented here because the
 driver has botocore but no AWS CLI.
 
-Nothing is cached across processes: a token is valid for 15 minutes, and a
-driver task is short-lived.
+Two expiries have to be handled, and they are different lengths:
+
+  - the assumed role's credentials, max 1 hour for a role-chained session
+  - the EKS bearer token, capped at 15 minutes
+
+A step can outlive both. The credentials are therefore wrapped in
+botocore's RefreshableCredentials so boto3 re-assumes the role on its own,
+and the token is regenerated on demand from that live session.
 """
 
 from __future__ import annotations
@@ -27,6 +33,8 @@ import threading
 import time
 
 import boto3
+from botocore.credentials import RefreshableCredentials
+from botocore.session import get_session as _get_botocore_session
 from botocore.signers import RequestSigner
 
 from remote_step.errors import RemoteStepError
@@ -37,75 +45,87 @@ TOKEN_PREFIX = "k8s-aws-v1."
 # The signed URL's own expiry. EKS caps the usable token life at 15 minutes
 # regardless, so this only has to outlive the request itself.
 URL_EXPIRY_SECONDS = 60
-# Refresh a little before the 15-minute cap so a long-running watch does not
-# fail mid-stream.
-TOKEN_TTL_SECONDS = 13 * 60
+# Regenerate the token before the 15-minute cap so a long watch never
+# presents an expired one.
+TOKEN_TTL_SECONDS = 10 * 60
+# Role-chained sessions are capped at 1 hour by AWS regardless of what we
+# ask for, so this is the ceiling rather than a choice.
+ASSUME_DURATION_SECONDS = 3600
 
 
 class EksAuthError(RemoteStepError):
     """Raised when the driver cannot obtain cluster credentials."""
 
 
-@dataclass
-class ClusterAccess:
-    """Everything needed to talk to the cluster API."""
-
-    endpoint: str
-    ca_data: bytes  # PEM, decoded from the base64 EKS returns
-    token: str
-    expires_at: float
-    session: boto3.Session
-
-    def expired(self) -> bool:
-        return time.time() >= self.expires_at
-
-
-def assume_submitter(
+def _refreshable_session(
     role_arn: str,
     region: str,
-    session_name: str = "remote-step-driver",
+    session_name: str,
 ) -> boto3.Session:
-    """Assume the submitter role and return a session using it.
+    """Session whose credentials re-assume `role_arn` when they expire.
 
-    The Outerbounds pod's own role cannot reach our cluster; only the
-    submitter role has an access entry. A plain (non-refreshable) session is
-    fine because the credentials outlive any single step submission.
+    A plain `assume_role` + `boto3.Session(aws_access_key_id=...)` hands out
+    credentials that die after an hour with no way to renew, which fails any
+    step that runs longer than that — and fails it *after* the pod has done
+    all the work, when the driver goes to read the manifest.
+
+    RefreshableCredentials calls the refresh function again shortly before
+    expiry, so a step of any length keeps working.
     """
-    sts = boto3.client("sts", region_name=region)
-    try:
-        resp = sts.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=session_name[:64],
-            # 1 hour: long enough for a step's whole submit+poll cycle, short
-            # enough that a leaked credential is not durable.
-            DurationSeconds=3600,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise EksAuthError(
-            f"could not assume {role_arn}.\n"
-            f"  The Outerbounds pod task role must be trusted by that role's "
-            f"assume-role policy. Check var.outerbounds_task_role_arn in "
-            f"infra/eks matches the role this pod actually runs as — "
-            f"`aws sts get-caller-identity` inside the pod shows it.",
-            role_arn=role_arn,
-        ) from exc
-    c = resp["Credentials"]
-    return boto3.Session(
-        aws_access_key_id=c["AccessKeyId"],
-        aws_secret_access_key=c["SecretAccessKey"],
-        aws_session_token=c["SessionToken"],
-        region_name=region,
+    base_sts = boto3.client("sts", region_name=region)
+
+    def _refresh() -> dict:
+        try:
+            resp = base_sts.assume_role(
+                RoleArn=role_arn,
+                RoleSessionName=session_name[:64],
+                DurationSeconds=ASSUME_DURATION_SECONDS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise EksAuthError(
+                f"could not assume {role_arn}.\n"
+                f"  The Outerbounds pod task role must be trusted by that "
+                f"role, and the trust policy must allow sts:AssumeRole, "
+                f"sts:TagSession AND sts:SetSourceIdentity — Outerbounds "
+                f"federates with a source identity set, and without that "
+                f"third action the hop fails even though AssumeRole is "
+                f"allowed.\n"
+                f"  Check var.outerbounds_task_role_arns in infra/eks covers "
+                f"the role this pod runs as; `aws sts get-caller-identity` "
+                f"inside the pod shows it.",
+                role_arn=role_arn,
+            ) from exc
+        c = resp["Credentials"]
+        return {
+            "access_key": c["AccessKeyId"],
+            "secret_key": c["SecretAccessKey"],
+            "token": c["SessionToken"],
+            # botocore parses this back; isoformat is what it expects.
+            "expiry_time": c["Expiration"].isoformat(),
+        }
+
+    creds = RefreshableCredentials.create_from_metadata(
+        metadata=_refresh(),
+        refresh_using=_refresh,
+        method="sts-assume-role",
     )
+    botocore_session = _get_botocore_session()
+    botocore_session._credentials = creds  # noqa: SLF001
+    botocore_session.set_config_variable("region", region)
+    return boto3.Session(botocore_session=botocore_session)
 
 
 def bearer_token(session: boto3.Session, cluster_name: str, region: str) -> str:
-    """Build an EKS bearer token from `session`'s credentials.
+    """Build an EKS bearer token from `session`'s current credentials.
 
     Reimplements `aws eks get-token`: presign an STS GetCallerIdentity GET
     with the cluster name carried in the `x-k8s-aws-id` header, then
     base64url-encode the URL. The header is included in the signature, which
     is what binds the token to one cluster — the same signed URL cannot be
     replayed against a different one.
+
+    `session.get_credentials()` returns the refreshable object, so this picks
+    up renewed credentials without being handed a new session.
     """
     client = session.client("sts", region_name=region)
     signer = RequestSigner(
@@ -134,7 +154,9 @@ def bearer_token(session: boto3.Session, cluster_name: str, region: str) -> str:
     return TOKEN_PREFIX + encoded
 
 
-def describe_cluster(session: boto3.Session, cluster_name: str, region: str) -> tuple[str, bytes]:
+def describe_cluster(
+    session: boto3.Session, cluster_name: str, region: str
+) -> tuple[str, bytes]:
     """Return (endpoint, CA PEM) for the cluster."""
     eks = session.client("eks", region_name=region)
     try:
@@ -149,14 +171,7 @@ def describe_cluster(session: boto3.Session, cluster_name: str, region: str) -> 
 
 
 def _iam_role_arn(sts_arn: str) -> str:
-    """Normalise an assumed-role ARN to the underlying IAM role ARN.
-
-    STS reports `arn:aws:sts::<acct>:assumed-role/<RoleName>/<session>`, but
-    access entries are keyed on `arn:aws:iam::<acct>:role/<RoleName>`. For an
-    SSO role the real path is `/aws-reserved/sso.amazonaws.com/...`, which we
-    cannot reconstruct from the STS ARN — hence the prefix match in
-    `_has_access_entry` rather than an exact lookup.
-    """
+    """Normalise an assumed-role ARN to the underlying IAM role ARN."""
     parts = sts_arn.split(":")
     if len(parts) < 6 or not parts[5].startswith("assumed-role/"):
         return sts_arn
@@ -181,6 +196,38 @@ def _has_access_entry(session: boto3.Session, cluster_name: str, region: str) ->
     return any(e.rsplit("/", 1)[-1] == role_name for e in entries)
 
 
+@dataclass
+class ClusterAccess:
+    """A live, self-renewing handle on one cluster."""
+
+    endpoint: str
+    ca_data: bytes  # PEM, decoded from the base64 EKS returns
+    session: boto3.Session
+    cluster_name: str
+    region: str
+
+    _token: str = ""
+    _token_expires: float = 0.0
+
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def token(self) -> str:
+        """Current bearer token, regenerated when it is close to expiry.
+
+        Passed as a callable into the API client so every request picks up a
+        fresh token without the caller tracking time. Cheap: presigning is a
+        local signature computation, no network call.
+        """
+        with self._lock:
+            if not self._token or time.time() >= self._token_expires:
+                self._token = bearer_token(
+                    self.session, self.cluster_name, self.region
+                )
+                self._token_expires = time.time() + TOKEN_TTL_SECONDS
+            return self._token
+
+
 def acquire(
     *,
     cluster_name: str,
@@ -189,12 +236,7 @@ def acquire(
     endpoint_hint: str = "",
     session_name: str = "remote-step-driver",
 ) -> ClusterAccess:
-    """Do all three hops and return usable cluster credentials.
-
-    `endpoint_hint` comes from the shipped config and is used as-is when
-    present; the CA bundle still requires DescribeCluster, so this saves
-    nothing today and is kept only so a future config carrying the CA can
-    skip the call entirely.
+    """Obtain renewable cluster credentials.
 
     The role hop is conditional. It exists because the Outerbounds pod's own
     task role has no access entry on this cluster. An operator running a flow
@@ -202,20 +244,20 @@ def acquire(
     assuming the submitter role would be both unnecessary and impossible —
     only the Outerbounds task roles are trusted to assume it.
 
-    So the ambient identity is checked for an access entry first, and the hop
-    happens only when it has none. Note the check is specifically for an
-    access entry rather than for `eks:DescribeCluster`: a role can easily
-    hold the IAM permission through a broad policy while having no
-    Kubernetes identity at all, and that combination would otherwise skip
-    the hop and then fail with a 403 from the API server.
+    The check is specifically for an access entry rather than for
+    `eks:DescribeCluster`: a role can hold the IAM permission through a broad
+    policy while having no Kubernetes identity at all, and that combination
+    would otherwise skip the hop and then fail with a 403 from the API
+    server.
     """
-    session = boto3.Session(region_name=region)
-    if not _has_access_entry(session, cluster_name, region):
-        session = assume_submitter(submitter_role_arn, region, session_name)
+    ambient = boto3.Session(region_name=region)
+    if _has_access_entry(ambient, cluster_name, region):
+        session = ambient
+    else:
+        session = _refreshable_session(submitter_role_arn, region, session_name)
+
     endpoint, ca = describe_cluster(session, cluster_name, region)
     if endpoint_hint and endpoint_hint != endpoint:
-        # Not fatal — the live value wins — but it means the shipped config
-        # is stale, which usually means the cluster was rebuilt.
         import sys
 
         sys.stdout.write(
@@ -226,77 +268,25 @@ def acquire(
     return ClusterAccess(
         endpoint=endpoint,
         ca_data=ca,
-        token=bearer_token(session, cluster_name, region),
-        expires_at=time.time() + TOKEN_TTL_SECONDS,
         session=session,
+        cluster_name=cluster_name,
+        region=region,
     )
 
 
-class _TokenRefresher:
-    """Keeps a `kubernetes` client's bearer token fresh.
+def api_client(access: ClusterAccess):
+    """Build a Kubernetes REST client for the cluster.
 
-    A step can run for hours; the token dies after 15 minutes. The
-    kubernetes client reads `configuration.api_key` on every request, so
-    rewriting that dict in place is enough — no need to rebuild the client.
+    `access.token` is passed as a callable, not a string, so the client
+    re-reads it per request. Combined with the refreshable STS credentials
+    behind it, a step of any length keeps working: the token regenerates
+    every 10 minutes and the underlying role is re-assumed before its hour
+    expires.
     """
+    from remote_step.k8s import K8sClient
 
-    def __init__(self, access: ClusterAccess, cluster_name: str, region: str, configuration):
-        self._access = access
-        self._cluster = cluster_name
-        self._region = region
-        self._cfg = configuration
-        self._lock = threading.Lock()
-
-    def refresh_if_needed(self) -> None:
-        if not self._access.expired():
-            return
-        with self._lock:
-            if not self._access.expired():
-                return
-            self._access.token = bearer_token(
-                self._access.session, self._cluster, self._region
-            )
-            self._access.expires_at = time.time() + TOKEN_TTL_SECONDS
-            self._cfg.api_key["BearerToken"] = "Bearer " + self._access.token
-
-
-def api_client(
-    access: ClusterAccess,
-    cluster_name: str,
-    region: str,
-) -> tuple[object, _TokenRefresher]:
-    """Build a `kubernetes` ApiClient for the cluster.
-
-    Returns (api_client, refresher). Call `refresher.refresh_if_needed()`
-    before any long-lived call — the token is only good for ~15 minutes and
-    a step body can outlast that.
-    """
-    import tempfile
-
-    from kubernetes import client as k8s_client
-
-    cfg = k8s_client.Configuration()
-    cfg.host = access.endpoint
-    # The kubernetes client wants a CA file path, not bytes. Written with
-    # delete=False and deliberately not cleaned up: the client reads it lazily
-    # on every connection, so removing it would break later requests. The
-    # driver pod is ephemeral, so a temp file per task is not a leak that
-    # matters.
-    ca_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
-        prefix="eks-ca-", suffix=".pem", delete=False
+    return K8sClient(
+        endpoint=access.endpoint,
+        ca_data=access.ca_data,
+        token_provider=access.token,
     )
-    ca_file.write(access.ca_data)
-    ca_file.flush()
-    ca_file.close()
-    cfg.ssl_ca_cert = ca_file.name
-    cfg.verify_ssl = True
-    # Key must be "BearerToken", not "authorization". Configuration.
-    # auth_settings() gates on `if 'BearerToken' in self.api_key` and maps it
-    # to the `authorization` header itself; keying on "authorization" makes
-    # auth_settings() return {} and the client sends no Authorization header
-    # at all, which the API server answers with a bare 401 that looks like a
-    # bad token rather than a missing one.
-    cfg.api_key = {"BearerToken": "Bearer " + access.token}
-
-    client = k8s_client.ApiClient(configuration=cfg)
-    return client, _TokenRefresher(access, cluster_name, region, cfg)

@@ -647,10 +647,24 @@ class RemoteStepDecorator(StepDecorator):
                     endpoint_hint=cfg.cluster_endpoint,
                     session_name=f"rs-{ctx['run_id']}-{step_name}",
                 )
-                api, refresher = eks_api_client(
-                    access, cfg.cluster_name, cfg.region
+                api = eks_api_client(access)
+                # Pool sized for the upload path, not left at the boto
+                # default of 10. artifact._transfer_config_for asks for 32
+                # concurrent parts on blobs >= 2 GB, and a 10-connection
+                # pool makes those 32 threads queue on each other — the same
+                # starvation the read path already avoids. Adaptive retries
+                # because a large multipart upload is exactly when S3 starts
+                # returning SlowDown.
+                from botocore.config import Config as _BotoConfig
+
+                driver_s3 = access.session.client(
+                    "s3",
+                    region_name=cfg.region,
+                    config=_BotoConfig(
+                        max_pool_connections=64,
+                        retries={"max_attempts": 10, "mode": "adaptive"},
+                    ),
                 )
-                driver_s3 = access.session.client("s3", region_name=cfg.region)
 
                 perimeter = keys.resolve_perimeter()
                 code_url, code_sha = resolve_code_package(
@@ -698,6 +712,32 @@ class RemoteStepDecorator(StepDecorator):
                     f"[remote_step] submitted spec {spec_uri}\n"
                     f"[remote_step] {format_resources(resources)}\n"
                 )
+                # Forward the runner's own environment needs.
+                #
+                # GITHUB_TOKEN in particular: step_init injects
+                # @secrets(sources=[...github]) which populates the DRIVER's
+                # environment, but the runner is a separate pod in a separate
+                # cluster and inherits nothing. Without forwarding it here,
+                # `uv pip install "pkg @ git+https://github.com/..."` in the
+                # runner fails to authenticate and the step dies at
+                # STAGE=uv_pip_install.
+                runner_env: dict[str, str] = {}
+                for _k in ("GITHUB_TOKEN", "GIT_TOKEN", "GH_TOKEN"):
+                    _v = os.environ.get(_k)
+                    if _v:
+                        runner_env[_k] = _v
+                        sys.stdout.write(
+                            f"[remote_step] forwarding {_k} to the runner "
+                            f"(len={len(_v)})\n"
+                        )
+                        break
+                # Outerbounds runtime context, so user code that talks to
+                # Outerbounds integrations (Snowflake and friends) works from
+                # inside the runner pod.
+                for _k, _v in os.environ.items():
+                    if _k.startswith(("METAFLOW_", "OBP_", "OUTERBOUNDS_")):
+                        runner_env[_k] = _v
+
                 result = k8s_submit(
                     cfg,
                     resources,
@@ -710,7 +750,9 @@ class RemoteStepDecorator(StepDecorator):
                     user=user,
                     team=team,
                     priority=self.attributes["priority"],
-                    api_client=api,
+                    extra_env=runner_env,
+                    timeout_minutes=self.attributes["job_timeout_minutes"],
+                    client=api,
                 )
                 sys.stdout.write(
                     f"[remote_step] job {result.job_name} "
@@ -721,7 +763,6 @@ class RemoteStepDecorator(StepDecorator):
                     result.namespace,
                     result.job_name,
                     pending_timeout_sec=pending_timeout,
-                    refresher=refresher,
                 )
                 if not outcome.succeeded:
                     detail = "\n  ".join(outcome.events) if outcome.events else ""

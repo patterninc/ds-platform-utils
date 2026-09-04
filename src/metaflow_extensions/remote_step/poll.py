@@ -2,11 +2,11 @@
 
 Called by the driver after submit().
 
-Logs come from `read_namespaced_pod_log(follow=True)` — a streaming read
-against the kubelet, which holds the container's stdout directly, so there
-is no ingest stage between the step writing a line and the driver printing
-it. The runner also writes to CloudWatch for durable retention (30-day log
-group); the driver does not read that copy.
+Logs come from a follow read of the pod log — a streaming GET against the
+kubelet, which holds the container's stdout directly, so there is no ingest
+stage between the step writing a line and the driver printing it. The runner
+also writes to CloudWatch for durable retention; the driver does not read
+that copy.
 
 While the step is waiting, the two possible causes are distinguished and
 reported as they change:
@@ -19,6 +19,7 @@ reported as they change:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import signal
 import sys
 import threading
 import time
@@ -28,22 +29,25 @@ from remote_step.errors import (
     KilledByUser,
     NodeLostError,
     PendingTimeoutError,
+    RemoteStepError,
     RunnerError,
 )
+from remote_step.k8s import ApiError, NotFound
 
-
-# How long to wait for the pod to start before giving up. Covers Kueue
-# admission plus Karpenter provisioning; a cold GPU node with a large image
-# is the slow case.
+# How long to wait for the pod to start. Covers Kueue admission plus
+# Karpenter provisioning; a cold GPU node with a large image is the slow case.
 DEFAULT_PENDING_TIMEOUT_SEC = 20 * 60
 
-# Watch calls are given a server-side timeout so a silent connection drop
-# surfaces as a loop iteration rather than hanging forever.
-WATCH_TIMEOUT_SEC = 60
+# Consecutive API failures tolerated before giving up. A transient 5xx or a
+# dropped connection must not fail a step whose pod is running fine, but an
+# API server we genuinely cannot reach should not be retried forever.
+MAX_CONSECUTIVE_API_ERRORS = 20
 
-# Cadence for the status line printed while waiting. Only emitted when the
-# reason text changes, so a long quiet wait does not scroll.
-STATUS_REPORT_INTERVAL_SEC = 15
+# Node loss is recorded on the POD, not the container: when a node vanishes
+# there is usually no terminated container state at all, so checking only the
+# container reason misreports it as an ordinary step failure.
+NODE_LOSS_POD_REASONS = {"NodeLost", "Shutdown", "NodeShutdown", "Terminated"}
+NODE_LOSS_TERM_REASONS = {"NodeShutdown", "Evicted", "ContainerStatusUnknown"}
 
 
 @dataclass
@@ -60,8 +64,6 @@ class JobResult:
     instance_type: str = ""
     started_at: float | None = None
     ended_at: float | None = None
-    # Populated when the pod was killed by the kubelet rather than exiting
-    # on its own — OOMKilled being the one that matters in practice.
     termination_reason: str = ""
     events: list[str] = field(default_factory=list)
 
@@ -69,25 +71,23 @@ class JobResult:
 class _LogStreamer:
     """Streams a pod's stdout to `out` as it is produced.
 
-    A single follow read covers the pod's whole life. The stream ends when
-    the container exits, so the thread finishes on its own; `.stop()` exists
-    for the Ctrl-C path.
-
-    Restarts are handled by reconnecting: `follow=True` raises when the pod
-    is not yet running, and the pod may not exist at all for the first few
-    seconds after admission.
+    Reconnects when the stream drops, which the API server does on an idle
+    connection. Each reconnect asks only for what has happened since the last
+    one — without that the server replays the log from the beginning, so a
+    slow-logging step reprints its whole history on every reconnect and the
+    driver's own stdout grows without bound.
     """
 
     RECONNECT_BACKOFF_SEC = 1.0
 
-    def __init__(self, core_v1, namespace: str, pod_name: str, out: IO) -> None:
-        self._core = core_v1
+    def __init__(self, client, namespace: str, pod_name: str, out: IO) -> None:
+        self._client = client
         self._ns = namespace
         self._pod = pod_name
         self._out = out
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._resp = None
+        self._last_output_at = time.time()
 
     def start(self) -> None:
         if self._thread is not None:
@@ -98,159 +98,136 @@ class _LogStreamer:
         self._thread.start()
 
     def stop(self) -> None:
+        """Signal the thread and wait briefly.
+
+        The thread is a daemon and checks `_stop` between chunks, so a stream
+        blocked on an idle socket is abandoned rather than joined — hence the
+        short timeout and no attempt to close the response from here, which
+        would race the reader.
+        """
         self._stop.set()
-        resp = self._resp
-        if resp is not None:
-            try:
-                resp.close()
-            except Exception:  # noqa: BLE001
-                pass
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=3)
 
     def _run(self) -> None:
+        first = True
         while not self._stop.is_set():
+            since = (
+                None if first else max(1, int(time.time() - self._last_output_at) + 2)
+            )
             try:
-                # _preload_content=False returns the raw urllib3 response so
-                # we can iterate it as it arrives. With the default (True)
-                # the client buffers the entire log body and returns a str,
-                # which would defeat the point.
-                resp = self._core.read_namespaced_pod_log(
-                    name=self._pod,
-                    namespace=self._ns,
-                    follow=True,
-                    _preload_content=False,
-                    timestamps=False,
-                )
-                self._resp = resp
-                for chunk in resp.stream(amt=None, decode_content=True):
+                for text in self._client.stream_pod_log(
+                    self._ns, self._pod, since_seconds=since
+                ):
                     if self._stop.is_set():
                         return
-                    if not chunk:
-                        continue
-                    text = (
-                        chunk.decode("utf-8", "replace")
-                        if isinstance(chunk, bytes)
-                        else str(chunk)
-                    )
                     self._out.write(text)
                     self._out.flush()
-                # Clean end of stream: container exited.
-                return
+                    self._last_output_at = time.time()
+                return  # clean end of stream: the container exited
             except Exception:  # noqa: BLE001
-                # Pod not running yet, or the connection dropped. Both are
-                # normal; retry until the watcher tells us the Job is done.
                 if self._stop.is_set():
                     return
+                first = False
                 time.sleep(self.RECONNECT_BACKOFF_SEC)
 
 
-def _pod_for_job(core_v1, namespace: str, job_name: str):
-    """Return the Job's pod, or None if it does not exist yet.
-
-    Selects on the controller-uid-free `job-name` label, which the Job
-    controller sets on every pod it creates.
-    """
-    pods = core_v1.list_namespaced_pod(
-        namespace=namespace,
-        label_selector=f"job-name={job_name}",
-    )
-    if not pods.items:
+def _pod_for_job(client, namespace: str, job_name: str) -> dict | None:
+    """Newest pod for the Job, or None if none exists yet."""
+    pods = client.list_job_pods(namespace, job_name)
+    if not pods:
         return None
-    # backoffLimit is 0, so there is at most one pod. If a stale one exists
-    # from a prior attempt, prefer the newest.
     return sorted(
-        pods.items,
-        key=lambda p: p.metadata.creation_timestamp or 0,
+        pods,
+        key=lambda p: (p.get("metadata", {}).get("creationTimestamp") or ""),
         reverse=True,
     )[0]
 
 
-def _waiting_reason(job, pod, workload_admitted: bool | None) -> str:
+def _waiting_reason(job: dict, pod: dict | None) -> str:
     """Explain, in one line, why the step has not started."""
-    if job is not None and job.spec.suspend:
+    if job.get("spec", {}).get("suspend"):
         return (
             "queued — Kueue has not admitted this Workload yet "
             "(team ClusterQueue at quota)"
         )
     if pod is None:
         return "admitted — waiting for the Job controller to create the pod"
-    phase = pod.status.phase
+    status = pod.get("status", {}) or {}
+    phase = status.get("phase") or "Unknown"
     if phase == "Pending":
-        # An unschedulable pod is the interesting case: it means Karpenter is
-        # either launching a node or cannot find capacity.
-        conds = {c.type: c for c in (pod.status.conditions or [])}
-        sched = conds.get("PodScheduled")
-        if sched is not None and sched.status != "True":
-            msg = (sched.message or sched.reason or "").strip()
-            return f"waiting for a node — {msg}" if msg else "waiting for a node (Karpenter provisioning)"
-        # Scheduled but not running: pulling the image.
-        for cs in pod.status.container_statuses or []:
-            w = cs.state.waiting if cs.state else None
-            if w is not None:
-                return f"starting — {w.reason or 'container initialising'}"
+        for c in status.get("conditions") or []:
+            if c.get("type") == "PodScheduled" and c.get("status") != "True":
+                msg = (c.get("message") or c.get("reason") or "").strip()
+                return (
+                    f"waiting for a node — {msg}"
+                    if msg
+                    else "waiting for a node (Karpenter provisioning)"
+                )
+        for cs in status.get("containerStatuses") or []:
+            w = (cs.get("state") or {}).get("waiting")
+            if w:
+                return f"starting — {w.get('reason') or 'container initialising'}"
         return "scheduled — starting container"
-    return f"pod {phase.lower()}"
+    return f"pod {str(phase).lower()}"
 
 
-def _container_exit(pod) -> tuple[int | None, str]:
-    """Extract (exit_code, termination_reason) from the runner container."""
-    for cs in pod.status.container_statuses or []:
-        if cs.name != "runner":
+def _container_exit(pod: dict) -> tuple[int | None, str]:
+    """(exit_code, termination_reason) for the runner container."""
+    for cs in (pod.get("status", {}) or {}).get("containerStatuses") or []:
+        if cs.get("name") != "runner":
             continue
-        term = cs.state.terminated if cs.state else None
-        if term is not None:
-            return term.exit_code, (term.reason or "")
+        term = (cs.get("state") or {}).get("terminated")
+        if term:
+            return term.get("exitCode"), (term.get("reason") or "")
     return None, ""
 
 
-def _recent_events(core_v1, namespace: str, name: str, limit: int = 8) -> list[str]:
-    """Events referencing `name`, newest last. Used to explain a failure."""
+def _recent_events(client, namespace: str, name: str, limit: int = 8) -> list[str]:
+    """Events referencing `name`, newest last."""
     try:
-        evs = core_v1.list_namespaced_event(
-            namespace=namespace,
-            field_selector=f"involvedObject.name={name}",
-        )
+        evs = client.list_events_for(namespace, name)
     except Exception:  # noqa: BLE001
         return []
     rows = sorted(
-        evs.items,
-        key=lambda e: e.last_timestamp or e.event_time or 0,
+        evs, key=lambda e: (e.get("lastTimestamp") or e.get("eventTime") or "")
     )
     return [
-        f"{e.reason}: {(e.message or '').strip()}"
+        f"{e.get('reason')}: {(e.get('message') or '').strip()}"
         for e in rows[-limit:]
-        if e.reason
+        if e.get("reason")
     ]
 
 
+def _instance_type(client, node_name: str) -> str:
+    if not node_name:
+        return ""
+    try:
+        node = client.get_node(node_name)
+    except Exception:  # noqa: BLE001
+        return ""
+    return (node.get("metadata", {}).get("labels") or {}).get(
+        "node.kubernetes.io/instance-type", ""
+    )
+
+
 def wait(
-    api_client,
+    client,
     namespace: str,
     job_name: str,
     *,
     out: IO = sys.stdout,
     pending_timeout_sec: int = DEFAULT_PENDING_TIMEOUT_SEC,
     stream_logs: bool = True,
-    refresher=None,
 ) -> JobResult:
     """Block until the Job finishes. Streams pod logs while it runs.
 
-    Args:
-        api_client: a `kubernetes` ApiClient (see eks_auth.api_client).
-        refresher: optional token refresher; called each loop so a step
-            outlasting the 15-minute EKS token keeps working.
-
-    Raises:
-        PendingTimeoutError: pod never started.
-        KilledByUser: Ctrl-C. The Job is deleted on the way out so it does
-            not keep holding Kueue quota.
+    On interruption the Job is deleted, because one left behind holds the
+    team's Kueue admission until it finishes on its own. Both SIGINT and
+    SIGTERM are handled: Argo cancels a workflow with SIGTERM, so catching
+    only KeyboardInterrupt would leak quota on the one path that matters in
+    production.
     """
-    from kubernetes import client as k8s_client
-
-    batch_v1 = k8s_client.BatchV1Api(api_client)
-    core_v1 = k8s_client.CoreV1Api(api_client)
-
     streamer: _LogStreamer | None = None
     pod_name = ""
     node_name = ""
@@ -259,50 +236,104 @@ def wait(
     pod_started = False
     last_reason = ""
     last_report = 0.0
+    api_errors = 0
+    interrupted: list[str] = []
+
+    def _on_signal(signum, _frame):
+        interrupted.append(signal.Signals(signum).name)
+
+    previous: dict = {}
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[sig] = signal.getsignal(sig)
+            signal.signal(sig, _on_signal)
+        except (ValueError, OSError):
+            # Not the main thread, or the platform disallows it. Falls back to
+            # KeyboardInterrupt handling only.
+            pass
+
+    def _cleanup(why: str) -> None:
+        if streamer is not None:
+            streamer.stop()
+        try:
+            client.delete_job(namespace, job_name)
+            out.write(f"[remote_step] deleted Job {job_name} after {why}\n")
+        except Exception:  # noqa: BLE001
+            out.write(
+                f"[remote_step] could not delete Job {job_name}; clean up with "
+                f"`kubectl -n {namespace} delete job {job_name}`\n"
+            )
+        out.flush()
 
     try:
         while True:
-            if refresher is not None:
-                refresher.refresh_if_needed()
+            if interrupted:
+                _cleanup(interrupted[0])
+                raise KilledByUser(
+                    f"interrupted by {interrupted[0]}", job_name=job_name
+                )
 
-            job = batch_v1.read_namespaced_job(name=job_name, namespace=namespace)
-            pod = _pod_for_job(core_v1, namespace, job_name)
+            try:
+                job = client.get_job(namespace, job_name)
+                pod = _pod_for_job(client, namespace, job_name)
+                api_errors = 0
+            except NotFound as exc:
+                if streamer is not None:
+                    streamer.stop()
+                raise RemoteStepError(
+                    f"Job {job_name} disappeared from namespace {namespace} "
+                    f"while waiting — deleted externally, or evicted by Kueue "
+                    f"without being requeued.",
+                    job_name=job_name,
+                    namespace=namespace,
+                ) from exc
+            except (ApiError, OSError) as exc:
+                # Transient: a 5xx, a dropped connection, a token racing
+                # renewal. The pod is very likely still running, so failing
+                # the step here would abandon live work.
+                api_errors += 1
+                if api_errors >= MAX_CONSECUTIVE_API_ERRORS:
+                    if streamer is not None:
+                        streamer.stop()
+                    raise RemoteStepError(
+                        f"lost contact with the Kubernetes API after "
+                        f"{api_errors} consecutive failures: {exc}",
+                        job_name=job_name,
+                        namespace=namespace,
+                    ) from exc
+                time.sleep(min(2 * api_errors, 15))
+                continue
 
             if pod is not None and not pod_name:
-                pod_name = pod.metadata.name
+                pod_name = pod.get("metadata", {}).get("name", "")
+            pod_phase = (pod or {}).get("status", {}).get("phase")
 
-            # Begin streaming as soon as the container can produce output.
             if (
                 stream_logs
                 and streamer is None
                 and pod is not None
-                and pod.status.phase in ("Running", "Succeeded", "Failed")
+                and pod_phase in ("Running", "Succeeded", "Failed")
             ):
-                pod_started = True
-                node_name = pod.spec.node_name or ""
-                if node_name:
-                    try:
-                        node = core_v1.read_node(name=node_name)
-                        instance_type = (node.metadata.labels or {}).get(
-                            "node.kubernetes.io/instance-type", ""
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
+                node_name = (pod.get("spec") or {}).get("nodeName") or ""
+                instance_type = _instance_type(client, node_name)
                 out.write(
                     f"[remote_step] pod {pod_name} running on {node_name}"
                     + (f" ({instance_type})" if instance_type else "")
                     + "\n"
                 )
                 out.flush()
-                streamer = _LogStreamer(core_v1, namespace, pod_name, out)
+                streamer = _LogStreamer(client, namespace, pod_name, out)
                 streamer.start()
 
-            # Terminal?
-            st = job.status
-            if st.succeeded:
-                exit_code, term_reason = (
-                    _container_exit(pod) if pod is not None else (0, "")
-                )
+            # Tracked independently of log streaming, so stream_logs=False
+            # does not make the pending timeout fire on a healthy step.
+            if pod_phase in ("Running", "Succeeded", "Failed"):
+                pod_started = True
+
+            status = job.get("status", {}) or {}
+
+            if status.get("succeeded"):
+                exit_code, term_reason = _container_exit(pod) if pod else (0, "")
                 if streamer is not None:
                     streamer.stop()
                 return JobResult(
@@ -317,32 +348,35 @@ def wait(
                     ended_at=time.time(),
                     termination_reason=term_reason,
                 )
-            if st.failed:
-                exit_code, term_reason = (
-                    _container_exit(pod) if pod is not None else (None, "")
-                )
+
+            if status.get("failed"):
+                exit_code, term_reason = _container_exit(pod) if pod else (None, "")
+                pod_reason = (pod or {}).get("status", {}).get("reason") or ""
                 if streamer is not None:
                     streamer.stop()
-                events = _recent_events(core_v1, namespace, pod_name or job_name)
-                reason = ""
-                for c in st.conditions or []:
-                    if c.type == "Failed":
-                        reason = c.reason or c.message or ""
-                # A vanished node is retriable; a non-zero exit is the step's
-                # own failure and is only retriable via @retry.
-                if term_reason in ("NodeShutdown", "Evicted") or reason == "DeadlineExceeded":
+                events = _recent_events(client, namespace, pod_name or job_name)
+                job_reason = ""
+                for c in status.get("conditions") or []:
+                    if c.get("type") == "Failed":
+                        job_reason = c.get("reason") or c.get("message") or ""
+
+                if (
+                    pod_reason in NODE_LOSS_POD_REASONS
+                    or term_reason in NODE_LOSS_TERM_REASONS
+                    or job_reason == "DeadlineExceeded"
+                ):
                     raise NodeLostError(
-                        f"step's node went away ({term_reason or reason}). "
+                        f"step's node went away "
+                        f"({pod_reason or term_reason or job_reason}). "
                         f"Retriable — add @retry(times=1).",
+                        exit_code,
                         job_name=job_name,
                         node_name=node_name,
                     )
                 if term_reason == "OOMKilled":
                     raise RunnerError(
-                        f"step was OOM-killed. It requested "
-                        f"{job.spec.template.spec.containers[0].resources.limits.get('memory')} "
-                        f"— raise @resources(memory=...).",
-                        exit_code=exit_code,
+                        "step was OOM-killed — raise @resources(memory=...).",
+                        exit_code,
                         job_name=job_name,
                         termination_reason=term_reason,
                     )
@@ -351,31 +385,29 @@ def wait(
                     namespace=namespace,
                     succeeded=False,
                     exit_code=exit_code,
-                    reason=reason or term_reason or "Failed",
+                    reason=job_reason or pod_reason or term_reason or "Failed",
                     pod_name=pod_name,
                     node_name=node_name,
                     instance_type=instance_type,
                     ended_at=time.time(),
-                    termination_reason=term_reason,
+                    termination_reason=term_reason or pod_reason,
                     events=events,
                 )
 
-            # Still waiting. Report why, but only when it changes.
             if not pod_started:
-                reason = _waiting_reason(job, pod, None)
+                reason = _waiting_reason(job, pod)
                 now = time.time()
                 if reason != last_reason or (now - last_report) > 60:
-                    elapsed = int(now - started_wait)
-                    out.write(f"[remote_step] {reason} ({elapsed}s)\n")
+                    out.write(f"[remote_step] {reason} ({int(now - started_wait)}s)\n")
                     out.flush()
                     last_reason = reason
                     last_report = now
                 if now - started_wait > pending_timeout_sec:
-                    events = _recent_events(core_v1, namespace, pod_name or job_name)
+                    events = _recent_events(client, namespace, pod_name or job_name)
+                    _cleanup("pending timeout")
                     raise PendingTimeoutError(
                         f"pod did not start within {pending_timeout_sec}s. "
-                        f"Last state: {reason}\n  "
-                        + "\n  ".join(events),
+                        f"Last state: {reason}\n  " + "\n  ".join(events),
                         job_name=job_name,
                         namespace=namespace,
                         waited_sec=int(now - started_wait),
@@ -384,21 +416,11 @@ def wait(
             time.sleep(2 if not pod_started else 5)
 
     except KeyboardInterrupt:
-        if streamer is not None:
-            streamer.stop()
-        # Delete the Job so it stops consuming the team's Kueue quota. Without
-        # this a Ctrl-C'd step would keep its admission until the pod's own
-        # termination, blocking other work in the same ClusterQueue.
-        try:
-            batch_v1.delete_namespaced_job(
-                name=job_name,
-                namespace=namespace,
-                propagation_policy="Background",
-            )
-            out.write(f"[remote_step] deleted Job {job_name} after interrupt\n")
-        except Exception:  # noqa: BLE001
-            out.write(
-                f"[remote_step] could not delete Job {job_name}; "
-                f"clean up with `kubectl -n {namespace} delete job {job_name}`\n"
-            )
+        _cleanup("interrupt")
         raise KilledByUser("interrupted by user", job_name=job_name) from None
+    finally:
+        for sig, handler in previous.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass

@@ -85,9 +85,19 @@ def read(
         ) from exc
     except Exception as exc:  # noqa: BLE001
         # moto sometimes raises ClientError instead of NoSuchKey.
-        if "NoSuchKey" in str(type(exc).__name__) or "NoSuchKey" in str(exc):
+        #
+        # AccessDenied is treated the same way on purpose: S3 answers a
+        # missing key with 403 rather than 404 when the caller lacks
+        # s3:ListBucket, so a genuinely absent manifest surfaces as
+        # AccessDenied and would otherwise re-raise as a bare ClientError,
+        # losing the retriable classification and the actionable message.
+        text = f"{type(exc).__name__} {exc}"
+        if "NoSuchKey" in text or "AccessDenied" in text or "404" in text:
             raise ManifestMissingError(
-                f"expected manifest not found at s3://{bucket}/{key}",
+                f"expected manifest not found (or unreadable) at "
+                f"s3://{bucket}/{key}: {type(exc).__name__}. "
+                f"The pod may have exited before writing outputs. "
+                f"Retry via @retry(times=1).",
                 s3_uri=f"s3://{bucket}/{key}",
             ) from exc
         raise

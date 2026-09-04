@@ -9,6 +9,7 @@ and render it as a pod spec.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import re
 
 from remote_step.config import RemoteStepConfig, check_team
@@ -132,19 +133,32 @@ def _dns1123(raw: str, limit: int = 63) -> str:
     return s[:limit].strip("-")
 
 
-def job_name(flow_name: str, run_id: str, step_name: str, attempt: int) -> str:
-    """Deterministic, DNS-safe Job name.
+def job_name(
+    flow_name: str,
+    run_id: str,
+    step_name: str,
+    attempt: int,
+    task_id: str = "",
+) -> str:
+    """Deterministic, DNS-safe, per-run-unique Job name.
 
-    Includes attempt so a retry does not collide with the failed Job, which
-    may still exist pending TTL cleanup.
+    The run id cannot simply be truncated. Argo run ids are
+    `argo-<flowname>-<suffix>`, so the distinguishing part is at the END —
+    truncating to a fixed prefix yields the same name for every run of a
+    flow, and with ttlSecondsAfterFinished the previous run's Job is still
+    present, so the next submit gets a 409 and a non-retriable SubmitError.
+
+    So a short hash of the full (run_id, task_id) goes in instead. It is not
+    human-readable, but the flow and step names are, and the full run id and
+    task id are on the Job as annotations for anyone who needs them.
     """
     # Budget the 63-char label limit across the parts rather than truncating
     # the whole string, so the step name (the useful part when scanning
     # `kubectl get jobs`) is never the bit that gets cut.
-    flow = _dns1123(flow_name, 20)
-    step = _dns1123(step_name, 20)
-    run = _dns1123(str(run_id), 12)
-    return _dns1123(f"rs-{flow}-{run}-{step}-{attempt}", 63)
+    flow = _dns1123(flow_name, 18)
+    step = _dns1123(step_name, 18)
+    digest = hashlib.sha1(f"{run_id}|{task_id}".encode()).hexdigest()[:10]
+    return _dns1123(f"rs-{flow}-{step}-{digest}-{attempt}", 63)
 
 
 def build_manifest(
@@ -161,6 +175,7 @@ def build_manifest(
     team: str,
     priority: str = "normal",
     extra_env: dict[str, str] | None = None,
+    timeout_minutes: int = 240,
 ) -> dict:
     """Build the batch/v1 Job manifest for one step attempt."""
     if priority not in VALID_PRIORITIES:
@@ -170,7 +185,7 @@ def build_manifest(
         )
     check_team(cfg, team)
 
-    name = job_name(flow_name, run_id, step_name, attempt)
+    name = job_name(flow_name, run_id, step_name, attempt, task_id)
 
     # Labels are for selecting and accounting; they must be valid label
     # values. Anything that might not be (a flow name with a dot, a long
@@ -260,6 +275,12 @@ def build_manifest(
             # Clean up finished Jobs so `kubectl get jobs` stays readable.
             # 24h is long enough to inspect a failure the next morning.
             "ttlSecondsAfterFinished": 24 * 3600,
+            # A real ceiling on the step. Without this a hung step hangs the
+            # driver — and therefore the Outerbounds pod — indefinitely,
+            # because poll.wait has no deadline once the pod has started.
+            # Kubernetes marks the Job failed with reason DeadlineExceeded,
+            # which poll.py maps to the retriable NodeLostError path.
+            "activeDeadlineSeconds": max(60, int(timeout_minutes) * 60),
             "template": {
                 "metadata": {"labels": labels, "annotations": annotations},
                 "spec": {
@@ -274,7 +295,16 @@ def build_manifest(
                         {
                             "name": "runner",
                             "image": cfg.runner_image,
-                            "command": ["/entrypoint.sh"],
+                            # No `command`. The image's ENTRYPOINT is
+                            # ["/usr/bin/tini","--","/entrypoint.sh"], and a
+                            # pod-spec `command` REPLACES the entrypoint
+                            # rather than appending to it — which drops tini,
+                            # makes bash (then python) PID 1, and PID 1
+                            # ignores signals with a default disposition. The
+                            # container would then never see SIGTERM on
+                            # eviction and would always be SIGKILLed after
+                            # terminationGracePeriodSeconds, so the grace
+                            # period below would buy nothing.
                             "env": env,
                             "resources": {
                                 "requests": requests,
@@ -302,11 +332,11 @@ def submit(
     team: str,
     priority: str = "normal",
     extra_env: dict[str, str] | None = None,
-    api_client=None,
+    timeout_minutes: int = 240,
+    client=None,
 ) -> SubmitResult:
     """Create the Job. Returns SubmitResult."""
-    from kubernetes import client as k8s_client
-    from kubernetes.client.rest import ApiException
+    from remote_step.k8s import Conflict, Forbidden
 
     manifest = build_manifest(
         cfg,
@@ -321,33 +351,31 @@ def submit(
         team=team,
         priority=priority,
         extra_env=extra_env,
+        timeout_minutes=timeout_minutes,
     )
-    batch = k8s_client.BatchV1Api(api_client)
     name = manifest["metadata"]["name"]
     try:
-        created = batch.create_namespaced_job(namespace=team, body=manifest)
-    except ApiException as exc:
-        if exc.status == 409:
-            raise SubmitError(
-                f"Job {name!r} already exists in namespace {team!r}. A "
-                f"previous attempt of this step is still present; wait for "
-                f"its TTL or delete it with "
-                f"`kubectl -n {team} delete job {name}`.",
-                job_name=name,
-                namespace=team,
-            ) from exc
-        if exc.status == 403:
-            raise SubmitError(
-                f"forbidden creating a Job in namespace {team!r}. The "
-                f"submitter role's EKS access entry is scoped to team "
-                f"namespaces — check {team!r} is in var.teams in infra/eks "
-                f"and that the access policy covers it.",
-                job_name=name,
-                namespace=team,
-            ) from exc
+        created = client.create_job(team, manifest)
+    except Conflict as exc:
         raise SubmitError(
-            f"could not create Job {name!r} in {team!r}: "
-            f"{exc.status} {exc.reason}",
+            f"Job {name!r} already exists in namespace {team!r}. A previous "
+            f"attempt of this step is still present; wait for its TTL or "
+            f"delete it with `kubectl -n {team} delete job {name}`.",
+            job_name=name,
+            namespace=team,
+        ) from exc
+    except Forbidden as exc:
+        raise SubmitError(
+            f"forbidden creating a Job in namespace {team!r}. The submitter "
+            f"role's EKS access entry is scoped to team namespaces — check "
+            f"{team!r} is in var.teams in infra/eks and that the access "
+            f"policy covers it.",
+            job_name=name,
+            namespace=team,
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise SubmitError(
+            f"could not create Job {name!r} in {team!r}: {exc}",
             job_name=name,
             namespace=team,
         ) from exc
@@ -355,6 +383,6 @@ def submit(
         job_name=name,
         namespace=team,
         queue=cfg.local_queue,
-        uid=created.metadata.uid,
+        uid=(created.get("metadata") or {}).get("uid", ""),
         labels=manifest["metadata"]["labels"],
     )

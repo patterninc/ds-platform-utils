@@ -246,6 +246,17 @@ def main(spec_uri: str | None = None) -> int:
         return 3
     _stage("hydrate_inputs", t0=t0)
     inputs_snapshot = set(vars(fake).keys())
+    # Identity of every input BEFORE the step body runs.
+    #
+    # This has to be captured here, not after. The rule for "is this an
+    # output" is "the attribute is new, or it points at a different object
+    # than the input did". Reading the ids after the body has run makes that
+    # comparison vacuous: for `self.df = transform(self.df)` the recorded id
+    # is already the id of the NEW object, so the attribute compares equal to
+    # itself, is classified as an unmodified input, and is never uploaded.
+    # The driver then leaves self.df on the stale upstream ref and every
+    # downstream step silently consumes un-transformed data.
+    input_ids_before: dict[str, int] = {k: id(v) for k, v in vars(fake).items()}
 
     # Patch metaflow.current with the flow's context so user code that
     # reads `current.tags`, `current.run_id`, etc. works inside the pod.
@@ -308,14 +319,12 @@ def main(spec_uri: str | None = None) -> int:
         for k, v in vars(fake).items()
         if not k.startswith("_") and (k not in inputs_snapshot or v is not None)
     }
-    # Drop attrs that started as inputs and were not reassigned.
-    input_ids: dict[str, int] = {
-        k: id(v) for k, v in vars(fake).items() if k in inputs_snapshot
-    }
+    # Drop attrs that started as inputs and were not reassigned, comparing
+    # against the pre-execution identities captured above.
     outputs = {
         k: v
         for k, v in new_attrs.items()
-        if k not in input_ids or id(v) != input_ids[k]
+        if k not in input_ids_before or id(v) != input_ids_before[k]
     }
 
     # 6. Persist outputs. Parallelise across attrs so a step with many
