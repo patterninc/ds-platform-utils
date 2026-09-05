@@ -1,0 +1,207 @@
+# Karpenter NodePools for pattern-ml-platform workloads.
+#
+# Applied by Terraform (see karpenter.tf) once the Karpenter controller is up.
+#
+# Instance-family policy: CURRENT GENERATION ONLY, no older-generation
+# fallback. Confirm a family is launchable in-region before adding it:
+#
+#   aws ec2 describe-instance-type-offerings --location-type availability-zone \
+#     --filters Name=instance-type,Values=<family>.<size> --region us-west-2
+#
+# Generations available in us-west-2:
+#   Intel     c8i / m8i / r8i / x8i   4 AZs   gen 8 is newest; no c9i/m9i/r9i
+#   AMD       c8a / m8a / r8a         4 AZs   gen 8 is newest; no x8a
+#   Graviton  c9g / m9g / r9g         4 AZs   gen 9 exists — ahead of x86
+#             x8g                     3 AZs   no x9g, so not a fallback
+#   GPU       g6e / g6                4 AZs
+#             p6-b200                 3 AZs
+#             g7 / g7e                0 AZs   catalogued but NOT launchable
+#
+# The list is a candidate SET, not a priority order. Karpenter picks the
+# cheapest instance satisfying the pod's requests and ignores the order
+# written here, so listing more families widens the search and lowers cost;
+# it never expresses preference. To force a family, put a nodeSelector on
+# karpenter.k8s.aws/instance-family in the pod spec.
+#
+# THE TRADE-OFF OF NO FALLBACK: if every listed family is capacity-short in
+# every AZ the NodePool can reach, Karpenter cannot launch anything and the
+# pod stays Pending until Kueue's waitForPodsReady timeout (15m) evicts and
+# requeues the Workload. Gen 8/9 x86 and Graviton are broadly available, so
+# the risk there is low. It is materially higher for GPU — see the caution
+# on that pool.
+#
+# No spot capacity type anywhere: there is no SQS interruption queue, so a
+# spot reclaim would hard-kill a running step with no graceful drain.
+# Revisit once steps checkpoint or the queue is wired up.
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: x86-ondemand
+spec:
+  template:
+    metadata:
+      labels:
+        pattern-ml-platform.pattern.com/pool: x86-ondemand
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            # Current generation only — no older-generation fallback. Gen 8
+            # is the newest x86 available in us-west-2; c9i/m9i/r9i do not
+            # exist. All four AZs carry these.
+            - c8i
+            - m8i
+            - r8i
+            - c8a
+            - m8a
+            - r8a
+            # 16 GB per vCPU — the arm64 pool's x8g counterpart. Our steps
+            # ask in a 16:1 ratio (@resources(cpu=4, memory=65000)), so
+            # without an x-family option Karpenter overshoots vCPU on an
+            # r-family node to reach the memory target. Same generation as
+            # the rest of this list, not a fallback.
+            - x8i
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          # nano/micro/small can't hold our runner image + a multi-GB pickle
+          values: ["nano", "micro", "small", "medium"]
+      # Nodes are single-use: one step's pod, then scale away. Short TTL keeps
+      # the bill honest without thrashing during a burst of steps.
+      expireAfter: 24h
+      terminationGracePeriod: 5m
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 2m
+  limits:
+    cpu: "2000"
+    memory: 8000Gi
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: arm64-ondemand
+spec:
+  template:
+    metadata:
+      labels:
+        pattern-ml-platform.pattern.com/pool: arm64-ondemand
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["arm64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            # Current generation only — no older-generation fallback.
+            # Graviton ships faster than the x86 refresh cycle: gen 9 is
+            # available here while Intel/AMD top out at gen 8. All four AZs
+            # carry these.
+            - c9g
+            - m9g
+            - r9g
+            # x8g is 16 GB per vCPU, which matches how our steps actually
+            # ask for resources — @resources(cpu=4, memory=65000) is a 16:1
+            # ratio. Without it Karpenter has to overshoot vCPU on an
+            # r-family node (8 GB/vCPU) just to reach the memory target, and
+            # we pay for cores the step never uses.
+            #
+            # Kept despite being gen 8: there is no x9g, so this is not an
+            # older-generation fallback for something newer — it is the only
+            # high-memory-ratio Graviton family that exists. Note it is in
+            # 3 of 4 AZs, unlike the gen-9 families.
+            - x8g
+        - key: karpenter.k8s.aws/instance-size
+          operator: NotIn
+          values: ["nano", "micro", "small", "medium"]
+      expireAfter: 24h
+      terminationGracePeriod: 5m
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 2m
+  limits:
+    cpu: "2000"
+    memory: 8000Gi
+
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu
+spec:
+  template:
+    metadata:
+      labels:
+        pattern-ml-platform.pattern.com/pool: gpu
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: gpu
+      # Taint so only pods that explicitly ask for a GPU land here — a CPU
+      # step scheduled onto a g6e would burn ~$5/h for nothing.
+      taints:
+        - key: nvidia.com/gpu
+          value: "true"
+          effect: NoSchedule
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values:
+            # Current generation only — no older-generation fallback.
+            #
+            # Verified launchable in us-west-2 (describe-instance-type-
+            # offerings); g7/g7e appear in AWS's catalog but return 0 AZs
+            # here, so they are not listed.
+            - g6e       # L40S  — inference / mid-size training, 4 AZs
+            - g6        # L4    — cheap inference, 4 AZs
+            - p6-b200   # B200  — large training, 3 AZs
+            #
+            # Dropped: g5 (A10G, superseded by g6), p5 (H100) and p5e (H200,
+            # and only 1 AZ) — both superseded by p6-b200.
+            #
+            # CAUTION: this is the pool where having no fallback bites
+            # hardest. GPU capacity is the most contended thing in EC2 and
+            # B200 is the scarcest of the three listed. With p5 removed, a
+            # large training step has exactly one family to land on; if
+            # p6-b200 is short in all three AZs the pod stays Pending until
+            # Kueue's waitForPodsReady timeout evicts it. Re-add p5 if that
+            # starts happening.
+      expireAfter: 24h
+      terminationGracePeriod: 10m
+  disruption:
+    consolidationPolicy: WhenEmpty
+    # GPU nodes take longer to provision (bigger AMI, driver init), so give
+    # a queued follow-up step a wider window to reuse a warm one.
+    consolidateAfter: 10m
+  limits:
+    cpu: "512"
+    memory: 4000Gi
+    nvidia.com/gpu: "32"

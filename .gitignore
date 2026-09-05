@@ -182,3 +182,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Terraform
+infra/**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+# Local-only: names an SSO profile specific to whoever is running apply.
+terraform.tfvars

@@ -1,0 +1,71 @@
+# Kueue ResourceFlavors + priority classes.
+#
+# A ResourceFlavor is Kueue's name for "a kind of capacity". It carries the
+# nodeLabels/tolerations Kueue stamps onto an admitted Workload, which is how
+# a quota decision turns into a scheduling decision — the labels steer the pod
+# at the matching Karpenter NodePool.
+#
+# Flavors mirror the NodePools one-for-one (see karpenter-nodepools.yaml) so a
+# team's quota can be expressed per architecture and per GPU class.
+
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: x86-ondemand
+spec:
+  nodeLabels:
+    pattern-ml-platform.pattern.com/pool: x86-ondemand
+    kubernetes.io/arch: amd64
+
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: arm64-ondemand
+spec:
+  nodeLabels:
+    pattern-ml-platform.pattern.com/pool: arm64-ondemand
+    kubernetes.io/arch: arm64
+
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: gpu
+spec:
+  nodeLabels:
+    pattern-ml-platform.pattern.com/pool: gpu
+  # Kueue applies these tolerations to admitted pods so they clear the
+  # NoSchedule taint Karpenter puts on GPU nodes.
+  tolerations:
+    - key: nvidia.com/gpu
+      value: "true"
+      operator: Equal
+      effect: NoSchedule
+
+---
+# Priority classes let an urgent backfill preempt a routine nightly run
+# inside the same ClusterQueue. Higher value wins.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: low
+value: 100
+description: "Backfills, experiments — first to be preempted."
+
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: normal
+value: 1000
+description: "Default for scheduled production flows."
+
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: high
+value: 10000
+description: "Time-sensitive reruns and incident response."
