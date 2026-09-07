@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import os
 import threading
 import time
 
@@ -228,6 +229,62 @@ class ClusterAccess:
             return self._token
 
 
+def _in_pod() -> bool:
+    """Whether this process is a task pod rather than someone's terminal."""
+    return bool(
+        os.environ.get("METAFLOW_KUBERNETES_WORKLOAD")
+        or os.environ.get("ARGO_WORKFLOW_NAME")
+    )
+
+
+def _ambient_session(region: str) -> boto3.Session:
+    """Whatever credentials the environment already has, logging in if not.
+
+    In a pod this returns immediately: the task role supplies credentials
+    through OIDC and `get_caller_identity` succeeds on the first try.
+
+    On a laptop the credentials are usually an SSO role whose token expires
+    while a step is still running. Rather than requiring `aws sso login`
+    beforehand — and therefore requiring the AWS CLI to be installed at all —
+    fall through to sso_auth, which refreshes silently if it can and opens a
+    browser only if it must.
+
+    Any failure here is swallowed and the plain session returned: the caller
+    then discovers there is no access entry and hops to the submitter role,
+    which is the correct path for an identity that legitimately has no SSO
+    profile.
+    """
+    plain = boto3.Session(region_name=region)
+    try:
+        plain.client("sts", region_name=region).get_caller_identity()
+        return plain
+    except Exception:  # noqa: BLE001 - expired, absent, or unreachable
+        pass
+
+    if _in_pod():
+        return plain
+
+    try:
+        from remote_step import sso_auth
+
+        if sso_auth.read_profile() is None:
+            return plain
+        import sys
+
+        sys.stdout.write(
+            "[remote_step] AWS credentials are missing or expired; "
+            "authenticating with SSO.\n"
+        )
+        sys.stdout.flush()
+        return sso_auth.session(interactive=sys.stdin.isatty())
+    except Exception as exc:  # noqa: BLE001
+        import sys
+
+        sys.stdout.write(f"[remote_step] SSO login unavailable: {exc}\n")
+        sys.stdout.flush()
+        return plain
+
+
 def acquire(
     *,
     cluster_name: str,
@@ -250,7 +307,7 @@ def acquire(
     would otherwise skip the hop and then fail with a 403 from the API
     server.
     """
-    ambient = boto3.Session(region_name=region)
+    ambient = _ambient_session(region)
     if _has_access_entry(ambient, cluster_name, region):
         session = ambient
     else:

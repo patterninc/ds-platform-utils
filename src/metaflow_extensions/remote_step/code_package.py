@@ -105,7 +105,18 @@ def build_tarball(root: str) -> bytes:
     buf = io.BytesIO()
     total = 0
     skipped: list[tuple[str, int]] = []
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    # dereference=True stores a symlink's *content* as a regular file rather
+    # than the link itself. Required, not cosmetic: on a local run Metaflow
+    # extracts the code package to a temp dir and sets
+    # METAFLOW_EXTRACTED_ROOT, and in that layout flow.py is a symlink to an
+    # absolute path. Preserving it produces a tarball the runner refuses to
+    # unpack, because entrypoint.sh extracts with filter='data':
+    #
+    #   tarfile.AbsoluteLinkError: 'flow.py' is a link to an absolute path
+    #
+    # A code package wants file contents in every case — there is nothing for
+    # a link to usefully point at inside the runner container.
+    with tarfile.open(fileobj=buf, mode="w:gz", dereference=True) as tar:
         for rel in files:
             parts = rel.split(os.sep)
             if any(p in EXCLUDE_DIRS for p in parts):
