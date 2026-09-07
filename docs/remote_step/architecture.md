@@ -5,7 +5,7 @@ EKS cluster, and why.
 
 Companion documents:
 - [eks.md](eks.md) — the cluster itself: network, nodes, queueing, identity
-- [caveats.md](caveats.md) — known gaps, per-feature status
+- [gaps.md](gaps.md) — what is not implemented yet, per-feature status
 - [security_review.md](security_review.md) — the auth chain and its findings
 
 ---
@@ -389,7 +389,7 @@ scraper — Karpenter and Kueue metrics are live-only and reset on pod restart.
 
 ## 13. Known gaps
 
-Feature-by-feature status is in [caveats.md](caveats.md); auth and IAM
+Feature-by-feature status is in [gaps.md](gaps.md); auth and IAM
 findings are in [security_review.md](security_review.md). The ones most likely
 to surprise:
 

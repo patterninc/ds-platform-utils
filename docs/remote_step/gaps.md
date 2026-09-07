@@ -1,4 +1,4 @@
-# `@remote_step` caveats & gap tracker
+# `@remote_step` gaps — what is not implemented yet
 
 Consolidated list of every known limitation, missing feature, or footgun in the
 `@remote_step` decorator, ordered roughly by production impact. This is the
@@ -302,7 +302,7 @@ Legend for **Status**:
 
 ---
 
-## Execution-mode caveats
+## Execution modes
 
 ### E1. `run --with kubernetes` — ✅
 
