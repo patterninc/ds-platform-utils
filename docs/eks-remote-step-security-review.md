@@ -1,9 +1,13 @@
-# Security review — `@remote_step` on EKS
+# Review — `@remote_step` on EKS
 
 **Date:** 2026-09-07
 **Scope:** the auth chain from an Outerbounds Argo pod to a Kubernetes Job on
-`pattern-ml-platform` (209479263910, us-west-2), plus the IAM and cluster
-configuration in `infra/eks/`.
+`pattern-ml-platform` (209479263910, us-west-2), the IAM and cluster
+configuration in `infra/eks/`, and the decorator's handling of sibling
+decorators.
+
+Two parts: **security findings** (1-6) and **correctness findings** (7-8),
+where the decorator discards what the user asked for without saying so.
 
 Nothing here is known to have been exploited. This is a design review, written
 so the findings survive until someone has time to act on them.
@@ -57,6 +61,8 @@ cross-account `s3:GetObject`.
 | 4 | A task role is trusted with no `sub` condition | Medium | Confirm + remove |
 | 5 | One runner role with whole-bucket access | Medium | IAM condition |
 | 6 | `AmazonEKSEditPolicy` is broader than needed | Low-Medium | Custom role |
+| 7 | `@kubernetes` resources ignored — silent under-provisioning | High | Contained |
+| 8 | `--with kubernetes` silently swallowed | Low | Contained |
 
 ---
 
@@ -233,6 +239,88 @@ type shown in log output.
 
 ---
 
+## Correctness findings — user intent silently discarded
+
+Not security issues, but the same failure shape: something the user wrote is
+thrown away with no message, and the resulting behaviour is indistinguishable
+from a bug in their own code.
+
+---
+
+### 7. `@kubernetes` resources are ignored — silent under-provisioning
+
+**Evidence**
+- `plugins/remote_step_decorator.py:247-259` — `_find_resources` matches only
+  `name == "resources"`, then falls through to `return 1, 4000, 0`.
+- `plugins/remote_step_decorator.py:389-393` — `_drop_kubernetes` removes any
+  sibling `@kubernetes` outright, with no logging.
+- `plugins/remote_step_decorator.py:641-645` — both run unconditionally in
+  `step_init`.
+
+**Repro**
+
+```python
+@remote_step(team="ads")
+@kubernetes(cpu=3, memory=29000, compute_pool="r5-xlarge-ads")
+@step
+def train(self): ...
+```
+
+| declared | actual |
+|---|---|
+| `cpu=3` | **1 vCPU** |
+| `memory=29000` | **4 GB** |
+| `compute_pool="r5-xlarge-ads"` | discarded |
+
+**Impact**
+The step lands on a 1 vCPU / 4 GB pod. Anything sized for 29 GB is OOM-killed,
+and neither the flow source nor the logs explain why — the correct numbers are
+sitting in a decorator that was silently removed. The failure looks exactly
+like an OOM in user code, so it will be debugged in the wrong place.
+
+Note `@remote_step()` with no `team=` is fine: `defaults["team"] = None`
+(`:543`) and `step_init` raises a clear error at flow load. The problem only
+appears once `team=` is supplied.
+
+`compute_pool` being dropped is defensible in itself — it selects an
+Outerbounds pool and the step no longer runs there — but it should say so.
+
+**Suggested fix**
+Read `@kubernetes` as a resource source alongside `@resources`, taking the max
+of each dimension, which is what Metaflow itself does when reconciling the
+two. Then log what was dropped and why, naming the Outerbounds-only attributes
+that do not carry over.
+
+Worth considering whether the combination should just be rejected at
+`step_init`. Two placement decorators on one step is ambiguous by nature, and
+a hard error is friendlier than a silently resized pod.
+
+---
+
+### 8. `--with kubernetes` is silently swallowed
+
+**Evidence**
+- `plugins/remote_step_decorator.py:641` — `_drop_kubernetes` runs
+  unconditionally, so a decorator added by `--with` is removed too.
+- `plugins/remote_step_decorator.py:417` — `_inject_driver_kubernetes` is
+  gated on `_is_argo_context() or _is_k8s_task_runtime()`, both false on a
+  laptop, so nothing replaces it.
+
+**Impact**
+`run --with kubernetes` leaves `@remote_step` steps with no `@kubernetes` at
+all, so their drivers run in the local process. The flag is accepted and
+ignored. Practically, the driver cannot currently be moved off a laptop for a
+local run — it holds the log stream, the token refresh and the final manifest
+read, so closing the lid or an SSO expiry kills a run whose pod is doing fine.
+
+**Suggested fix**
+Have `_drop_kubernetes` report whether it removed one, and treat "the user
+explicitly asked for kubernetes" as a third trigger for injecting the
+driver-sized replacement. `--with kubernetes` then means what it says: driver
+on Outerbounds' cluster at Small tier, step body still on EKS.
+
+---
+
 ## Accepted design trade-offs
 
 Not defects, but they should be stated rather than assumed.
@@ -253,12 +341,20 @@ Not defects, but they should be stated rather than assumed.
 
 ## Suggested order
 
-1. **Finding 3** — one variable, no coordination, closes the open network
+1. **Finding 7** — silent under-provisioning, and it will be misdiagnosed as an
+   OOM in user code every time. Cheapest fix with the highest chance of
+   wasting someone's afternoon if left.
+2. **Finding 3** — one variable, no coordination, closes the open network
    surface. Needs a decision on the operator egress range.
-2. **Finding 2** — contained change in the decorator plus a Secret in the Job
+3. **Finding 2** — contained change in the decorator plus a Secret in the Job
    manifest. Highest credential exposure per unit of effort.
-3. **Finding 4** — a question to Outerbounds, then possibly a one-line removal.
-4. **Finding 6** — mechanical, reduces the blast radius of 1 and 2.
-5. **Finding 5** — needs the key layout and the IAM condition designed together.
-6. **Finding 1** — the most serious, but needs a decision about where
+4. **Finding 4** — a question to Outerbounds, then possibly a one-line removal.
+5. **Finding 6** — mechanical, reduces the blast radius of 1 and 2.
+6. **Finding 8** — small, and worth doing alongside 7 since both live in
+   `_drop_kubernetes`.
+7. **Finding 5** — needs the key layout and the IAM condition designed together.
+8. **Finding 1** — the most serious, but needs a decision about where
    entitlement lives before any code changes.
+
+Findings 7 and 8 are both in `_drop_kubernetes` / `_find_resources` and share a
+fix; do them in one change.
