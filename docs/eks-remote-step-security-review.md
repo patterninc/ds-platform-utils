@@ -61,8 +61,8 @@ cross-account `s3:GetObject`.
 | 4 | A task role is trusted with no `sub` condition | Medium | Confirm + remove |
 | 5 | One runner role with whole-bucket access | Medium | IAM condition |
 | 6 | `AmazonEKSEditPolicy` is broader than needed | Low-Medium | Custom role |
-| 7 | `@kubernetes` resources ignored — silent under-provisioning | High | Contained |
-| 8 | `--with kubernetes` silently swallowed | Low | Contained |
+| 7 | `@kubernetes` resources ignored — silent under-provisioning | High | **FIXED** |
+| 8 | `--with kubernetes` silently swallowed | Low | **FIXED** |
 
 ---
 

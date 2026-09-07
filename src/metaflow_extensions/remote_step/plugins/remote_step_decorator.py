@@ -57,6 +57,10 @@ DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
+# `--with local_step` makes this decorator inert. An explicit opt-out, never
+# inferred: @remote_step names where a step runs, the same way @kubernetes and
+# @batch do, and both of those submit on a plain `run`.
+MARKER_LOCAL = "local_step"
 # The Metaflow mflog sidecar uploads task stdout to the datastore on a
 # sigmoid schedule that slows to a ~30 s cadence for long-running steps.
 # The Outerbounds UI reads the task's stdout from that upload, so users
@@ -211,14 +215,24 @@ def _read_cached_env() -> dict | None:
 
 
 def _is_argo_context() -> bool:
-    """Detect if we're being invoked as part of an Argo deploy or Argo run.
+    """Whether this process is deploying to, or running under, Argo.
 
     Signals, first-hit wins:
-      1. `argo-workflows` in sys.argv (deploy time on user's machine)
-      2. `METAFLOW_ARGO_WORKFLOWS` env var (Argo runtime)
-      3. `ARGO_TEMPLATE` env var (inside an Argo pod)
+      1. `argo-workflows` in sys.argv — deploy time, on the operator's machine
+      2. `ARGO_WORKFLOW_NAME` — set on every Argo task pod by
+         argo_workflows.py. This is the signal that identifies a *running*
+         Argo task, and it is deliberately not `METAFLOW_KUBERNETES_WORKLOAD`:
+         that one is also set on a pod launched by Metaflow's plain kubernetes
+         launcher, so using it would make `run --with kubernetes` submit to
+         EKS from inside the Outerbounds pod, which is not what it asks for.
+      3/4. `METAFLOW_ARGO_WORKFLOWS` / `ARGO_TEMPLATE` — neither is set by
+         Metaflow itself, but Argo's executor sets ARGO_TEMPLATE in some
+         versions. Kept because a false negative here means production
+         silently running the step body in the wrong place.
     """
     if any("argo-workflows" in arg for arg in sys.argv):
+        return True
+    if os.environ.get("ARGO_WORKFLOW_NAME"):
         return True
     if os.environ.get("METAFLOW_ARGO_WORKFLOWS"):
         return True
@@ -230,33 +244,66 @@ def _is_argo_context() -> bool:
 def _is_k8s_task_runtime() -> bool:
     """Whether this process *is* the task, already executing inside a pod.
 
-    Distinct from _is_argo_context(), which only fires at deploy time: of its
-    three signals, `argo-workflows` in sys.argv is true while building the
-    template and false inside the pod, and neither `METAFLOW_ARGO_WORKFLOWS`
-    nor `ARGO_TEMPLATE` is ever set by Metaflow — so it reports False for a
-    running task.
-
-    METAFLOW_KUBERNETES_WORKLOAD is set on every Argo task pod
-    (argo_workflows.py) and is the same flag KubernetesDecorator.task_pre_step
-    itself gates on, so it is exactly the right signal for "the @kubernetes
-    lifecycle hooks would do something useful here".
+    Used only to decide whether injecting @kubernetes would record useful pod
+    metadata — METAFLOW_KUBERNETES_WORKLOAD is the same flag
+    KubernetesDecorator.task_pre_step gates on. It is NOT part of
+    _should_submit(); see the note in _is_argo_context().
     """
     return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD"))
 
 
-def _find_resources(decorators) -> tuple[int, int, int]:
-    """Read cpu, memory, gpu from a sibling @resources decorator.
+def _should_submit(decorators) -> bool:
+    """Whether this step's body runs on the EKS cluster.
 
-    Metaflow's @resources stores its kwargs on `decorator.attributes`.
+    True unless `--with local_step` says otherwise. @remote_step names where a
+    step runs, the same way @kubernetes and @batch do, and both of those
+    submit on a plain `run` — Metaflow's local runtime schedules the DAG
+    locally and rewrites each such step to run remotely. A decorator that
+    meant "EKS" under Argo and "my laptop" otherwise would have to be re-read
+    every time someone looked at a flow.
+
+        run                                      driver local, body on EKS
+        run --with kubernetes                    driver in an OB pod, body on EKS
+        argo-workflows create/trigger            driver in the Argo pod, body on EKS
+        run --with local_step                    body in-process
+        run --with local_step --with kubernetes  body in an OB pod
+
+    Reads the decorator list rather than the environment on purpose: `--with`
+    is carried in top_level_options and so reaches the command Metaflow builds
+    for a remote step, whereas an env var would not be forwarded into a pod.
+    Both the operator's machine and the pod run step_init, and they have to
+    agree — otherwise a step starts in one place and finishes in another.
     """
+    return not any(getattr(d, "name", "") == MARKER_LOCAL for d in decorators)
+
+
+
+def _find_resources(decorators) -> tuple[int, int, int]:
+    """Read cpu, memory (MB), gpu from sibling @resources AND @kubernetes.
+
+    Both are read and the max of each dimension wins, which is how Metaflow
+    reconciles them itself. Reading only @resources silently under-provisions
+    a step that stated its ask on @kubernetes — the fallback below would hand
+    a step declaring `@kubernetes(cpu=3, memory=29000)` a 1 vCPU / 4 GB pod,
+    and the resulting OOM is indistinguishable from one in the step's own
+    code.
+    """
+    found: dict[str, int] = {}
     for d in decorators:
-        if getattr(d, "name", "") == "resources":
-            attrs = getattr(d, "attributes", {}) or {}
-            cpu = int(attrs.get("cpu") or 1)
-            memory = int(attrs.get("memory") or 4000)
-            gpu = int(attrs.get("gpu") or 0)
-            return cpu, memory, gpu
-    return 1, 4000, 0
+        if getattr(d, "name", "") not in ("resources", "kubernetes"):
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        for key in ("cpu", "memory", "gpu"):
+            raw = attrs.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                # float() first: @kubernetes accepts "2" and 2.0 as well as 2.
+                val = int(float(raw))
+            except (TypeError, ValueError):
+                continue
+            found[key] = max(found.get(key, 0), val)
+    return found.get("cpu", 1), found.get("memory", 4000), found.get("gpu", 0)
 
 
 def _find_pypi_env(flow, decorators) -> dict:
@@ -386,11 +433,21 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     return {**env_spec, "packages": packages}
 
 
-def _drop_kubernetes(decorators) -> None:
-    """Remove any sibling @kubernetes decorator (mutation in place)."""
+def _drop_kubernetes(decorators) -> list[dict]:
+    """Remove any sibling @kubernetes decorator, returning what was removed.
+
+    Only called when the step body is going to EKS, where a @kubernetes
+    decorator would otherwise size the *driver* pod to the step's full ask.
+    The caller reports the discarded attributes: Outerbounds-specific ones
+    like compute_pool do not carry over, and vanishing in silence makes the
+    pod look mysteriously misplaced.
+    """
+    removed: list[dict] = []
     for d in list(decorators):
         if getattr(d, "name", "") == "kubernetes":
+            removed.append(dict(getattr(d, "attributes", {}) or {}))
             decorators.remove(d)
+    return removed
 
 
 def _shrink_resources(decorators) -> None:
@@ -414,27 +471,42 @@ def _shrink_resources(decorators) -> None:
             return
 
 
-def _inject_driver_kubernetes(decorators) -> None:
-    """Inject a small @kubernetes decorator so the Argo pod is Small tier.
+# Attributes carried from a user-supplied @kubernetes onto the driver's own.
+# All of them place the pod; none of them size it. compute_pool names an
+# Outerbounds pool, and the driver *does* run on Outerbounds, so honouring it
+# is right — the step body is what runs elsewhere. Outerbounds derives
+# node_selector from compute_pool, so the two travel together.
+DRIVER_PLACEMENT_ATTRS = ("compute_pool", "node_selector", "namespace", "tolerations")
 
-    Only applied when we detect an Argo context — locally, Metaflow can run
-    the driver in-process at Local tier (0.1 OBC/min).
 
-    _is_k8s_task_runtime() is checked as well, and it is not redundant. The
-    injection has two jobs, and they happen in different processes:
+def _inject_driver_kubernetes(decorators, dropped: list[dict] | None = None) -> None:
+    """Give the driver a small @kubernetes so its pod is Small tier.
 
-      deploy time   sizes the Argo template's pod    (_is_argo_context)
-      task  time    runs KubernetesDecorator's       (_is_k8s_task_runtime)
-                    task_pre_step, which records
-                    kubernetes-pod-name / -pod-id /
-                    -node-ip as task metadata
+    Three triggers, each for a different reason:
 
-    Only the first was firing. Outerbounds joins its per-task CPU/memory
-    panel to cluster metrics through that pod metadata, so @remote_step
-    driver tasks recorded none of it and showed no resource usage at all,
-    while ordinary steps — which carry a real @kubernetes decorator — did.
+      _is_argo_context()      deploy time — sizes the Argo template's pod
+      _is_k8s_task_runtime()  task time — runs KubernetesDecorator's
+                              task_pre_step, which records
+                              kubernetes-pod-name / -pod-id / -node-ip as
+                              task metadata. Outerbounds joins its per-task
+                              CPU/memory panel to cluster metrics through
+                              those keys, so without this a driver task
+                              reports no resource usage at all.
+      dropped                 the operator supplied @kubernetes and
+                              _drop_kubernetes removed it. Replacing it with a
+                              driver-sized one honours the request instead of
+                              discarding it — without this, `run --with
+                              kubernetes` left the step with no @kubernetes at
+                              all and the driver ran on the operator's laptop,
+                              holding the log stream, the token refresh and
+                              the final manifest read, so a closed lid or an
+                              SSO expiry killed a run whose pod was healthy.
+
+    `dropped` also supplies placement: the driver inherits where to run but
+    never how big to be. A step asking for a 29 GB pool gets its driver on
+    that pool at driver size, not a 29 GB pod holding a poll loop.
     """
-    if not (_is_argo_context() or _is_k8s_task_runtime()):
+    if not (_is_argo_context() or _is_k8s_task_runtime() or dropped):
         return
     try:
         from metaflow.plugins.kubernetes.kubernetes_decorator import KubernetesDecorator
@@ -447,12 +519,17 @@ def _inject_driver_kubernetes(decorators) -> None:
     # Some defaults are None but Metaflow's step_init dereferences them —
     # force sensible fallbacks for the ones we've hit in practice.
     attrs = {**KubernetesDecorator.defaults}
+    # Placement first, so the size overrides below always win.
+    for removed in dropped or []:
+        for key in DRIVER_PLACEMENT_ATTRS:
+            val = removed.get(key)
+            if val not in (None, "", {}, []):
+                attrs[key] = val
     attrs["cpu"] = DEFAULT_DRIVER_CPU
     attrs["memory"] = DEFAULT_DRIVER_MEMORY_MB
+    attrs["gpu"] = 0
     if attrs.get("gpu_vendor") is None:
         attrs["gpu_vendor"] = "nvidia"
-    if attrs.get("gpu") is None:
-        attrs["gpu"] = 0
     if attrs.get("disk") is None:
         attrs["disk"] = 10240
     driver_deco = KubernetesDecorator(attributes=attrs)
@@ -638,11 +715,33 @@ class RemoteStepDecorator(StepDecorator):
         except ConfigError:
             raise
 
-        _drop_kubernetes(decorators)
-        _inject_driver_kubernetes(decorators)
-        # Shrink @resources so Metaflow doesn't render a big pod for the driver.
-        # We've already captured cpu/mem/gpu in self._resources for the pod.
-        _shrink_resources(decorators)
+        # The one decision. Everything below branches on it, and it must come
+        # out the same here and inside whatever pod the task later lands in —
+        # both run step_init.
+        self._submit = _should_submit(decorators)
+
+        if self._submit:
+            # A sibling @kubernetes would size the *driver* pod to the step's
+            # full ask, so it goes; same for @resources, which Metaflow
+            # reconciles with @kubernetes at task-render time. The real ask is
+            # already captured on self._resources for the Job manifest.
+            dropped = _drop_kubernetes(decorators)
+            _inject_driver_kubernetes(decorators, dropped)
+            _shrink_resources(decorators)
+            for attrs in dropped:
+                pool = attrs.get("compute_pool")
+                if pool:
+                    sys.stdout.write(
+                        f"[remote_step] {step_name}: driver on compute_pool "
+                        f"{pool!r} at {DEFAULT_DRIVER_CPU} vCPU / "
+                        f"{DEFAULT_DRIVER_MEMORY_MB // 1024} GB. The step body "
+                        f"runs on our EKS cluster, so the pool sizes only the "
+                        f"driver.\n"
+                    )
+        # When not submitting, every sibling decorator is left exactly as
+        # written so Metaflow does whatever it normally would — in-process for
+        # a plain `run`, an Outerbounds pod if @kubernetes is present.
+
         # No AWS secret is injected. The driver reaches this cluster by
         # assuming ob-submitter with the Outerbounds pod's own OIDC task
         # role, so it needs no static credentials — and injecting any would
@@ -663,10 +762,21 @@ class RemoteStepDecorator(StepDecorator):
         # [remote_step] line — all written from the driver body — does not
         # carry. Using it here made flow-init output look like a different
         # subsystem from the rest.
-        sys.stdout.write(
-            f"[remote_step] {step_name} -> {team} · "
-            f"{format_resources(self._resources)}\n"
-        )
+        if self._submit:
+            sys.stdout.write(
+                f"[remote_step] {step_name} -> {team} · "
+                f"{format_resources(self._resources)}\n"
+            )
+        else:
+            # Loud on purpose. A step that ran in the driver's own environment
+            # proves nothing about the runner container — different wheels,
+            # host architecture, no GPU — so this must never be mistaken for
+            # a production-equivalent result.
+            sys.stdout.write(
+                f"[remote_step] {step_name} running LOCALLY — not the runner "
+                f"container, so package and architecture differences are not "
+                f"exercised.\n"
+            )
         # Flush explicitly. step_init runs in the CLI process, where stdout is
         # block-buffered whenever it is a pipe rather than a tty — so without
         # this the lines sit in the buffer until interpreter exit and surface
@@ -707,7 +817,13 @@ class RemoteStepDecorator(StepDecorator):
         Metaflow calls the returned callable with `()` (or `(inputs)` for
         join steps), NOT with the flow instance. `flow` is captured in the
         closure — same pattern @catch's `fallback_step` uses.
+
+        Returns `step_func` untouched when this step is not going to EKS, so
+        the body runs wherever Metaflow would have run it anyway.
         """
+        if not getattr(self, "_submit", True):
+            return step_func
+
         cfg = self._config
         resources = self._resources
         env_spec = self._env_spec
