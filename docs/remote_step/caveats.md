@@ -304,73 +304,53 @@ Legend for **Status**:
 
 ## Execution-mode caveats
 
-### E1. `python flow.py --with kubernetes run` (Metaflow-classic scheduler on laptop) — ⚠️
+### E1. `run --with kubernetes` — ✅
 
-When the flow is launched *without* `argo-workflows create` — e.g. a
-developer running `python flow.py --with kubernetes run` locally — the
-scheduler process lives on the user's laptop. `_is_argo_context()`
-returns False, so we skip both `_inject_driver_kubernetes` and
-`_inject_aws_secrets`. The step-level `@kubernetes` added by the CLI
-`--with` flag is still dropped by `_drop_kubernetes`. Net effect: the
-`@remote_step`-decorated step has zero `@kubernetes`, so Metaflow
-schedules the driver body *locally* (in the scheduler's Python
-process on the developer's machine) instead of on an Argo/OB pod.
+The driver runs on an Outerbounds pod at Small tier and the step body on
+EKS, matching the Argo path. Previously the `--with kubernetes` decorator
+was silently removed and the driver stayed on the laptop; see finding 8 in
+[security_review.md](security_review.md).
 
-Consequences:
+Remaining differences from Argo, none of them regressions:
 
-1. **Local AWS creds required for the whole driver runtime.**
-   `boto3` uses the default credential chain — typically the SSO
-   profile the developer set up (`DataScienceDev-149536480130`).
-   Long-running remote steps mean the SSO session must not expire
-   mid-run. `aws sso login` before starting is the safest habit.
-2. **@secrets not injected → any user code on the DRIVER that needs
-   Outerbounds credentials fails.** The Batch container still gets
-   everything through `spec.env` + `containerOverrides.environment`,
-   so `@remote_step` step bodies are unaffected — the pain is only if
-   the driver itself touches OB APIs.
-3. **Log streaming differs.** No argo pod → no `save_logs_periodically`
-   sidecar → no MFLog uploads. The driver's stdout goes straight to
-   the developer's terminal (which is fine locally), but the
-   Outerbounds UI shows this run's driver logs only after task
-   completion (not while it's running).
-4. **Non-`@remote_step` steps still hit AssumeRole.** When
-   `--with kubernetes` is set, sibling non-`@remote_step` steps still
-   run on OB k8s pods and hit `RemoteArtifact.load()` → 403 on direct
-   S3 → assume `ob-artifact-reader` → temp creds. Works, same as under
-   Argo.
-5. **`current.is_production` will be False locally** — the developer's
-   `current.namespace` isn't `prod`. Any code that branches on this
-   inside a `@remote_step` writes to STAGE tables. Not a regression
-   of `--with kubernetes` specifically, but it lands here because
-   the driver's normal Argo path would set the tag differently.
+1. **`current.is_production` is False.** The developer's `current.namespace`
+   is not `prod`. Code branching on it writes to STAGE tables. Applies to
+   every local mode, not this one specifically.
+2. **Non-`@remote_step` siblings still hit AssumeRole.** They run on OB pods
+   and `RemoteArtifact.load()` assumes `ob-artifact-reader` — same as Argo.
 
-**Fix idea (future):** detect `--with kubernetes` (or any classic
-scheduler mode) and either:
-- re-inject a Small `@kubernetes` so the driver still runs on OB k8s
-  the same way the Argo path does; or
-- keep the current behavior but require the developer to explicitly
-  `aws sso login` and warn about SSO expiry.
+### E2. `run` — ✅
 
-### E2. `python flow.py run` (fully local, no k8s at all) — ⚠️
+Driver in the local Python process, step body still on EKS. Consequences:
 
-Same as E1 (driver on laptop) *plus* every other step also runs on the
-laptop. `@remote_step` still offloads its body to AWS Batch; everything
-else is in-process Python. S3 reads/writes use laptop AWS creds
-directly (no AssumeRole hop needed — the developer's user has direct
-bucket access via the `remote-step-dev-submit` policy).
+1. **No AWS credentials needed.** The driver prefers ambient credentials,
+   and falls back to the ones Outerbounds already vends for this perimeter's
+   task role — the same identity Argo runs as, valid 24 hours, refreshed by
+   botocore's web-identity provider. `aws sso login` is not required, and
+   neither is the AWS CLI.
+2. **Log streaming differs.** No pod means no `save_logs_periodically`
+   sidecar, so driver stdout goes straight to the terminal and the
+   Outerbounds UI only shows it after the task completes.
+3. **`current.is_production` is False**, as in E1.
 
-Same SSO-expiry and `current.is_production` caveats as E1.
+### E3. `run --with local_step` — ✅
 
-### E3. `python flow.py argo-workflows create + trigger` (production path) — ✅
+`@remote_step` becomes inert: siblings are left untouched and the step body
+runs wherever Metaflow would have put it — in-process for a plain `run`, or
+an Outerbounds pod if `--with kubernetes` is also given. Nothing is
+submitted to EKS and no Kueue quota is consumed.
 
-`_is_argo_context()` = True → our driver-k8s (Small tier) + @secrets
-(`outerbounds.remote-step-aws`, `outerbounds.remote-step-github`)
-injection kicks in. Driver runs on the Argo pod, authenticated via the
-Outerbounds custom-secret integration. This is the mode all production
-flows should run in — everything above is developer-machine
-convenience.
+The body runs in the driver's environment rather than the runner container,
+so package and architecture differences are not exercised. Every affected
+step says so at flow init.
 
----
+### E4. `argo-workflows create + trigger` (production) — ✅
+
+`_is_argo_context()` is True, so the driver gets a Small-tier `@kubernetes`
+plus `@secrets` injection and runs on the Argo pod. Credentials come from
+the pod's OIDC task role. This is the mode production flows use; everything
+above is developer convenience.
+
 
 ## By design — will not implement
 

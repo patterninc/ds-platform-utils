@@ -237,22 +237,53 @@ def _in_pod() -> bool:
     )
 
 
+def _outerbounds_session(region: str) -> boto3.Session:
+    """Credentials vended by Outerbounds for this perimeter's task role.
+
+    Outerbounds registers its own AWS client provider (`obp`), which the
+    resolved Metaflow config selects. Asking it for any client has the side
+    effect that matters here: it exchanges the Outerbounds auth key for an
+    OIDC token, writes that to a file, and points
+    AWS_WEB_IDENTITY_TOKEN_FILE / AWS_ROLE_ARN at it. From then on a plain
+    boto3 session in this process resolves
+    `assume-role-with-web-identity` credentials, which botocore refreshes on
+    its own by re-reading the token file.
+
+    The identity is one of the obp-*-task roles — the same ones an Argo pod
+    runs as, and the ones var.outerbounds_task_role_arns already trusts to
+    assume the submitter role. So the caller's access-entry check comes out
+    the same locally as it does in a pod, and both take the identical
+    three-hop path to the cluster.
+
+    Preferred over AWS SSO on a laptop because it needs no `aws sso login`,
+    no AWS CLI, and its OIDC token lasts 24 hours rather than an SSO
+    session's few.
+    """
+    try:
+        from metaflow import get_aws_client  # type: ignore[attr-defined]
+    except ImportError:
+        from metaflow.plugins.aws.aws_client import get_aws_client
+
+    # Called for the environment it configures, not the client it returns.
+    get_aws_client("sts")
+    return boto3.Session(region_name=region)
+
+
 def _ambient_session(region: str) -> boto3.Session:
-    """Whatever credentials the environment already has, logging in if not.
+    """Whatever credentials this process can get, in order of preference.
 
-    In a pod this returns immediately: the task role supplies credentials
-    through OIDC and `get_caller_identity` succeeds on the first try.
+    In a pod the first probe succeeds — the task role supplies credentials
+    through OIDC — and nothing else runs.
 
-    On a laptop the credentials are usually an SSO role whose token expires
-    while a step is still running. Rather than requiring `aws sso login`
-    beforehand — and therefore requiring the AWS CLI to be installed at all —
-    fall through to sso_auth, which refreshes silently if it can and opens a
-    browser only if it must.
+    On a laptop the probe fails whenever there are no AWS credentials, or the
+    SSO session has lapsed. Rather than requiring `aws sso login` first (and
+    therefore the AWS CLI, which this package does not otherwise need), fall
+    through to the credentials Outerbounds already vends: the Metaflow config
+    is present or the flow could not have started, and those credentials are
+    both longer-lived and the same identity production uses.
 
-    Any failure here is swallowed and the plain session returned: the caller
-    then discovers there is no access entry and hops to the submitter role,
-    which is the correct path for an identity that legitimately has no SSO
-    profile.
+    Any failure is swallowed and the plain session returned, so an identity
+    with no Outerbounds config still reaches the caller's submitter-role hop.
     """
     plain = boto3.Session(region_name=region)
     try:
@@ -264,23 +295,22 @@ def _ambient_session(region: str) -> boto3.Session:
     if _in_pod():
         return plain
 
+    import sys
+
     try:
-        from remote_step import sso_auth
-
-        if sso_auth.read_profile() is None:
-            return plain
-        import sys
-
+        session = _outerbounds_session(region)
+        who = session.client("sts", region_name=region).get_caller_identity()
         sys.stdout.write(
-            "[remote_step] AWS credentials are missing or expired; "
-            "authenticating with SSO.\n"
+            f"[remote_step] no local AWS credentials; using the Outerbounds "
+            f"task role ({who['Arn'].rsplit('/', 2)[1]}).\n"
         )
         sys.stdout.flush()
-        return sso_auth.session(interactive=sys.stdin.isatty())
+        return session
     except Exception as exc:  # noqa: BLE001
-        import sys
-
-        sys.stdout.write(f"[remote_step] SSO login unavailable: {exc}\n")
+        sys.stdout.write(
+            f"[remote_step] could not obtain Outerbounds credentials "
+            f"({type(exc).__name__}: {exc}).\n"
+        )
         sys.stdout.flush()
         return plain
 
