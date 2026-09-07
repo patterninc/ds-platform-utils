@@ -19,6 +19,7 @@ Metaflow then persists those tiny refs as normal artifacts at task end.
 from __future__ import annotations
 
 import getpass
+import json
 import os
 import subprocess
 import sys
@@ -250,6 +251,27 @@ def _is_k8s_task_runtime() -> bool:
     _should_submit(); see the note in _is_argo_context().
     """
     return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD"))
+
+
+def _outerbounds_config() -> dict:
+    """The Metaflow config Outerbounds serves, or {} if unavailable.
+
+    `~/.metaflowconfig/config.json` holds only a pointer —
+    OBP_METAFLOW_CONFIG_URL plus an auth key — and the real settings are
+    fetched from that URL. init_config() performs and caches that fetch, so it
+    is the only way to see keys like OBP_INTEGRATIONS_URL from a laptop, where
+    they never appear in the environment.
+
+    Returns {} rather than raising: a caller with no Outerbounds config should
+    degrade to whatever the environment provides.
+    """
+    try:
+        from metaflow_extensions.outerbounds.remote_config import init_config
+
+        conf = init_config()
+        return conf if isinstance(conf, dict) else {}
+    except Exception:  # noqa: BLE001 - no OB extension, or nothing to fetch
+        return {}
 
 
 def _should_submit(decorators) -> bool:
@@ -991,9 +1013,38 @@ class RemoteStepDecorator(StepDecorator):
                 # Outerbounds runtime context, so user code that talks to
                 # Outerbounds integrations (Snowflake and friends) works from
                 # inside the runner pod.
+                #
+                # Two sources, and both are needed. On an Argo pod Outerbounds
+                # materialises its config as environment variables, so the
+                # environment alone is enough. Run the same flow locally and
+                # those values exist only in the config fetched from
+                # OBP_METAFLOW_CONFIG_URL — nothing is in os.environ to
+                # forward, and the runner dies with
+                #
+                #   OuterboundsSnowflakeConnectorException: No integrations
+                #   url set.
+                #
+                # because OBP_INTEGRATIONS_URL never reached it. The config is
+                # read first and the environment layered on top, so a pod's
+                # real values always win over anything stale on disk.
+                for _k, _v in _outerbounds_config().items():
+                    if _k.startswith(("METAFLOW_", "OBP_", "OUTERBOUNDS_")):
+                        runner_env[_k] = str(_v)
                 for _k, _v in os.environ.items():
                     if _k.startswith(("METAFLOW_", "OBP_", "OUTERBOUNDS_")):
                         runner_env[_k] = _v
+                # The integrations API is authenticated, and Outerbounds' own
+                # client reads the header from METAFLOW_SERVICE_HEADERS but
+                # the key itself from METAFLOW_SERVICE_AUTH_KEY. On a pod the
+                # header is already set; locally only the key exists, so
+                # synthesise the header rather than leave the runner able to
+                # find the endpoint but not call it.
+                if "METAFLOW_SERVICE_HEADERS" not in runner_env:
+                    _auth = runner_env.get("METAFLOW_SERVICE_AUTH_KEY")
+                    if _auth:
+                        runner_env["METAFLOW_SERVICE_HEADERS"] = json.dumps(
+                            {"x-api-key": _auth}
+                        )
 
                 result = k8s_submit(
                     cfg,
