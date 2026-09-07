@@ -4,6 +4,7 @@ How a Metaflow step's compute is moved off Outerbounds and onto Pattern's own
 EKS cluster, and why.
 
 Companion documents:
+- [eks.md](eks.md) — the cluster itself: network, nodes, queueing, identity
 - [caveats.md](caveats.md) — known gaps, per-feature status
 - [security_review.md](security_review.md) — the auth chain and its findings
 
