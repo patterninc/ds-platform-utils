@@ -752,7 +752,19 @@ class RemoteStepDecorator(StepDecorator):
         # GitHub is different: uv needs a token to clone private git
         # dependencies inside the runner pod, and there is no ambient
         # equivalent.
-        if _is_argo_context():
+        #
+        # Gated on self._submit, not on being under Argo. The runner pod is
+        # what needs the token, and it exists for a local `run` just as much
+        # as for an Argo one — the driver forwards GITHUB_TOKEN out of its own
+        # environment, and @secrets is what puts it there. Gating on Argo left
+        # a local run with no token, so any flow with a private git dependency
+        # died at STAGE=uv_pip_install with
+        #
+        #   fatal: could not read Username for 'https://github.com'
+        #
+        # `--with local_step` correctly skips this: no submission, no runner,
+        # nothing to authenticate.
+        if self._submit:
             gh_src = self.attributes.get("github_secret_source")
             if gh_src:
                 _inject_secrets(decorators, gh_src)
