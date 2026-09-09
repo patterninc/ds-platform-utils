@@ -35,6 +35,12 @@ query_pandas_from_snowflake(
 
 **Returns:** `pd.DataFrame` query results with lowercase column names.
 
+## Notes
+
+- The underlying Snowflake session always has `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`
+  set (`snowflake_connection.py`), so quoted identifiers in `query` resolve
+  case-insensitively.
+
 ## Limitations
 
 - `use_s3_stage` does not support Snowflake `TIMESTAMP_TZ` and `TIMESTAMP_LTZ` data types.

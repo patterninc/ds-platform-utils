@@ -1,0 +1,17 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ds-platform-utils
+  description: 'A Onboard an Existing Repo to Backstage created via Backstage'
+  annotations:
+    repo: patterninc/ds-platform-utils
+  labels:
+    CostCenter: DATASCIENCE
+    Environment: stage
+    Name: ds-platform-utils
+    Owner: data_science-sre-updates
+    Department: DATASCIENCE
+    CreatedBy: Backstage
+spec:
+  type: service
+  system: datascience
