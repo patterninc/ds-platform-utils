@@ -104,8 +104,9 @@ Notes:
   (the RFC `CREATE TAG` setup). Until then, tagging is **skipped with a warning** — the publish
   still succeeds.
 - Invalid `status`/`sla` values raise `ValueError` before any data is written.
-- Tagged tables surface in the `TABLE_OWNERSHIP_REGISTRY` view (see
-  [Table-ownership registry view](table_ownership_registry.md)).
+- Tagged tables surface in the `TABLE_OWNERSHIP_REGISTRY` table, which is
+  refreshed daily by a Metaflow flow (see
+  [Table-ownership registry](table_ownership_registry.md)).
 - The underlying Snowflake session always has `QUOTED_IDENTIFIERS_IGNORE_CASE = TRUE`
   set (`snowflake_connection.py`), so quoted identifiers in `query`/`audits` resolve
   case-insensitively.
