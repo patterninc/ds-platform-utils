@@ -32,6 +32,12 @@ dev = [
     "ipykernel>=6.30.0",
     "pytest-xdist>=3.8.0",
 ]
+# mkdocs<2 is a hard pin: MkDocs 2.0 removes the plugin system and theming that
+# mkdocs-material and our build hook rely on, with no migration path.
+docs = [
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+]
 
 
 [build-system]
@@ -148,6 +154,13 @@ help = "Run linting, formatting, projen synth, and other static code quality too
 cmd = "pytest"
 help = "Run all tests with optional additional arguments"
 
+[tool.poe.tasks.docs-build]
+shell = "uv run --group docs mkdocs build --strict"
+help = "Build the documentation site into ./site (fails on broken links)"
+
+[tool.poe.tasks.docs-serve]
+shell = "uv run --group docs mkdocs serve"
+help = "Serve the docs with live reload on http://localhost:8000"
 
 [tool.poe.tasks.serve-coverage-report]
 help = "Serve the coverage report on http://localhost:3333"

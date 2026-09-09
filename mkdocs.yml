@@ -1,0 +1,69 @@
+site_name: ds-platform-utils
+site_description: Utility library for Pattern Data Science.
+site_url: https://patterninc.github.io/ds-platform-utils/
+repo_url: https://github.com/patterninc/ds-platform-utils
+repo_name: patterninc/ds-platform-utils
+edit_uri: edit/main/docs/
+
+# `index.md` is generated from README.md at build time -- see scripts/mkdocs_hooks.py
+hooks:
+  - scripts/mkdocs_hooks.py
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - Metaflow API Docs:
+      - BatchInferencePipeline: metaflow/batch_inference_pipeline.md
+      - uv_pypi_base / uv_pypi: metaflow/pypi_packages.md
+      - make_pydantic_parser_fn: metaflow/make_pydantic_parser_fn.md
+      - publish: metaflow/publish.md
+      - publish_pandas: metaflow/publish_pandas.md
+      - query_pandas_from_snowflake: metaflow/query_pandas_from_snowflake.md
+      - restore_step_state: metaflow/restore_step_state.md
+  - Admin / Setup:
+      - Private repo access in Fast Bakery: metaflow/private_repo_access.md
+      - Table-ownership registry view: metaflow/table_ownership_registry.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
