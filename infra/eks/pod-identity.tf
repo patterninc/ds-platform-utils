@@ -50,6 +50,19 @@ data "aws_iam_policy_document" "runner_permissions" {
     ]
   }
 
+  # Outerbounds S3 integrations. Empty by default, so this statement is only
+  # emitted once an integration is actually listed -- an sts:AssumeRole
+  # statement with no resources is invalid, and one with "*" is not something
+  # to leave lying around in an account shared with Outerbounds.
+  dynamic "statement" {
+    for_each = length(var.s3_integration_role_arns) > 0 ? [1] : []
+    content {
+      sid       = "AssumeS3IntegrationRoles"
+      actions   = ["sts:AssumeRole"]
+      resources = var.s3_integration_role_arns
+    }
+  }
+
   statement {
     sid = "StepLogs"
     actions = [

@@ -301,3 +301,33 @@ variable "kueue_version" {
   type        = string
   default     = "0.19.3"
 }
+
+variable "s3_integration_role_arns" {
+  description = <<-EOT
+    IAM roles backing Outerbounds S3 integrations that @remote_step steps may
+    use, which the runner pod is allowed to assume.
+
+    An Outerbounds S3 integration is a role in the *target bucket's* account
+    whose trust policy names the Outerbounds deployment task role
+    (arn:aws:iam::209479263910:role/obp-5p6le9-task) and which is tagged
+    outerbounds.com/accessible-by-deployment = pattern. That works on an
+    Outerbounds pod, which runs as that task role.
+
+    A @remote_step body does not. It runs in our EKS cluster as the runner
+    ServiceAccount, whose pod identity role is
+    <name>-ob-runner -- so the integration role does not trust it, and the
+    runner role has no sts:AssumeRole permission of its own. Both sides have
+    to change for a step to reach an integration bucket:
+
+      1. list the integration's role ARN here, which grants the runner
+         sts:AssumeRole on exactly that role, and
+      2. add the runner role as a second principal on the integration role's
+         trust policy, alongside the Outerbounds task role.
+
+    Listed explicitly rather than granted by wildcard-plus-tag-condition: the
+    target roles live in other accounts, and an ARN list is auditable from
+    this repo without reading tags in an account we may not control.
+  EOT
+  type        = list(string)
+  default     = []
+}

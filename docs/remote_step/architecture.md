@@ -152,6 +152,60 @@ The runner's identity comes from `aws_eks_pod_identity_association` binding
 the `remote-step-runner` ServiceAccount in each team namespace. No static
 credentials exist anywhere in the chain.
 
+### Outerbounds S3 integrations
+
+An Outerbounds S3 integration is a role in the target bucket's account whose
+trust policy names the Outerbounds **deployment task roles** and which is
+tagged `outerbounds.com/accessible-by-deployment = pattern`. For example
+`ob-demand-forecast-models` trusts:
+
+```
+arn:aws:iam::209479263910:role/obp-5p6le9-task          default perimeter
+arn:aws:iam::209479263910:role/obp-301bcf-task--prod    prod perimeter
+```
+
+That works from an ordinary step, which runs on an Outerbounds pod *as* one of
+those roles. **It does not work from a `@remote_step` body**, which runs in our
+cluster as `…-ob-runner`. Both sides deny it: the integration role does not
+trust the runner, and the runner has no `sts:AssumeRole` permission of its
+own. So
+
+```python
+@remote_step(cpu_arch="arm64")
+@step
+def publish_artifacts(self):
+    with S3(role="arn:aws:iam::209479263910:role/ob-demand-forecast-models") as s3:
+        s3.put_files(local)          # AccessDenied
+```
+
+fails, where the same code in a non-remote step succeeds.
+
+Enabling one takes two changes, and **both** are required:
+
+1. List the role in `var.s3_integration_role_arns` (infra/eks). That grants
+   the runner `sts:AssumeRole` on exactly that role — listed explicitly rather
+   than by wildcard, since the target roles may live in accounts we do not
+   control.
+2. Add the runner as a second principal on the integration role's trust
+   policy, **alongside** the Outerbounds task roles rather than replacing
+   them, so ordinary steps keep working:
+
+```json
+"Principal": {
+  "AWS": [
+    "arn:aws:iam::209479263910:role/obp-5p6le9-task",
+    "arn:aws:iam::209479263910:role/obp-301bcf-task--prod",
+    "arn:aws:iam::209479263910:role/pattern-ml-platform-ob-runner"
+  ]
+}
+```
+
+Keep `sts:SetSourceIdentity` in the action list for the same reason it is
+needed on the submitter hop.
+
+The `obp-*-task` roles belong to Outerbounds and must not be edited. The
+integration role itself is ours.
+
 ---
 
 ## 5. S3 layout
