@@ -808,6 +808,16 @@ def _save_exception(exc: BaseException, spec: dict, s3_client=None) -> None:
         return
 
 
+def _hydrate_foreach_stack(spec: dict, s3_client=None) -> Any:
+    """The foreach stack from the spec, or None outside a foreach."""
+    if not spec.get("has_foreach_stack"):
+        return None
+    ref = spec.get("foreach_stack")
+    if ref is None:
+        return None
+    return _hydrate_input("_foreach_stack", ref, s3_client or _make_s3_client())
+
+
 def _hydrate_foreach_input(spec: dict, s3_client=None) -> Any:
     """The task's `self.input`, or None when the step is not in a foreach.
 
@@ -928,13 +938,15 @@ class _FakeSelf:
     RemoteArtifact outputs.
     """
 
-    def __init__(self, foreach_input=None):
+    def __init__(self, foreach_input=None, foreach_index=None, foreach_stack=None):
         # Set through object.__setattr__ so it exists before the first
         # __setattr__ call below goes looking for it.
         object.__setattr__(self, "_assigned", set())
         # Underscored so the outputs snapshot skips it: this is context handed
         # in, not something the step produced.
         self._foreach_input = foreach_input
+        self._foreach_index = foreach_index
+        self._foreach_stack = foreach_stack
 
     def __setattr__(self, name: str, value: Any) -> None:
         """Record the assignment. Assignment is what makes an attr an output.
@@ -987,6 +999,28 @@ class _FakeSelf:
         stored nothing or raised.
         """
         return self._foreach_input
+
+    @property
+    def index(self):
+        """This task's foreach index, as Metaflow's `self.index` would give it.
+
+        Has to be a real property. `__getattr__` below answers any unset name
+        with a no-op callable, so before this `f"part-{self.index}"` rendered
+        `part-<function _placeholder at 0x...>` -- a different path on every
+        run -- and `if self.index == 0` was silently always False, so a
+        header-writing branch never fired. None outside a foreach.
+        """
+        return self._foreach_index
+
+    def foreach_stack(self):
+        """The foreach stack, as Metaflow's `self.foreach_stack()` would give it.
+
+        One entry per nesting level, innermost last. Same reasoning as
+        `index`: unset, it resolved to a no-op callable that returned None, so
+        `for step, idx, val in self.foreach_stack()` raised TypeError on a
+        line that works in a normal step. None outside a foreach.
+        """
+        return self._foreach_stack
 
     def merge_artifacts(self, inputs, exclude=None, include=None):
         """Copy artifacts common to the incoming branches onto `self`.
@@ -1138,7 +1172,11 @@ def main(spec_uri: str | None = None) -> int:
     # downloads; each worker gets its own thread-local boto client for
     # the same reason as the outputs loop.
     t0 = time.time()
-    fake = _FakeSelf(foreach_input=_hydrate_foreach_input(spec))
+    fake = _FakeSelf(
+        foreach_input=_hydrate_foreach_input(spec),
+        foreach_index=spec.get("foreach_index"),
+        foreach_stack=_hydrate_foreach_stack(spec),
+    )
     inputs_dict = spec.get("inputs", {}) or {}
     _hydrate_local = threading.local()
 

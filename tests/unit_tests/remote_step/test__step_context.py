@@ -143,3 +143,101 @@ def test_driver_reads_the_project_keys_it_finds(clean_current):
     ctx = _project_context()
     assert ctx["project_name"] == "forecast"
     assert ctx["is_production"] is True
+
+
+# --------------------------------------------------- self.index / foreach_stack
+
+
+class TestForeachIndexAndStack:
+    """`self.index` and `self.foreach_stack()` inside the pod.
+
+    Metaflow computes both from the foreach stack, so like `self.input` they
+    are properties rather than artifacts and have to be carried explicitly.
+    Unshipped, `__getattr__` answered them with a no-op callable, which does
+    not raise -- it silently poisons ordinary code:
+
+        f"part-{self.index}.parquet"  ->  part-<function _placeholder at 0x..>
+        if self.index == 0:           ->  never true
+        for s, i, v in self.foreach_stack():  ->  TypeError
+    """
+
+    def fake(self, **kw):
+        from remote_step.runner_entry import _FakeSelf
+
+        f = _FakeSelf(**kw)
+        f._begin_recording()
+        return f
+
+    def test_the_index_is_the_value_not_a_callable(self):
+        assert self.fake(foreach_index=2).index == 2
+
+    def test_index_zero_is_usable_in_a_condition(self):
+        """`if self.index == 0: write_header()` -- the header branch."""
+        assert self.fake(foreach_index=0).index == 0
+
+    def test_a_nonzero_index_does_not_match_zero(self):
+        assert self.fake(foreach_index=3).index != 0
+
+    def test_the_index_interpolates_to_a_stable_path(self):
+        f = self.fake(foreach_index=7)
+        assert f"part-{f.index}.parquet" == "part-7.parquet"
+
+    def test_the_index_is_an_integer(self):
+        assert int(self.fake(foreach_index=4).index) == 4
+
+    def test_the_stack_is_iterable_and_unpacks(self):
+        f = self.fake(foreach_stack=[("outer", 1, "eu"), ("inner", 0, "a")])
+        assert [step for step, _, _ in f.foreach_stack()] == ["outer", "inner"]
+
+    def test_a_nested_stack_keeps_its_order_innermost_last(self):
+        f = self.fake(foreach_stack=[("outer", 1, "eu"), ("inner", 0, "a")])
+        assert f.foreach_stack()[-1][0] == "inner"
+
+    def test_outside_a_foreach_both_are_none(self):
+        f = self.fake()
+        assert f.index is None
+        assert f.foreach_stack() is None
+
+    def test_neither_is_reported_as_an_output(self):
+        """Context handed in, not something the step produced."""
+        from remote_step.runner_entry import _detect_outputs
+
+        f = self.fake(foreach_index=2, foreach_stack=[("work", 2, "us")])
+        assert _detect_outputs(vars(f), f._assigned) == {}
+
+    def test_the_spec_round_trips_both(self):
+        """Driver writes them, pod reads them back."""
+        from remote_step.payload import DriverContext, build_spec
+        from remote_step.runner_entry import _FakeSelf, _hydrate_foreach_stack
+
+        ctx = DriverContext(
+            flow_module="m",
+            flow_class="F",
+            step_name="work",
+            flow_name="F",
+            run_id="1",
+            task_id="t",
+            attempt=0,
+            code_package_url="",
+            code_package_sha="",
+            datastore_root="",
+            mfconfig={},
+            foreach_input="us",
+            has_foreach_input=True,
+            foreach_index=2,
+            foreach_stack=[("work", 2, "us")],
+            has_foreach_stack=True,
+        )
+        spec = build_spec(ctx, {}, {}, "bucket")
+        assert spec["foreach_index"] == 2
+        assert spec["has_foreach_stack"] is True
+
+        f = _FakeSelf(foreach_index=spec["foreach_index"], foreach_stack=_hydrate_foreach_stack(spec))
+        assert f.index == 2
+        assert f.foreach_stack() == [("work", 2, "us")]
+
+    def test_a_spec_from_a_non_foreach_step_yields_none(self):
+        from remote_step.runner_entry import _hydrate_foreach_stack
+
+        assert _hydrate_foreach_stack({}) is None
+        assert _hydrate_foreach_stack({"has_foreach_stack": False, "foreach_stack": {"x": 1}}) is None

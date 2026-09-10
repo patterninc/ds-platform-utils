@@ -86,6 +86,15 @@ class DriverContext:
     # a foreach branch.
     foreach_input: Any = None
     has_foreach_input: bool = False
+    # `self.index` and `self.foreach_stack()`. Metaflow computes both from the
+    # foreach stack, so like `input` they are properties rather than artifacts
+    # and have to be carried explicitly. Without them the pod answered
+    # `self.index` from _FakeSelf.__getattr__ with a no-op callable, so
+    # `f"part-{self.index}"` produced an address-dependent garbage string and
+    # `if self.index == 0` was silently always False.
+    foreach_index: int | None = None
+    foreach_stack: Any = None
+    has_foreach_stack: bool = False
     # One entry per incoming branch of a join, in the order Metaflow presented
     # them: {"step": <step name>, "attrs": {<name>: <value>}}. Empty for a
     # non-join step.
@@ -194,6 +203,12 @@ def build_spec(
     if ctx.has_foreach_input:
         foreach_input = _serialise("_foreach_input", ctx.foreach_input)
 
+    # The stack travels the same road: a nested foreach carries one entry per
+    # level, and each entry holds that level's split value.
+    foreach_stack = None
+    if ctx.has_foreach_stack:
+        foreach_stack = _serialise("_foreach_stack", ctx.foreach_stack)
+
     # A join's `inputs`. Each branch's attrs are serialised the same way, so a
     # branch artifact that is already a RemoteArtifact stays a ref — which is
     # what keeps a 100-way foreach join from pulling 100 DataFrames through
@@ -243,6 +258,9 @@ def build_spec(
         "project": dict(ctx.project or {}),
         "foreach_input": foreach_input,
         "has_foreach_input": bool(ctx.has_foreach_input),
+        "foreach_index": ctx.foreach_index,
+        "foreach_stack": foreach_stack,
+        "has_foreach_stack": bool(ctx.has_foreach_stack),
         "is_join": bool(ctx.is_join),
         "join_branches": join_branches,
         "gpu_profile": bool(ctx.gpu_profile),

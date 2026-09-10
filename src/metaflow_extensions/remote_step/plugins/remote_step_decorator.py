@@ -1166,6 +1166,22 @@ class RemoteStepDecorator(StepDecorator):
                 except Exception:  # noqa: BLE001
                     _foreach_input = None
                     _has_foreach_input = False
+                # `self.index` and `self.foreach_stack()` are computed from the
+                # same stack and are just as absent from the attrs above. Left
+                # unshipped, the pod answered `self.index` from
+                # _FakeSelf.__getattr__ with a no-op callable: `f"part-{self.index}"`
+                # became an address-dependent garbage string and
+                # `if self.index == 0` was silently always False.
+                try:
+                    _foreach_index = self_flow.index
+                except Exception:  # noqa: BLE001
+                    _foreach_index = None
+                try:
+                    _foreach_stack = self_flow.foreach_stack()
+                    _has_foreach_stack = _foreach_stack is not None
+                except Exception:  # noqa: BLE001
+                    _foreach_stack = None
+                    _has_foreach_stack = False
                 sys.stdout.write(f"[remote_step] captured inputs: {list(input_attrs.keys())}\n")
                 # Acquire cluster access before anything touches S3.
                 #
@@ -1242,6 +1258,9 @@ class RemoteStepDecorator(StepDecorator):
                     project=_project_context(),
                     foreach_input=_foreach_input,
                     has_foreach_input=_has_foreach_input,
+                    foreach_index=_foreach_index,
+                    foreach_stack=_foreach_stack,
+                    has_foreach_stack=_has_foreach_stack,
                     is_join=(node_type == "join"),
                     join_branches=_join_branches(inputs),
                     model_loads=getattr(self, "_model_loads", None),
