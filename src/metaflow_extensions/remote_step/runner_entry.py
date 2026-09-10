@@ -807,8 +807,15 @@ def _save_exception(exc: BaseException, spec: dict, s3_client=None) -> None:
     bucket = spec.get("output_bucket")
     if not prefix or not bucket:
         return
+    # Captured once, here, while the user's exception is still the one being
+    # handled. Calling format_exc() inside the except branch below formats
+    # *our* pickling TypeError instead, and the driver prints this string as
+    # "raised in the runner pod" -- so a step whose exception happened to hold
+    # a lock showed a traceback about _thread.lock inside remote_step, with
+    # the user's own stack nowhere to be found.
+    user_traceback = traceback.format_exc()
     try:
-        payload = pickle.dumps({"exception": exc, "traceback": traceback.format_exc()}, protocol=5)
+        payload = pickle.dumps({"exception": exc, "traceback": user_traceback}, protocol=5)
     except Exception:  # noqa: BLE001
         # Unpicklable exception — try again with just the text, so the driver
         # can at least reproduce the type and message.
@@ -818,7 +825,7 @@ def _save_exception(exc: BaseException, spec: dict, s3_client=None) -> None:
                     "exception": None,
                     "type_name": type(exc).__name__,
                     "message": str(exc),
-                    "traceback": traceback.format_exc(),
+                    "traceback": user_traceback,
                 },
                 protocol=5,
             )

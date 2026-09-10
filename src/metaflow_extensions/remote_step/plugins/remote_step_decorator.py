@@ -1430,6 +1430,7 @@ class RemoteStepDecorator(StepDecorator):
                         spec["output_prefix"],
                         step_name,
                         s3_client=driver_s3,
+                        exit_code=outcome.exit_code,
                     )
                     detail = "\n  ".join(outcome.events) if outcome.events else ""
                     raise RunnerError(
@@ -2065,7 +2066,13 @@ def _apply_run_tags(bucket: str, output_prefix: str, s3_client=None) -> None:
         sys.stdout.write(f"[remote_step] could not apply run tags {added or removed}: {exc}\n")
 
 
-def _reraise_step_exception(bucket: str, output_prefix: str, step_name: str, s3_client=None):
+def _reraise_step_exception(
+    bucket: str,
+    output_prefix: str,
+    step_name: str,
+    s3_client=None,
+    exit_code: int | None = None,
+):
     """Re-raise the step body's own exception, if the runner saved one.
 
     Returns normally when there is nothing to re-raise, so the caller falls
@@ -2095,7 +2102,16 @@ def _reraise_step_exception(bucket: str, output_prefix: str, step_name: str, s3_
     # those rather than silently degrading to "the job failed".
     type_name = record.get("type_name")
     if type_name:
-        raise RunnerError(f"step '{step_name}' raised {type_name}: {record.get('message', '')}")
+        # exit_code is required on RunnerError. Omitting it turned this
+        # degradation path into `TypeError: RunnerError.__init__() missing 1
+        # required positional argument: 'exit_code'`, raised from inside the
+        # failure handler -- so a step whose exception happened to hold a lock
+        # or a cursor reported that TypeError and the real error was lost
+        # entirely, which is the opposite of what this branch is for.
+        raise RunnerError(
+            f"step '{step_name}' raised {type_name}: {record.get('message', '')}",
+            exit_code=1 if exit_code is None else exit_code,
+        )
 
 
 def _job_timeout_minutes(user_timeout: int | None, attr_timeout: int) -> int:
