@@ -154,6 +154,39 @@ def _read_cpu_usage_seconds() -> float | None:
     return nanos / 1_000_000_000 if nanos is not None else None
 
 
+def _unwrap_flow_class(obj):
+    """The FlowSpec subclass behind whatever the module exports under that name.
+
+    A FlowMutator is a *class* decorator, so
+
+        @output_table_cleanup_mutator
+        class OosPredictFlow(FlowSpec): ...
+
+    binds the module name to the mutator instance, not the flow. The runner
+    then did `getattr(module, flow_class)` followed by
+    `getattr(that, step_name)` and died with
+
+        AttributeError: 'output_table_cleanup_mutator' object has no
+        attribute 'predict'
+
+    reported as exit 6, import_step -- which reads like a packaging problem
+    rather than a decorator one. Mutators are a real pattern here:
+    out-of-stock's predict flow is wrapped exactly like this, and @gpu_profile
+    is built on the same machinery.
+
+    Metaflow stores the decorated class on the mutator as `_flow_cls`. Several
+    mutators can be stacked, so unwrap until a class comes out.
+    """
+    seen = 0
+    while not isinstance(obj, type) and seen < 10:
+        nxt = getattr(obj, "_flow_cls", None)
+        if nxt is None:
+            break
+        obj = nxt
+        seen += 1
+    return obj
+
+
 def _detect_outputs(current_attrs: dict, assigned: set) -> dict:
     """Which attributes the step body produced or changed.
 
@@ -1496,7 +1529,7 @@ def main(spec_uri: str | None = None) -> int:
                     break
         if flow_module is None:
             raise ImportError(f"could not locate module {flow_module_name} in /workspace")
-        flow_cls = getattr(flow_module, spec["flow_class"])
+        flow_cls = _unwrap_flow_class(getattr(flow_module, spec["flow_class"]))
         # Helper methods and class attributes the step body reaches through
         # `self` resolve against the real class from here on.
         fake.bind_flow_class(flow_cls)
