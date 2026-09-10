@@ -437,7 +437,7 @@ Legend for **Status**:
   Before the fix that field carried the 240-minute default, so the pod outlived
   its driver by hours.
 
-### 14. `@gpu_profile()` — ⚠️ data half shipped, card half blocked on gap 6
+### 14. `@gpu_profile()` — ✅
 - **Uses**: 8 sites (advertising CR flows).
 - **Was**: the decorator samples on the driver, which has no GPU, so a remote
   GPU step was profiled as an idle machine.
@@ -463,9 +463,22 @@ Legend for **Status**:
   The runner therefore writes **`remote_gpu_profile`**, which the driver's
   empty reading cannot clobber, and appends its summary to the `gpu_profile`
   card through the card recorder so that card shows real numbers.
-- **Still to verify live:** the sampling itself and the card summary, both of
-  which run in the pod and so need a new runner image.
-- **Blocked on gap 6 for the rest.** `_gpu_profile_wrapper` renders everything
+- Verified live on `GpuFlow` run 238624:
+
+  ```
+  gpu_profile: sampling 1 device(s) every 1s — driver 580.159.03, CUDA 13.0
+  gpu_profile 00000000:31:00.0: peak 3% util, peak 274 MB memory, 7 samples
+  gpucheck finished, 2 artifact(s) linked
+  ```
+
+- One trap worth knowing: `create_new_monitor()` only spawns `nvidia-smi -l`,
+  which appends to a CSV. Nothing parses that file until `_update_readings()`
+  runs, so `read()` returned `{}` and no artifact was produced — the first run
+  showed sampling start and then linked only one artifact.
+- The `gpu_profile` **card is cleared before the replay**. The wrapper fills it
+  on the driver at task start — "Drivers: unknown / unknown", "No GPU devices
+  found" — and cannot be dropped, so without clearing the card shows those
+  blanks above the real numbers. `_gpu_profile_wrapper` renders everything
   through `current.card["gpu_profile"]`, and a card written in the pod does not
   reach the driver's card. So the readings exist but the chart does not. Gap 6
   is the keystone here, not extra GPU work.
@@ -783,7 +796,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@environment` | 1 | ✅ gap #11 |
 | `@model` | 19 | ✅ load, gap #7 |
 | `@huggingface_hub` | 17 | ✅ read, gap #8 |
-| `@gpu_profile` | 14 | ⚠️ gap #14 — data yes, card blocked on #6 |
+| `@gpu_profile` | 14 | ✅ gap #14 |
 | `compute_pool` (kwarg on `@kubernetes`) | 10 | ✅ gap #15 |
 | `@conda` / `@conda_base` | 2 | ✅ refused by design, gap #16 |
 | `@batch` | 0 | 🚫 refused |

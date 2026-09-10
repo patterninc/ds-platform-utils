@@ -246,3 +246,52 @@ def test_a_non_reference_value_passes_through(monkeypatch):
 
     monkeypatch.setattr(deco_mod, "RemoteArtifact", FakeRef)
     assert deco_mod._hydrate_for_card("html", "already a value") == "already a value"
+
+
+def test_the_gpu_profile_card_is_cleared_before_replay(monkeypatch):
+    """@gpu_profile's wrapper fills that card on the driver, which has no GPU.
+
+    It cannot be dropped — it is a user_step_decorator, absent from the list
+    step_init sees — so it writes "Drivers: unknown / unknown" and "No GPU
+    devices found" at task start. Clearing first leaves only the real readings.
+    """
+    import remote_step.plugins.remote_step_decorator as deco_mod
+    from remote_step.runner_entry import CARD_COMPONENTS_FILENAME  # noqa: F401
+
+    calls = []
+
+    class FakeCardManager:
+        def __init__(self, card_id):
+            self.card_id = card_id
+
+        def clear(self):
+            calls.append(("clear", self.card_id))
+
+        def append(self, component):
+            calls.append(("append", self.card_id))
+
+    class FakeCollector:
+        def __getitem__(self, card_id):
+            return FakeCardManager(card_id)
+
+        def append(self, component):
+            calls.append(("append", "_default"))
+
+        def refresh(self, force=False):
+            pass
+
+    class FakeS3:
+        def get_object(self, Bucket, Key):  # noqa: N803
+            body = pickle.dumps({"gpu_profile": [pickle.dumps(Markdown("real numbers"))]})
+
+            class B:
+                def read(self_inner):
+                    return body
+
+            return {"Body": B()}
+
+    monkeypatch.setattr("metaflow.current.card", FakeCollector(), raising=False)
+    deco_mod._replay_card_components("bucket", "prefix", s3_client=FakeS3())
+
+    assert ("clear", "gpu_profile") in calls
+    assert calls.index(("clear", "gpu_profile")) < calls.index(("append", "gpu_profile"))

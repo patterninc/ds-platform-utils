@@ -1694,6 +1694,18 @@ def _replay_card_components(bucket: str, output_prefix: str, s3_client=None) -> 
         )
         return
 
+    # The gpu_profile card is a special case. @gpu_profile's wrapper still runs
+    # on the driver — it is a user_step_decorator, absent from the list
+    # step_init sees, so it cannot be dropped — and it fills that card at task
+    # start from a machine with no GPU: "Drivers: unknown / unknown", "No GPU
+    # devices found". Clearing it first means the card shows the readings taken
+    # next to the GPU instead of the driver's blanks followed by ours.
+    if GPU_PROFILE_CARD_ID in pending:
+        try:
+            collector[GPU_PROFILE_CARD_ID].clear()
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(f"[remote_step] could not clear the {GPU_PROFILE_CARD_ID} card: {exc}\n")
+
     applied = 0
     for card_id, blobs in pending.items():
         for blob in blobs:
