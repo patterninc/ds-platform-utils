@@ -142,10 +142,7 @@ class _ProgressLogger:
             pct = min(100.0, 100.0 * self._done / self._total)
             done_mb = self._done / (1024 * 1024)
             total_mb = self._total / (1024 * 1024)
-            self._out.write(
-                f"[remote_step] {self._label}: "
-                f"{done_mb:,.1f} / {total_mb:,.1f} MB ({pct:5.1f}%)\n"
-            )
+            self._out.write(f"[remote_step] {self._label}: {done_mb:,.1f} / {total_mb:,.1f} MB ({pct:5.1f}%)\n")
             self._out.flush()
             self._last = now
 
@@ -230,8 +227,7 @@ class RemoteArtifact:
         got = _sha256_of_buf(buf, buf.getbuffer().nbytes)
         if got != self.sha256:
             raise ArtifactLoadError(
-                f"sha256 mismatch for {self.s3_uri}: "
-                f"expected {self.sha256}, got {got}",
+                f"sha256 mismatch for {self.s3_uri}: expected {self.sha256}, got {got}",
                 s3_uri=self.s3_uri,
                 expected=self.sha256,
                 got=got,
@@ -345,8 +341,8 @@ def _parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024        # 100 MB
-_S3_MULTIPART_CHUNK_SIZE = 32 * 1024 * 1024        # 32 MB
+_S3_MULTIPART_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+_S3_MULTIPART_CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB
 _S3_LARGE_BLOB_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GB
 _S3_MAX_CONCURRENCY_SMALL = 10
 _S3_MAX_CONCURRENCY_BIG = 32
@@ -359,11 +355,7 @@ def _transfer_config_for(size: int) -> TransferConfig:
     or above 2 GB gets 32 threads so a single huge input saturates the
     driver pod's egress bandwidth too.
     """
-    concurrency = (
-        _S3_MAX_CONCURRENCY_BIG
-        if size >= _S3_LARGE_BLOB_THRESHOLD
-        else _S3_MAX_CONCURRENCY_SMALL
-    )
+    concurrency = _S3_MAX_CONCURRENCY_BIG if size >= _S3_LARGE_BLOB_THRESHOLD else _S3_MAX_CONCURRENCY_SMALL
     return TransferConfig(
         multipart_threshold=_S3_MULTIPART_THRESHOLD,
         multipart_chunksize=_S3_MULTIPART_CHUNK_SIZE,
@@ -372,9 +364,7 @@ def _transfer_config_for(size: int) -> TransferConfig:
     )
 
 
-def _download_to_buf(
-    s3_client, bucket: str, key: str, size_hint: int
-) -> io.BytesIO:
+def _download_to_buf(s3_client, bucket: str, key: str, size_hint: int) -> io.BytesIO:
     """Fetch s3://bucket/key into a fresh ``BytesIO`` rewound to 0.
 
     Above ``_S3_MULTIPART_THRESHOLD`` we use ``download_fileobj`` — the
@@ -449,9 +439,7 @@ def _upload_buf(
     else:
         cfg = _transfer_config_for(size)
         cb = _ProgressLogger(label or f"upload {key}", size) if label is not False else None
-        s3.upload_fileobj(
-            buf, Bucket=bucket, Key=key, Config=cfg, Callback=cb
-        )
+        s3.upload_fileobj(buf, Bucket=bucket, Key=key, Config=cfg, Callback=cb)
 
 
 def write_artifact(

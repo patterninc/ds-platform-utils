@@ -100,9 +100,7 @@ def load() -> RemoteStepConfig:
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(body, dict):
-        raise ConfigError(
-            f"{path}: expected top-level JSON object, got {type(body).__name__}"
-        )
+        raise ConfigError(f"{path}: expected top-level JSON object, got {type(body).__name__}")
     missing = [k for k in REQUIRED_KEYS if k not in body]
     if missing:
         # An old config file is the likeliest reason for a miss, and
@@ -121,10 +119,7 @@ def load() -> RemoteStepConfig:
         ]
         hint = ""
         if stale:
-            hint = (
-                f"\n  this config predates the EKS migration (found {stale}); "
-                f"regenerate it from infra/eks"
-            )
+            hint = f"\n  this config predates the EKS migration (found {stale}); regenerate it from infra/eks"
         raise ConfigError(
             f"{path} missing required keys: {missing}{hint}",
             missing_keys=missing,

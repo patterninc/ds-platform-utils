@@ -19,9 +19,6 @@ failures. Exit codes:
     1 user code raised
 """
 
-
-from __future__ import annotations
-
 from __future__ import annotations
 
 import base64
@@ -43,6 +40,7 @@ import boto3
 from botocore.config import Config as BotocoreConfig
 
 from remote_step.artifact import RemoteArtifact, _upload_buf
+from remote_step.errors import RemoteStepError
 
 
 def _make_s3_client() -> Any:
@@ -114,6 +112,161 @@ def _hydrate_input(name: str, ref: dict, s3_client) -> Any:
     raise ValueError(f"unknown input kind for {name!r}: {kind}")
 
 
+EXCEPTION_FILENAME = "exception.pkl"
+
+
+def _save_exception(exc: BaseException, spec: dict, s3_client=None) -> None:
+    """Store the user's exception so the driver can re-raise this exact error.
+
+    `@catch(var="e")` runs on the driver, where the only failure visible is
+    the RunnerError the poller raises — so `e` was always a RunnerError and
+    the user's own exception was reduced to log text. Persisting it here lets
+    the driver re-raise the original.
+
+    Best-effort by design: an exception holding a socket, a file handle or a
+    thread does not pickle, and losing the detail is far better than turning a
+    step failure into a crash in the failure handler. The traceback cannot be
+    pickled either, so it is formatted and carried alongside.
+    """
+    prefix = spec.get("output_prefix")
+    bucket = spec.get("output_bucket")
+    if not prefix or not bucket:
+        return
+    try:
+        payload = pickle.dumps({"exception": exc, "traceback": traceback.format_exc()}, protocol=5)
+    except Exception:  # noqa: BLE001
+        # Unpicklable exception — try again with just the text, so the driver
+        # can at least reproduce the type and message.
+        try:
+            payload = pickle.dumps(
+                {
+                    "exception": None,
+                    "type_name": type(exc).__name__,
+                    "message": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+                protocol=5,
+            )
+        except Exception:  # noqa: BLE001
+            return
+    try:
+        client = s3_client or _make_s3_client()
+        client.put_object(Bucket=bucket, Key=f"{prefix}/{EXCEPTION_FILENAME}", Body=payload)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _hydrate_foreach_input(spec: dict, s3_client=None) -> Any:
+    """The task's `self.input`, or None when the step is not in a foreach.
+
+    `has_foreach_input` distinguishes "not a foreach" from "a foreach whose
+    value happens to be None", which matters because the second is legitimate.
+    """
+    if not spec.get("has_foreach_input"):
+        return None
+    ref = spec.get("foreach_input")
+    if not ref:
+        return None
+    return _hydrate_input("_foreach_input", ref, s3_client or _make_s3_client())
+
+
+def _patch_project_context(spec: dict) -> None:
+    """Replay @project's additions to `metaflow.current` inside the pod.
+
+    `project_name`, `branch_name`, `is_production` and friends are not
+    built-in properties of `current` — @project injects them with
+    `_update_env`, which never runs here because the runner is not executing
+    a Metaflow task. So we inject the same keys from the values the driver
+    read off its own `current`.
+
+    `current.is_production` is the one that matters most: user code branches
+    on it to choose a schema, and an absent attribute reads as falsy, so a
+    production run would quietly write to staging tables.
+    """
+    project = spec.get("project") or {}
+    if not project:
+        return
+    try:
+        from metaflow import current as _current
+
+        _current._update_env(dict(project))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+class _FakeBranch:
+    """One incoming branch of a join, as `inputs.<step>` / `inputs[i]`.
+
+    Attributes hydrate on first access and are cached. Lazy on purpose: a join
+    over a 100-way foreach would otherwise download every branch's artifacts
+    to answer `inputs[0].x`, and the step may only want one of them.
+    """
+
+    def __init__(self, step: str, entries: dict[str, dict], s3_client=None):
+        self._current_step = step
+        self._entries = entries
+        self._s3_client = s3_client
+        self._cache: dict[str, Any] = {}
+
+    def _shas(self) -> dict[str, str]:
+        """Content hash per attribute, for merge_artifacts conflict checks."""
+        return {name: (e or {}).get("sha256") or "" for name, e in self._entries.items()}
+
+    def __getattr__(self, name: str) -> Any:
+        # __getattr__ only fires when normal lookup fails, so the instance
+        # attributes set in __init__ never reach here.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name in self._cache:
+            return self._cache[name]
+        if name not in self._entries:
+            raise AttributeError(f"step '{self._current_step}' produced no attribute '{name}'")
+        val = _hydrate_input(name, self._entries[name], self._s3_client or _make_s3_client())
+        self._cache[name] = val
+        return val
+
+    def __repr__(self) -> str:
+        return f"<branch {self._current_step}: {sorted(self._entries)}>"
+
+
+class _FakeInputs:
+    """Metaflow's `Inputs` shape: iterable, indexable, and keyed by step name.
+
+    Mirrors `metaflow.datastore.inputs.Inputs` so the three documented access
+    patterns all work — `inputs.step_a.x`, `inputs[0].x`, and
+    `(inp.x for inp in inputs)`.
+    """
+
+    def __init__(self, branches: list[_FakeBranch]):
+        self.flows = list(branches)
+        for branch in self.flows:
+            setattr(self, branch._current_step, branch)
+
+    def __getitem__(self, idx):
+        return self.flows[idx]
+
+    def __iter__(self):
+        return iter(self.flows)
+
+    def __len__(self) -> int:
+        return len(self.flows)
+
+
+def _build_join_inputs(spec: dict, s3_client=None) -> _FakeInputs | None:
+    """The `inputs` argument for a join step's body, or None if not a join."""
+    if not spec.get("is_join"):
+        return None
+    branches = [
+        _FakeBranch(
+            step=(b.get("step") or f"branch_{i}"),
+            entries=(b.get("attrs") or {}),
+            s3_client=s3_client,
+        )
+        for i, b in enumerate(spec.get("join_branches") or [])
+    ]
+    return _FakeInputs(branches)
+
+
 class _FakeSelf:
     """Object presented to the user step body in place of Metaflow's `self`.
 
@@ -123,14 +276,93 @@ class _FakeSelf:
     RemoteArtifact outputs.
     """
 
+    def __init__(self, foreach_input=None):
+        # Underscored so the outputs snapshot skips it: this is context handed
+        # in, not something the step produced.
+        self._foreach_input = foreach_input
+
     def next(self, *args, **kwargs):
         """No-op stand-in for Metaflow's `self.next(...)` — routing runs on driver."""
-        return None
+        return
 
     @property
     def input(self):
-        """Absent inputs stand-in — foreach flows are v2."""
-        return None
+        """The task's foreach value, as Metaflow's `self.input` would give it.
+
+        Read straight off the driver's own `self.input` and shipped in the
+        spec. Hardcoding None here made every foreach child see None, so
+        `self.worker = self.input` and `self.a, self.b = self.input` either
+        stored nothing or raised.
+        """
+        return self._foreach_input
+
+    def merge_artifacts(self, inputs, exclude=None, include=None):
+        """Copy artifacts common to the incoming branches onto `self`.
+
+        Mirrors `FlowSpec.merge_artifacts`: an attribute already set on `self`
+        wins and is skipped; `include` and `exclude` are mutually exclusive;
+        an attribute arriving with different content from two branches is an
+        unresolved conflict and raises, unless it was named in `include`.
+
+        Conflicts are decided on the content hashes carried in the spec, so
+        nothing is downloaded to compare — and the value assigned is whatever
+        the branch entry holds, which for a RemoteArtifact stays a lazy ref.
+
+        Without this, `__getattr__` below answered `.merge_artifacts` with a
+        no-op placeholder, so every upstream artifact a join meant to keep was
+        silently dropped.
+        """
+        include = list(include or [])
+        exclude = list(exclude or [])
+        if include and exclude:
+            raise RemoteStepError("`exclude` and `include` are mutually exclusive in merge_artifacts")
+        if inputs is None:
+            raise RemoteStepError("merge_artifacts needs the join step's `inputs`; it can only be called in a join")
+
+        # `vars(self)`, not `hasattr(self, ...)`: __getattr__ below answers
+        # every non-dunder name with a placeholder, so hasattr is always True
+        # and would make this skip every attribute and merge nothing.
+        already_set = vars(self)
+
+        to_merge: dict[str, tuple[_FakeBranch, str]] = {}
+        unresolved: list[str] = []
+        for branch in inputs:
+            shas = branch._shas()
+            for name in branch._entries:
+                if name.startswith("_") or name in already_set:
+                    continue
+                if include:
+                    if name not in include:
+                        continue
+                elif name in exclude:
+                    continue
+                sha = shas.get(name, "")
+                previous = to_merge.setdefault(name, (branch, sha))
+                if previous[1] != sha and name not in unresolved:
+                    unresolved.append(name)
+
+        if unresolved:
+            # `include` deliberately does not resolve a conflict, matching
+            # Metaflow: it narrows what is considered, and a named attribute
+            # that still disagrees across branches is an error. The only ways
+            # out are to decide the value yourself or to drop it.
+            raise RemoteStepError(
+                f"merge_artifacts: unresolved conflicts for "
+                f"{', '.join(sorted(unresolved))} — the branches disagree. "
+                f"Assign the attribute on self before merging to pick a value, "
+                f"or exclude=[...] to drop it.",
+                unresolved=sorted(unresolved),
+            )
+
+        missing = [name for name in include if name not in to_merge and name not in already_set]
+        if missing:
+            raise RemoteStepError(
+                f"merge_artifacts: include names {', '.join(missing)}, which no incoming branch produced.",
+                missing=missing,
+            )
+
+        for name, (branch, _sha) in to_merge.items():
+            setattr(self, name, getattr(branch, name))
 
     def __getattr__(self, name):
         """Missing attrs resolve to a no-op callable — usually a step-method reference.
@@ -214,7 +446,7 @@ def main(spec_uri: str | None = None) -> int:
     # downloads; each worker gets its own thread-local boto client for
     # the same reason as the outputs loop.
     t0 = time.time()
-    fake = _FakeSelf()
+    fake = _FakeSelf(foreach_input=_hydrate_foreach_input(spec))
     inputs_dict = spec.get("inputs", {}) or {}
     _hydrate_local = threading.local()
 
@@ -262,6 +494,7 @@ def main(spec_uri: str | None = None) -> int:
     # reads `current.tags`, `current.run_id`, etc. works inside the pod.
     try:
         from metaflow import current as _current
+
         _current._flow_name = spec.get("flow_name")
         _current._run_id = spec.get("run_id")
         _current._step_name = spec.get("step_name")
@@ -270,11 +503,16 @@ def main(spec_uri: str | None = None) -> int:
         _all_tags = tuple(spec.get("tags") or [])
         _current._tags = _all_tags
         _current._system_tags = tuple(
-            t for t in _all_tags if t.startswith(("user:", "runtime:", "python_version:", "metaflow_version:", "project:", "project_branch:"))
+            t
+            for t in _all_tags
+            if t.startswith(
+                ("user:", "runtime:", "python_version:", "metaflow_version:", "project:", "project_branch:")
+            )
         )
         _current._is_running = True
     except Exception:  # noqa: BLE001
         pass
+    _patch_project_context(spec)
 
     # 3. Import user step. Find the flow module file anywhere under /workspace.
     t0 = time.time()
@@ -303,29 +541,31 @@ def main(spec_uri: str | None = None) -> int:
     _stage("import_step", t0=t0)
 
     # 4. Execute user body.
+    #
+    # A join step's body is `def join(self, inputs)`, so it needs the second
+    # positional argument — calling it with one raised TypeError before this.
     _stage("user_step_start")
     t0 = time.time()
     try:
-        original(fake)
+        join_inputs = _build_join_inputs(spec)
+        if join_inputs is not None:
+            original(fake, join_inputs)
+        else:
+            original(fake)
     except Exception as exc:  # noqa: BLE001
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
+        _save_exception(exc, spec)
         return 1
     _stage("user_step_end", t0=t0)
 
     # 5. Snapshot new/modified attrs.
     new_attrs = {
-        k: v
-        for k, v in vars(fake).items()
-        if not k.startswith("_") and (k not in inputs_snapshot or v is not None)
+        k: v for k, v in vars(fake).items() if not k.startswith("_") and (k not in inputs_snapshot or v is not None)
     }
     # Drop attrs that started as inputs and were not reassigned, comparing
     # against the pre-execution identities captured above.
-    outputs = {
-        k: v
-        for k, v in new_attrs.items()
-        if k not in input_ids_before or id(v) != input_ids_before[k]
-    }
+    outputs = {k: v for k, v in new_attrs.items() if k not in input_ids_before or id(v) != input_ids_before[k]}
 
     # 6. Persist outputs. Parallelise across attrs so a step with many
     # multi-GB DataFrames doesn't pay the per-upload wall-clock N times
@@ -372,9 +612,7 @@ def main(spec_uri: str | None = None) -> int:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="remote-step-upload"
         ) as pool:
-            for fut in concurrent.futures.as_completed(
-                [pool.submit(_upload_one, item) for item in outputs.items()]
-            ):
+            for fut in concurrent.futures.as_completed([pool.submit(_upload_one, item) for item in outputs.items()]):
                 # Re-raise the first worker exception; the executor will
                 # cancel remaining futures on ThreadPoolExecutor exit.
                 fut.result()

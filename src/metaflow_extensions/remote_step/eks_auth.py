@@ -140,8 +140,7 @@ def bearer_token(session: boto3.Session, cluster_name: str, region: str) -> str:
     signed_url = signer.generate_presigned_url(
         {
             "method": "GET",
-            "url": f"https://sts.{region}.amazonaws.com/"
-            f"?Action=GetCallerIdentity&Version=2011-06-15",
+            "url": f"https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
             "body": {},
             "headers": {"x-k8s-aws-id": cluster_name},
             "context": {},
@@ -155,9 +154,7 @@ def bearer_token(session: boto3.Session, cluster_name: str, region: str) -> str:
     return TOKEN_PREFIX + encoded
 
 
-def describe_cluster(
-    session: boto3.Session, cluster_name: str, region: str
-) -> tuple[str, bytes]:
+def describe_cluster(session: boto3.Session, cluster_name: str, region: str) -> tuple[str, bytes]:
     """Return (endpoint, CA PEM) for the cluster."""
     eks = session.client("eks", region_name=region)
     try:
@@ -222,19 +219,14 @@ class ClusterAccess:
         """
         with self._lock:
             if not self._token or time.time() >= self._token_expires:
-                self._token = bearer_token(
-                    self.session, self.cluster_name, self.region
-                )
+                self._token = bearer_token(self.session, self.cluster_name, self.region)
                 self._token_expires = time.time() + TOKEN_TTL_SECONDS
             return self._token
 
 
 def _in_pod() -> bool:
     """Whether this process is a task pod rather than someone's terminal."""
-    return bool(
-        os.environ.get("METAFLOW_KUBERNETES_WORKLOAD")
-        or os.environ.get("ARGO_WORKFLOW_NAME")
-    )
+    return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD") or os.environ.get("ARGO_WORKFLOW_NAME"))
 
 
 def _outerbounds_session(region: str) -> boto3.Session:
@@ -307,10 +299,7 @@ def _ambient_session(region: str) -> boto3.Session:
         sys.stdout.flush()
         return session
     except Exception as exc:  # noqa: BLE001
-        sys.stdout.write(
-            f"[remote_step] could not obtain Outerbounds credentials "
-            f"({type(exc).__name__}: {exc}).\n"
-        )
+        sys.stdout.write(f"[remote_step] could not obtain Outerbounds credentials ({type(exc).__name__}: {exc}).\n")
         sys.stdout.flush()
         return plain
 

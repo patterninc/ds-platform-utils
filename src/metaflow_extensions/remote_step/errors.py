@@ -5,9 +5,8 @@ the decorator wrapper — non-retriable errors are re-raised as
 `MetaflowInternalError` so `@retry` skips them.
 """
 
-
-
 from __future__ import annotations
+
 
 class RemoteStepError(Exception):
     """Base class for all remote-step errors."""

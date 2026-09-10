@@ -92,9 +92,7 @@ class _LogStreamer:
     def start(self) -> None:
         if self._thread is not None:
             return
-        self._thread = threading.Thread(
-            target=self._run, name="remote-step-logs", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="remote-step-logs", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -112,13 +110,9 @@ class _LogStreamer:
     def _run(self) -> None:
         first = True
         while not self._stop.is_set():
-            since = (
-                None if first else max(1, int(time.time() - self._last_output_at) + 2)
-            )
+            since = None if first else max(1, int(time.time() - self._last_output_at) + 2)
             try:
-                for text in self._client.stream_pod_log(
-                    self._ns, self._pod, since_seconds=since
-                ):
+                for text in self._client.stream_pod_log(self._ns, self._pod, since_seconds=since):
                     if self._stop.is_set():
                         return
                     self._out.write(text)
@@ -139,7 +133,7 @@ def _pod_for_job(client, namespace: str, job_name: str) -> dict | None:
         return None
     return sorted(
         pods,
-        key=lambda p: (p.get("metadata", {}).get("creationTimestamp") or ""),
+        key=lambda p: p.get("metadata", {}).get("creationTimestamp") or "",
         reverse=True,
     )[0]
 
@@ -147,10 +141,7 @@ def _pod_for_job(client, namespace: str, job_name: str) -> dict | None:
 def _waiting_reason(job: dict, pod: dict | None) -> str:
     """Explain, in one line, why the step has not started."""
     if job.get("spec", {}).get("suspend"):
-        return (
-            "queued — Kueue has not admitted this Workload yet "
-            "(team ClusterQueue at quota)"
-        )
+        return "queued — Kueue has not admitted this Workload yet (team ClusterQueue at quota)"
     if pod is None:
         return "admitted — waiting for the Job controller to create the pod"
     status = pod.get("status", {}) or {}
@@ -159,11 +150,7 @@ def _waiting_reason(job: dict, pod: dict | None) -> str:
         for c in status.get("conditions") or []:
             if c.get("type") == "PodScheduled" and c.get("status") != "True":
                 msg = (c.get("message") or c.get("reason") or "").strip()
-                return (
-                    f"waiting for a node — {msg}"
-                    if msg
-                    else "waiting for a node (Karpenter provisioning)"
-                )
+                return f"waiting for a node — {msg}" if msg else "waiting for a node (Karpenter provisioning)"
         for cs in status.get("containerStatuses") or []:
             w = (cs.get("state") or {}).get("waiting")
             if w:
@@ -189,14 +176,8 @@ def _recent_events(client, namespace: str, name: str, limit: int = 8) -> list[st
         evs = client.list_events_for(namespace, name)
     except Exception:  # noqa: BLE001
         return []
-    rows = sorted(
-        evs, key=lambda e: (e.get("lastTimestamp") or e.get("eventTime") or "")
-    )
-    return [
-        f"{e.get('reason')}: {(e.get('message') or '').strip()}"
-        for e in rows[-limit:]
-        if e.get("reason")
-    ]
+    rows = sorted(evs, key=lambda e: e.get("lastTimestamp") or e.get("eventTime") or "")
+    return [f"{e.get('reason')}: {(e.get('message') or '').strip()}" for e in rows[-limit:] if e.get("reason")]
 
 
 def _instance_type(client, node_name: str) -> str:
@@ -206,9 +187,7 @@ def _instance_type(client, node_name: str) -> str:
         node = client.get_node(node_name)
     except Exception:  # noqa: BLE001
         return ""
-    return (node.get("metadata", {}).get("labels") or {}).get(
-        "node.kubernetes.io/instance-type", ""
-    )
+    return (node.get("metadata", {}).get("labels") or {}).get("node.kubernetes.io/instance-type", "")
 
 
 def wait(
@@ -269,9 +248,7 @@ def wait(
         while True:
             if interrupted:
                 _cleanup(interrupted[0])
-                raise KilledByUser(
-                    f"interrupted by {interrupted[0]}", job_name=job_name
-                )
+                raise KilledByUser(f"interrupted by {interrupted[0]}", job_name=job_name)
 
             try:
                 job = client.get_job(namespace, job_name)
@@ -296,8 +273,7 @@ def wait(
                     if streamer is not None:
                         streamer.stop()
                     raise RemoteStepError(
-                        f"lost contact with the Kubernetes API after "
-                        f"{api_errors} consecutive failures: {exc}",
+                        f"lost contact with the Kubernetes API after {api_errors} consecutive failures: {exc}",
                         job_name=job_name,
                         namespace=namespace,
                     ) from exc

@@ -103,9 +103,7 @@ def read(
         raise
     body = json.loads(blob)
     if body.get("version") != 1:
-        raise ManifestMissingError(
-            f"manifest version {body.get('version')} unsupported (expected 1)"
-        )
+        raise ManifestMissingError(f"manifest version {body.get('version')} unsupported (expected 1)")
     outputs: dict[str, RemoteArtifact] = {}
     for name, ref in body["outputs"].items():
         outputs[name] = RemoteArtifact(

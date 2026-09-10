@@ -141,22 +141,14 @@ Legend for **Status**:
 - **Fix**: use user's `@timeout` value as the Batch job timeout AND the driver
   pod timeout (with a small pad so driver outlives Batch on the timeout race).
 
-### 14. `@retry` semantics — ⚠️
-- **Uses**: 175 + 229 = 404 sites (very common).
-- **Behaviour**: `@retry(times=N)` retries the driver, not the Batch job. Each
-  retry spins up a fresh Batch job. Works but doubles cold-start cost per
-  retry.
-- **Fix option**: track Batch failure kind — retry inside driver for
-  spot-preemption without re-scheduling on argo.
-
-### 15. `@gpu_profile()` — ❌
+### 14. `@gpu_profile()` — ❌
 - **Uses**: 8 sites (advertising CR flows).
 - **Bug**: `@gpu_profile` decorator runs on driver (argo pod), samples the
   driver's GPU (there is none). No sampling happens on Batch.
 - **Fix**: shift `@gpu_profile` onto the Batch step. Requires the profiler to
   work inside our runner_entry.
 
-### 16. `compute_pool` argument to `@kubernetes` — ✅
+### 15. `compute_pool` argument to `@kubernetes` — ✅
 - **Uses**: 10 sites (`g6e-4xlarge-nlp`, `c8a-8xlarge-content`).
 - **Behaviour**: the pool places the **driver** pod, not the step body. A
   sibling `@kubernetes` is removed so it cannot size the driver to the step's
@@ -171,7 +163,7 @@ Legend for **Status**:
 - The step body always runs on our EKS cluster, where Karpenter selects the
   instance — Outerbounds pool names have no meaning there.
 
-### 17. `@conda` / `@conda_base` — ❌
+### 16. `@conda` / `@conda_base` — ❌
 - **Uses**: 2 sites (promo-lift flows).
 - **Bug**: our env resolver reads `@pypi`/`@pypi_base` only. Conda envs won't
   be respected.

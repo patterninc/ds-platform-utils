@@ -24,10 +24,16 @@ spec.json shape:
         },
         "output_bucket": "pattern-ml-platform",
         "output_prefix": "outerbounds/default/WeeklyForecastFlow/224221/outputs/abc123/0",
-        "mfconfig": {"METAFLOW_SERVICE_URL": "...", ...}
+        "mfconfig": {"METAFLOW_SERVICE_URL": "...", ...},
+        "project": {
+            "project_name": "forecast", "branch_name": "prod",
+            "is_production": True, "is_user_branch": False,
+            "project_flow_name": "forecast.prod.WeeklyForecastFlow"
+        },
+        "has_foreach_input": True,
+        "foreach_input": {"kind": "inline", "blob_b64": "..."}
     }
 """
-
 
 from __future__ import annotations
 
@@ -35,6 +41,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+import hashlib
 import json
 import pickle
 from typing import Any
@@ -69,6 +76,21 @@ class DriverContext:
     # Outerbounds perimeter. Part of the S3 prefix because run ids are only
     # unique within a perimeter.
     perimeter: str = keys.DEFAULT_PERIMETER
+    # What @project put on `metaflow.current`, forwarded so the step body sees
+    # the same values it would on the driver. `current.is_production` in
+    # particular decides which schema user code writes to, and an unset one
+    # reads as False — so without this a production run writes to staging,
+    # silently and with no error anywhere.
+    project: dict[str, Any] = None  # type: ignore[assignment]
+    # This task's foreach value, i.e. what `self.input` returns. None outside
+    # a foreach branch.
+    foreach_input: Any = None
+    has_foreach_input: bool = False
+    # One entry per incoming branch of a join, in the order Metaflow presented
+    # them: {"step": <step name>, "attrs": {<name>: <value>}}. Empty for a
+    # non-join step.
+    join_branches: list[dict[str, Any]] = None  # type: ignore[assignment]
+    is_join: bool = False
 
 
 def build_spec(
@@ -88,25 +110,26 @@ def build_spec(
     from remote_step.artifact import write_artifact_from_buf
     import io as _io
 
-    prefix = keys.output_prefix(
-        ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt
-    )
-    in_prefix = keys.inputs_prefix(
-        ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt
-    )
+    prefix = keys.output_prefix(ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt)
+    in_prefix = keys.inputs_prefix(ctx.perimeter, ctx.flow_name, ctx.run_id, ctx.task_id, ctx.attempt)
     serialised: dict[str, dict] = {}
     inline_total = 0
-    for name, val in inputs.items():
+
+    def _ref_of(art: RemoteArtifact) -> dict:
+        return {
+            "kind": "RemoteArtifact",
+            "s3_uri": art.s3_uri,
+            "size_bytes": art.size_bytes,
+            "type_kind": art.kind,
+            "sha256": art.sha256,
+            "pickle_protocol": art.pickle_protocol,
+        }
+
+    def _serialise(name: str, val: Any) -> dict:
+        """One value as a spec entry: a ref if large, inline if small."""
+        nonlocal inline_total
         if isinstance(val, RemoteArtifact):
-            serialised[name] = {
-                "kind": "RemoteArtifact",
-                "s3_uri": val.s3_uri,
-                "size_bytes": val.size_bytes,
-                "type_kind": val.kind,
-                "sha256": val.sha256,
-                "pickle_protocol": val.pickle_protocol,
-            }
-            continue
+            return _ref_of(val)
         # Pickle into a BytesIO so we can reuse the *same* buffer for
         # both the size-check and the upload — the driver pod is Small
         # tier and can't afford the 2-3x peak RAM that a
@@ -115,26 +138,17 @@ def build_spec(
         pickle.dump(val, _buf, protocol=5)
         size = _buf.tell()
         if size > INLINE_ATTR_LIMIT_BYTES:
-            key = f"{in_prefix}/{name}.pkl"
             ref = write_artifact_from_buf(
                 obj_kind=type(val).__module__ + "." + type(val).__qualname__,
                 buf=_buf,
                 size=size,
                 bucket=output_bucket,
-                key=key,
+                key=f"{in_prefix}/{name}.pkl",
                 s3_client=s3_client,
                 pickle_protocol=5,
                 read_role_arn=ctx.artifact_read_role_arn,
             )
-            serialised[name] = {
-                "kind": "RemoteArtifact",
-                "s3_uri": ref.s3_uri,
-                "size_bytes": ref.size_bytes,
-                "type_kind": ref.kind,
-                "sha256": ref.sha256,
-                "pickle_protocol": ref.pickle_protocol,
-            }
-            continue
+            return _ref_of(ref)
         inline_total += size
         if inline_total > MAX_INLINE_INPUT_BYTES:
             raise RemoteStepError(
@@ -146,11 +160,42 @@ def build_spec(
             )
         # Small attr (< 4 MB): fine to materialise the pickle as bytes
         # for base64 encoding. The buffer is tiny by construction.
-        serialised[name] = {
+        blob = _buf.getvalue()
+        return {
             "kind": "inline",
             "type_kind": type(val).__module__ + "." + type(val).__qualname__,
-            "blob_b64": base64.b64encode(_buf.getvalue()).decode("ascii"),
+            "blob_b64": base64.b64encode(blob).decode("ascii"),
+            # Same role the datastore's content hash plays in Metaflow's own
+            # merge_artifacts: it lets a join spot the same artifact arriving
+            # from two branches without unpickling either.
+            "sha256": hashlib.sha256(blob).hexdigest(),
         }
+
+    for name, val in inputs.items():
+        serialised[name] = _serialise(name, val)
+
+    # `self.input` travels the same road as any other value: a foreach can
+    # split on something large, and a ref keeps it out of the spec.
+    foreach_input = None
+    if ctx.has_foreach_input:
+        foreach_input = _serialise("_foreach_input", ctx.foreach_input)
+
+    # A join's `inputs`. Each branch's attrs are serialised the same way, so a
+    # branch artifact that is already a RemoteArtifact stays a ref — which is
+    # what keeps a 100-way foreach join from pulling 100 DataFrames through
+    # the driver.
+    join_branches = []
+    for i, branch in enumerate(ctx.join_branches or []):
+        step = branch.get("step") or f"branch_{i}"
+        join_branches.append(
+            {
+                "step": step,
+                "attrs": {
+                    name: _serialise(f"{step}.{name}", val) for name, val in (branch.get("attrs") or {}).items()
+                },
+            }
+        )
+
     return {
         "version": 1,
         "flow_module": ctx.flow_module,
@@ -171,10 +216,12 @@ def build_spec(
         "mfconfig": ctx.mfconfig,
         "tags": list(ctx.tags or []),
         "artifact_read_role_arn": ctx.artifact_read_role_arn,
+        "project": dict(ctx.project or {}),
+        "foreach_input": foreach_input,
+        "has_foreach_input": bool(ctx.has_foreach_input),
+        "is_join": bool(ctx.is_join),
+        "join_branches": join_branches,
     }
-
-
-
 
 
 def upload_spec(bucket: str, spec: dict, s3_client=None) -> str:

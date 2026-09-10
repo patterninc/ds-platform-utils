@@ -143,9 +143,7 @@ class K8sClient:
         kw = {}
         if read_timeout is not None:
             kw["timeout"] = urllib3.Timeout(connect=10.0, read=read_timeout)
-        resp = self._pool.request(
-            method, url, body=data, headers=headers, preload_content=preload, **kw
-        )
+        resp = self._pool.request(method, url, body=data, headers=headers, preload_content=preload, **kw)
         if resp.status >= 400:
             _raise_for_status(method, path, resp.status, resp.data if preload else b"")
         return resp
@@ -161,9 +159,7 @@ class K8sClient:
         return self._json("GET", "/version")
 
     def create_job(self, namespace: str, manifest: dict) -> dict:
-        return self._json(
-            "POST", f"/apis/batch/v1/namespaces/{namespace}/jobs", body=manifest
-        )
+        return self._json("POST", f"/apis/batch/v1/namespaces/{namespace}/jobs", body=manifest)
 
     def get_job(self, namespace: str, name: str) -> dict:
         return self._json("GET", f"/apis/batch/v1/namespaces/{namespace}/jobs/{name}")
@@ -236,20 +232,14 @@ class K8sClient:
             for chunk in resp.stream(amt=None, decode_content=True):
                 if not chunk:
                     continue
-                yield (
-                    chunk.decode("utf-8", "replace")
-                    if isinstance(chunk, bytes)
-                    else str(chunk)
-                )
+                yield (chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else str(chunk))
         finally:
             try:
                 resp.release_conn()
             except Exception:  # noqa: BLE001
                 pass
 
-    def read_pod_log(
-        self, namespace: str, pod: str, container: str | None = None
-    ) -> str:
+    def read_pod_log(self, namespace: str, pod: str, container: str | None = None) -> str:
         """Whole log, non-streaming."""
         params = {"follow": "false", "timestamps": "false"}
         if container:

@@ -104,9 +104,7 @@ class _MflogPusher:
     def start(self) -> None:
         if not os.environ.get("MFLOG_STDOUT"):
             return
-        self._thread = threading.Thread(
-            target=self._run, name="remote-step-mflog-pusher", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="remote-step-mflog-pusher", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
@@ -327,10 +325,7 @@ def _attached_via_with() -> bool:
     inside a pod. Metaflow exposes no public API for the parsed decospecs.
     """
     # A decospec is `name` or `name:k=v,k2=v2`.
-    return any(
-        spec.split(":", 1)[0].strip() == "remote_step"
-        for spec in _cli_option_values("with")
-    )
+    return any(spec.split(":", 1)[0].strip() == "remote_step" for spec in _cli_option_values("with"))
 
 
 def _outerbounds_config() -> dict:
@@ -352,9 +347,6 @@ def _outerbounds_config() -> dict:
         return conf if isinstance(conf, dict) else {}
     except Exception:  # noqa: BLE001 - no OB extension, or nothing to fetch
         return {}
-
-
-
 
 
 def _find_resources(decorators) -> tuple[int, int, int]:
@@ -713,9 +705,7 @@ def _inject_secrets(decorators, source_name: str) -> None:
                 return
             attrs["sources"] = list(sources) + [source_name]
             return
-    decorators.append(
-        SecretsDecorator(attributes={"sources": [source_name]})
-    )
+    decorators.append(SecretsDecorator(attributes={"sources": [source_name]}))
 
 
 class RemoteStepDecorator(StepDecorator):
@@ -856,6 +846,19 @@ class RemoteStepDecorator(StepDecorator):
                     f"@remote_step + @parallel not yet supported (step '{step_name}').",
                     step_name=step_name,
                 )
+            if getattr(d, "name", "") in ("conda", "conda_base"):
+                # The runner builds its venv from @pypi/@pypi_base packages
+                # only. Accepting @conda would run the step in an environment
+                # that quietly lacks its conda dependencies, so refuse and say
+                # what to do instead.
+                raise SizingError(
+                    f"@remote_step cannot honour @conda on step '{step_name}' — "
+                    f"the runner builds its environment from @pypi / @pypi_base "
+                    f"(or @uv_pypi_base) only.\n"
+                    f"  Declare the step's packages there instead, or drop "
+                    f"@remote_step from this step so it runs where conda is set up.",
+                    step_name=step_name,
+                )
         # team= wins when given, so a single step can override the run's tag.
         team = self.attributes.get("team") or _team_from_tags()
         if not team:
@@ -876,6 +879,9 @@ class RemoteStepDecorator(StepDecorator):
                 f'team="<team>" to the decorator.\n'
             )
         self._team = team
+        # Read here because task_decorate is not given the decorator list.
+        self._env_vars = _find_env_vars(decorators)
+        self._user_timeout_minutes = _find_timeout_minutes(decorators)
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._resources = resolve(
@@ -970,10 +976,7 @@ class RemoteStepDecorator(StepDecorator):
         # [remote_step] line — all written from the driver body — does not
         # carry. Using it here made flow-init output look like a different
         # subsystem from the rest.
-        sys.stdout.write(
-            f"[remote_step] {step_name} -> {team} · "
-            f"{format_resources(self._resources)}\n"
-        )
+        sys.stdout.write(f"[remote_step] {step_name} -> {team} · {format_resources(self._resources)}\n")
         # Flush explicitly. step_init runs in the CLI process, where stdout is
         # block-buffered whenever it is a pipe rather than a tty — so without
         # this the lines sit in the buffer until interpreter exit and surface
@@ -1065,9 +1068,17 @@ class RemoteStepDecorator(StepDecorator):
                 user = os.environ.get("METAFLOW_USER") or getpass.getuser()
                 self_flow = flow
                 input_attrs = _collect_flow_attrs(self_flow)
-                sys.stdout.write(
-                    f"[remote_step] captured inputs: {list(input_attrs.keys())}\n"
-                )
+                # `self.input` is a property Metaflow computes from the
+                # foreach stack, so it is not in the attrs above and has to be
+                # read separately. Outside a foreach it raises, which is how
+                # we tell "no foreach" from "a foreach whose value is None".
+                try:
+                    _foreach_input = self_flow.input
+                    _has_foreach_input = True
+                except Exception:  # noqa: BLE001
+                    _foreach_input = None
+                    _has_foreach_input = False
+                sys.stdout.write(f"[remote_step] captured inputs: {list(input_attrs.keys())}\n")
                 # Acquire cluster access before anything touches S3.
                 #
                 # The Outerbounds pod's own task role has no rights on our
@@ -1118,13 +1129,11 @@ class RemoteStepDecorator(StepDecorator):
                 )
                 try:
                     from metaflow import current as _current
+
                     _tags = list(getattr(_current, "tags", None) or [])
                     # Include system tags too (user:X, runtime:X, project_branch:X, ...)
                     # so downstream code that filters on either kind still works.
-                    _tags.extend(
-                        t for t in (getattr(_current, "system_tags", None) or [])
-                        if t not in _tags
-                    )
+                    _tags.extend(t for t in (getattr(_current, "system_tags", None) or []) if t not in _tags)
                 except Exception:  # noqa: BLE001
                     _tags = []
                 driver_ctx = DriverContext(
@@ -1142,6 +1151,11 @@ class RemoteStepDecorator(StepDecorator):
                     tags=_tags,
                     artifact_read_role_arn=cfg.artifact_read_role_arn,
                     perimeter=perimeter,
+                    project=_project_context(),
+                    foreach_input=_foreach_input,
+                    has_foreach_input=_has_foreach_input,
+                    is_join=(node_type == "join"),
+                    join_branches=_join_branches(inputs),
                 )
                 spec_uri, spec = build_and_upload(
                     driver_ctx,
@@ -1151,8 +1165,7 @@ class RemoteStepDecorator(StepDecorator):
                     s3_client=driver_s3,
                 )
                 sys.stdout.write(
-                    f"[remote_step] submitted spec {spec_uri}\n"
-                    f"[remote_step] {format_resources(resources)}\n"
+                    f"[remote_step] submitted spec {spec_uri}\n[remote_step] {format_resources(resources)}\n"
                 )
                 # Forward the runner's own environment needs.
                 #
@@ -1168,10 +1181,7 @@ class RemoteStepDecorator(StepDecorator):
                     _v = os.environ.get(_k)
                     if _v:
                         runner_env[_k] = _v
-                        sys.stdout.write(
-                            f"[remote_step] forwarding {_k} to the runner "
-                            f"(len={len(_v)})\n"
-                        )
+                        sys.stdout.write(f"[remote_step] forwarding {_k} to the runner (len={len(_v)})\n")
                         break
                 # Outerbounds runtime context, so user code that talks to
                 # Outerbounds integrations (Snowflake and friends) works from
@@ -1202,12 +1212,15 @@ class RemoteStepDecorator(StepDecorator):
                 # header is already set; locally only the key exists, so
                 # synthesise the header rather than leave the runner able to
                 # find the endpoint but not call it.
+                # A sibling @environment declared these for the step, and the
+                # step body runs here — not on the driver Metaflow set them
+                # on. Applied last so an explicit @environment wins over the
+                # forwarded Outerbounds context.
+                runner_env.update(getattr(self, "_env_vars", None) or {})
                 if "METAFLOW_SERVICE_HEADERS" not in runner_env:
                     _auth = runner_env.get("METAFLOW_SERVICE_AUTH_KEY")
                     if _auth:
-                        runner_env["METAFLOW_SERVICE_HEADERS"] = json.dumps(
-                            {"x-api-key": _auth}
-                        )
+                        runner_env["METAFLOW_SERVICE_HEADERS"] = json.dumps({"x-api-key": _auth})
 
                 result = k8s_submit(
                     cfg,
@@ -1223,13 +1236,13 @@ class RemoteStepDecorator(StepDecorator):
                     perimeter=perimeter,
                     priority=self.attributes["priority"],
                     extra_env=runner_env,
-                    timeout_minutes=self.attributes["job_timeout_minutes"],
+                    timeout_minutes=_job_timeout_minutes(
+                        getattr(self, "_user_timeout_minutes", None),
+                        self.attributes["job_timeout_minutes"],
+                    ),
                     client=api,
                 )
-                sys.stdout.write(
-                    f"[remote_step] job {result.job_name} "
-                    f"in {result.namespace} (queue {result.queue})\n"
-                )
+                sys.stdout.write(f"[remote_step] job {result.job_name} in {result.namespace} (queue {result.queue})\n")
                 outcome = poll_wait(
                     api,
                     result.namespace,
@@ -1237,6 +1250,16 @@ class RemoteStepDecorator(StepDecorator):
                     pending_timeout_sec=pending_timeout,
                 )
                 if not outcome.succeeded:
+                    # Re-raise the step's own exception when the runner
+                    # managed to save one. @catch(var="e") sits on this
+                    # driver task, so without this it only ever caught a
+                    # RunnerError and the user's exception type was lost.
+                    _reraise_step_exception(
+                        cfg.payload_bucket,
+                        spec["output_prefix"],
+                        step_name,
+                        s3_client=driver_s3,
+                    )
                     detail = "\n  ".join(outcome.events) if outcome.events else ""
                     raise RunnerError(
                         f"step '{step_name}' failed: {outcome.reason}"
@@ -1260,10 +1283,7 @@ class RemoteStepDecorator(StepDecorator):
                 # they actually touch it.
                 for name, ref in outputs.items():
                     setattr(self_flow, name, ref)
-                sys.stdout.write(
-                    f"[remote_step] {step_name} finished, "
-                    f"{len(outputs)} artifact(s) linked\n"
-                )
+                sys.stdout.write(f"[remote_step] {step_name} finished, {len(outputs)} artifact(s) linked\n")
                 # Replay the user step's self.next(...) so Metaflow's transition
                 # tracker sees the same shape it does when the step runs
                 # locally — including the transition *type* (linear / split /
@@ -1275,9 +1295,7 @@ class RemoteStepDecorator(StepDecorator):
                 if out_funcs:
                     if node_type == "split-switch" and switch_cases and condition:
                         case_map = {
-                            case: getattr(self_flow, fn)
-                            for case, fn in switch_cases.items()
-                            if hasattr(self_flow, fn)
+                            case: getattr(self_flow, fn) for case, fn in switch_cases.items() if hasattr(self_flow, fn)
                         }
                         if case_map:
                             self_flow.next(case_map, condition=condition)
@@ -1291,11 +1309,7 @@ class RemoteStepDecorator(StepDecorator):
                                 kwargs["foreach"] = foreach_param
                             self_flow.next(getattr(self_flow, target), **kwargs)
                     else:
-                        next_refs = [
-                            getattr(self_flow, f)
-                            for f in out_funcs
-                            if hasattr(self_flow, f)
-                        ]
+                        next_refs = [getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)]
                         if next_refs:
                             self_flow.next(*next_refs)
             finally:
@@ -1317,12 +1331,179 @@ def _pickleable(v) -> bool:
     return True
 
 
-_SKIP_ATTRS = frozenset({
-    "next", "input", "index", "foreach_stack", "checkpoint",
-    "_datastore", "_metadata", "_current_step", "_task", "_flow_state",
-    "_graph", "_transition", "_flow_decorators", "_success", "_flow_state",
-    "logger", "cards", "_cards", "_current",
-})
+_SKIP_ATTRS = frozenset(
+    {
+        "next",
+        "input",
+        "index",
+        "foreach_stack",
+        "checkpoint",
+        "_datastore",
+        "_metadata",
+        "_current_step",
+        "_task",
+        "_flow_state",
+        "_graph",
+        "_transition",
+        "_flow_decorators",
+        "_success",
+        "_flow_state",
+        "logger",
+        "cards",
+        "_cards",
+        "_current",
+    }
+)
+
+
+# What @project injects into `metaflow.current`. Forwarded to the runner so a
+# step body sees the same values it would have on the driver.
+PROJECT_CONTEXT_KEYS = (
+    "project_name",
+    "branch_name",
+    "is_production",
+    "is_user_branch",
+    "project_flow_name",
+)
+
+
+def _project_context() -> dict:
+    """@project's contribution to `metaflow.current`, if the flow uses it.
+
+    These are not built-in properties of `current` — @project adds them with
+    `_update_env` — so a flow without @project simply has none of them and
+    this returns {}.
+    """
+    try:
+        from metaflow import current
+    except ImportError:  # pragma: no cover
+        return {}
+    out: dict[str, object] = {}
+    for key in PROJECT_CONTEXT_KEYS:
+        try:
+            val = getattr(current, key)
+        except Exception:  # noqa: BLE001
+            continue
+        if val is not None:
+            out[key] = val
+    return out
+
+
+# A user @timeout longer than the job's own deadline would let the pod be
+# killed while the driver still waits, so the job deadline is the user's value
+# plus this much slack — the driver outlives the pod and reports the timeout
+# rather than both dying in a race.
+DRIVER_TIMEOUT_SLACK_MINUTES = 5
+
+
+def _find_env_vars(decorators) -> dict[str, str]:
+    """`vars` from a sibling @environment.
+
+    Those variables are set on the *driver* pod by Metaflow, and the runner is
+    a different pod in a different cluster that inherits nothing — so without
+    forwarding them the step body sees none of what @environment declared.
+    """
+    out: dict[str, str] = {}
+    for d in decorators:
+        if getattr(d, "name", "") != "environment":
+            continue
+        for key, val in ((getattr(d, "attributes", {}) or {}).get("vars") or {}).items():
+            if val is None:
+                continue
+            out[str(key)] = str(val)
+    return out
+
+
+def _find_timeout_minutes(decorators) -> int | None:
+    """A sibling @timeout as whole minutes, or None if the step has none.
+
+    Metaflow applies @timeout to the driver task. Left alone, the driver would
+    be killed on the user's deadline while the runner pod carried on running
+    — and billing — against `job_timeout_minutes`, which knows nothing about
+    the user's intent.
+    """
+    total = 0
+    found = False
+    for d in decorators:
+        if getattr(d, "name", "") != "timeout":
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        seconds = int(attrs.get("seconds") or 0)
+        minutes = int(attrs.get("minutes") or 0)
+        hours = int(attrs.get("hours") or 0)
+        if seconds or minutes or hours:
+            found = True
+            total = max(total, hours * 60 + minutes + (1 if seconds else 0))
+    return total if found else None
+
+
+def _reraise_step_exception(bucket: str, output_prefix: str, step_name: str, s3_client=None):
+    """Re-raise the step body's own exception, if the runner saved one.
+
+    Returns normally when there is nothing to re-raise, so the caller falls
+    through to its RunnerError. Only the user's exception is allowed to
+    escape: a failure reading the record must not replace a step failure with
+    an S3 error.
+    """
+    import pickle
+
+    from remote_step.runner_entry import EXCEPTION_FILENAME
+
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=f"{output_prefix}/{EXCEPTION_FILENAME}")["Body"].read()
+        record = pickle.loads(body)
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(record, dict):
+        return
+
+    remote_tb = record.get("traceback")
+    if remote_tb:
+        sys.stdout.write(f"[remote_step] {step_name} raised in the runner pod:\n{remote_tb}\n")
+    exc = record.get("exception")
+    if isinstance(exc, BaseException):
+        raise exc
+    # Unpicklable exception: the runner sent type and message only. Surface
+    # those rather than silently degrading to "the job failed".
+    type_name = record.get("type_name")
+    if type_name:
+        raise RunnerError(f"step '{step_name}' raised {type_name}: {record.get('message', '')}")
+
+
+def _job_timeout_minutes(user_timeout: int | None, attr_timeout: int) -> int:
+    """The runner Job's deadline.
+
+    A user @timeout is the step's real intent, so it wins — plus slack, so the
+    driver is the one that notices the timeout and reports it rather than
+    being killed alongside the pod. With no @timeout, the decorator's own
+    `job_timeout_minutes` stands.
+    """
+    if not user_timeout:
+        return int(attr_timeout)
+    return int(user_timeout) + DRIVER_TIMEOUT_SLACK_MINUTES
+
+
+def _join_branches(inputs) -> list[dict]:
+    """One record per incoming branch of a join, for the spec.
+
+    Metaflow hands a join step an `Inputs` of cloned flow objects, one per
+    branch, each carrying that branch's artifacts. The runner cannot rebuild
+    those — it has no datastore — so each branch's attributes are collected
+    here and shipped. Attributes that are already `RemoteArtifact` refs stay
+    refs, which is what stops a wide foreach join from pulling every branch's
+    data through the driver.
+    """
+    if inputs is None:
+        return []
+    branches: list[dict] = []
+    for i, branch in enumerate(inputs):
+        step = getattr(branch, "_current_step", None) or f"branch_{i}"
+        try:
+            attrs = _collect_flow_attrs(branch)
+        except Exception:  # noqa: BLE001
+            attrs = {}
+        branches.append({"step": step, "attrs": attrs})
+    return branches
 
 
 def _collect_flow_attrs(flow) -> dict:
@@ -1383,17 +1564,17 @@ def _collect_flow_attrs(flow) -> dict:
 
     # (3) Parameters — declared as class-level Parameter, wrapped as property
     _METAFLOW_PROPERTY_SKIPS = {
-        "script_name", "cmd", "index", "input", "foreach_stack",
-        "merge_artifacts", "next",
+        "script_name",
+        "cmd",
+        "index",
+        "input",
+        "foreach_stack",
+        "merge_artifacts",
+        "next",
     }
     for cls in type(flow).__mro__:
         for name, class_attr in vars(cls).items():
-            if (
-                name.startswith("_")
-                or name in out
-                or name in _SKIP_ATTRS
-                or name in _METAFLOW_PROPERTY_SKIPS
-            ):
+            if name.startswith("_") or name in out or name in _SKIP_ATTRS or name in _METAFLOW_PROPERTY_SKIPS:
                 continue
             attr_type = type(class_attr).__name__
             if attr_type not in ("Parameter", "property"):
@@ -1418,6 +1599,7 @@ def _flow_module_name(flow) -> str:
     if mod != "__main__":
         return mod
     import sys
+
     main_mod = sys.modules.get("__main__")
     if main_mod is not None and hasattr(main_mod, "__file__"):
         return os.path.splitext(os.path.basename(main_mod.__file__))[0]
