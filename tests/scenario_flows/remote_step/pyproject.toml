@@ -6,12 +6,15 @@ requires-python = ">=3.11,<3.13"
 dependencies = [
     "ds-platform-utils",
     "outerbounds~=0.12.42",
-    "pandas>=2.2",
+    # Below pandas 3 on purpose: 3.0.x has no macOS arm64 wheel yet, and
+    # fast-bakery builds the *driver* env locally, so @uv_pypi flows could not
+    # run on a laptop at all. The runner is linux and would be fine either way.
+    "pandas>=2.2,<3",
     "pydantic>=2",
 ]
 
 [tool.uv.sources]
-ds-platform-utils = { git = "https://github.com/patterninc/ds-platform-utils.git", rev = "de49ba28ab052164cefd7698e4ab9a68ef1b9743" }
+ds-platform-utils = { git = "https://github.com/patterninc/ds-platform-utils.git", rev = "a4dc13b74eed4cb01974fb6e8112976bb0a53ef0" }
 
 [dependency-groups]
 # Exercised by fx20: a group must only appear when the step names it.
