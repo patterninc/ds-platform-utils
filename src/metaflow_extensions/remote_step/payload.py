@@ -100,6 +100,11 @@ class DriverContext:
     model_loads: dict[str, Any] = None  # type: ignore[assignment]
     # A sibling @huggingface_hub's `load` request, same reasoning as models.
     hf_loads: dict[str, Any] = None  # type: ignore[assignment]
+    # What the step asked for. The runner logs its actual usage against this at
+    # the end, which is the only place the two can be compared: Outerbounds
+    # shows the *driver's* panel, so a step asking 20 vCPU and using 3 looks
+    # fine there.
+    requested: dict[str, Any] = None  # type: ignore[assignment]
 
 
 def build_spec(
@@ -234,6 +239,7 @@ def build_spec(
         "gpu_profile_interval": int(ctx.gpu_profile_interval or 1),
         "model_loads": dict(ctx.model_loads or {}),
         "hf_loads": dict(ctx.hf_loads or {}),
+        "requested": dict(ctx.requested or {}),
     }
 
 

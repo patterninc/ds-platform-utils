@@ -497,6 +497,20 @@ quota or priority) or by *isolation* (a namespace per perimeter, so a non-prod
 pod cannot reach prod data through the shared runner identity) are open
 decisions, both needing Terraform.
 
+Each step logs what it actually used against what it asked for, once, at the
+end:
+
+```
+[remote_step] do_forecast used 3.0 of 20 vCPU (15%), peak memory 4.1 of 41.0 GB (10%)
+```
+
+Read from the pod's own cgroup — `memory.peak` and `cpu.stat` on cgroup v2,
+with v1 names as a fallback — so it needs no metrics stack. This is the only
+place the ask and the usage meet: the Outerbounds panel belongs to the
+*driver*, which is always ~2 vCPU, so an oversized ask looks perfectly sized
+there. Best-effort by design; a host that does not expose the counters logs
+nothing rather than failing a step that already succeeded.
+
 **Not implemented:** log retention for the runner pod itself. `logs.tf`
 provisions a CloudWatch group but nothing ships to it, so once a pod is reaped
 its log is unrecoverable beyond what the driver streamed. Likewise no metrics

@@ -113,6 +113,83 @@ def _hydrate_input(name: str, ref: dict, s3_client) -> Any:
     raise ValueError(f"unknown input kind for {name!r}: {kind}")
 
 
+CGROUP_ROOT = "/sys/fs/cgroup"
+
+
+def _read_cgroup_int(*relative_paths: str) -> int | None:
+    """First readable integer among these cgroup files, or None.
+
+    Several names are tried because the layout differs: Bottlerocket runs
+    cgroup v2 (`memory.peak`, `cpu.stat`), while an older host exposes v1
+    (`memory.max_usage_in_bytes`). Neither is guaranteed, so this never raises.
+    """
+    for rel in relative_paths:
+        try:
+            with open(os.path.join(CGROUP_ROOT, rel)) as f:
+                return int(f.read().strip())
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _read_cpu_usage_seconds() -> float | None:
+    """CPU seconds this container has consumed, across all cores."""
+    # cgroup v2: cpu.stat has "usage_usec <n>" on its first line.
+    try:
+        with open(os.path.join(CGROUP_ROOT, "cpu.stat")) as f:
+            for line in f:
+                if line.startswith("usage_usec"):
+                    return int(line.split()[1]) / 1_000_000
+    except Exception:  # noqa: BLE001
+        pass
+    # cgroup v1: cpuacct.usage is nanoseconds.
+    nanos = _read_cgroup_int("cpuacct/cpuacct.usage", "cpuacct.usage")
+    return nanos / 1_000_000_000 if nanos is not None else None
+
+
+def _log_resource_usage(spec: dict, wall_seconds: float) -> None:
+    """One line comparing what the step used against what it asked for.
+
+    This is the only place the two meet. Outerbounds shows the *driver's*
+    CPU/memory panel — 2 vCPU — so a step asking for 20 and using 3 looks
+    perfectly sized there, and nobody ever finds out.
+
+    Best-effort: a host that does not expose these files logs nothing rather
+    than failing a step that has already succeeded.
+    """
+    requested = spec.get("requested") or {}
+    cpu_req = requested.get("cpu")
+    mem_req_mb = requested.get("memory_mb")
+
+    peak_bytes = _read_cgroup_int("memory.peak", "memory/memory.max_usage_in_bytes")
+    if peak_bytes is None:
+        # No peak counter: current usage is a floor, and saying so is better
+        # than reporting nothing.
+        peak_bytes = _read_cgroup_int("memory.current", "memory/memory.usage_in_bytes")
+        peak_label = "final"
+    else:
+        peak_label = "peak"
+    cpu_seconds = _read_cpu_usage_seconds()
+
+    parts = []
+    if cpu_seconds is not None and wall_seconds > 0:
+        used_cpu = cpu_seconds / wall_seconds
+        if cpu_req:
+            parts.append(f"{used_cpu:.1f} of {cpu_req} vCPU ({used_cpu / cpu_req * 100:.0f}%)")
+        else:
+            parts.append(f"{used_cpu:.1f} vCPU")
+    if peak_bytes:
+        used_gb = peak_bytes / 1024**3
+        if mem_req_mb:
+            req_gb = mem_req_mb / 1024
+            parts.append(f"{peak_label} memory {used_gb:.1f} of {req_gb:.1f} GB ({used_gb / req_gb * 100:.0f}%)")
+        else:
+            parts.append(f"{peak_label} memory {used_gb:.1f} GB")
+    if not parts:
+        return
+    sys.stdout.write(f"[remote_step] {spec.get('step_name', 'step')} used " + ", ".join(parts) + "\n")
+
+
 EXCEPTION_FILENAME = "exception.pkl"
 RUN_TAGS_FILENAME = "run_tags.json"
 
@@ -1136,6 +1213,7 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         _save_exception(exc, spec)
+        _log_resource_usage(spec, time.time() - t0)
         # Sampler first: finish() appends its summary to the gpu_profile card,
         # so saving before it would leave that summary behind.
         if gpu_sampler is not None:
@@ -1143,6 +1221,7 @@ def main(spec_uri: str | None = None) -> int:
         _save_card_components(card_recorder, spec)
         return 1
     _stage("user_step_end", t0=t0)
+    _log_resource_usage(spec, time.time() - t0)
     _save_run_tags(run_recorder, spec)
     # The GPU sampler has to finish BEFORE the card components are saved:
     # finish() appends its summary to the gpu_profile card, and saving first

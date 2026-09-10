@@ -1203,6 +1203,11 @@ class RemoteStepDecorator(StepDecorator):
                     join_branches=_join_branches(inputs),
                     model_loads=getattr(self, "_model_loads", None),
                     hf_loads=getattr(self, "_hf_loads", None),
+                    requested={
+                        "cpu": resources.cpu,
+                        "memory_mb": resources.memory_mb,
+                        "gpus": resources.gpus,
+                    },
                     gpu_profile=bool(getattr(self, "_gpu_profile", None)),
                     gpu_profile_interval=((getattr(self, "_gpu_profile", None) or {}).get("interval") or 1),
                 )
