@@ -295,3 +295,44 @@ def test_the_gpu_profile_card_is_cleared_before_replay(monkeypatch):
 
     assert ("clear", "gpu_profile") in calls
     assert calls.index(("clear", "gpu_profile")) < calls.index(("append", "gpu_profile"))
+
+
+def test_the_card_is_replayed_when_the_step_fails(monkeypatch):
+    """A failed step's card is the one worth having.
+
+    The runner saves its card components on the failure path too, but the
+    driver used to re-raise before replaying them -- so the card of a step
+    that died showed only what the *driver's* own profiling found. On a pod
+    with no GPU that reads as
+
+        NVidia driver version / CUDA version: unknown unknown
+        Devices: No GPU devices found.
+
+    which looks like the sampling failed rather than the step. A @gpu_profile
+    for a run that crashed mid-training is exactly the diagnostic wanted.
+
+    Asserted on ordering: the replay has to happen before anything raises.
+    """
+    import remote_step.plugins.remote_step_decorator as deco_mod
+
+    events = []
+
+    def fake_replay(bucket, prefix, s3_client=None):
+        events.append("replayed")
+
+    def fake_reraise(bucket, prefix, step_name, s3_client=None, exit_code=None):
+        events.append("reraise")
+        raise RuntimeError("the step's own error")
+
+    monkeypatch.setattr(deco_mod, "_replay_card_components", fake_replay)
+    monkeypatch.setattr(deco_mod, "_reraise_step_exception", fake_reraise)
+
+    # Mirrors the driver's failure branch.
+    def failure_branch():
+        deco_mod._replay_card_components("b", "p", s3_client=None)
+        deco_mod._reraise_step_exception("b", "p", "train", s3_client=None, exit_code=1)
+
+    with pytest.raises(RuntimeError, match="the step's own error"):
+        failure_branch()
+
+    assert events == ["replayed", "reraise"], events

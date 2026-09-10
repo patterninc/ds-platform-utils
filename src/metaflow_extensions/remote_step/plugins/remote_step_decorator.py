@@ -1521,6 +1521,20 @@ class RemoteStepDecorator(StepDecorator):
                     pending_timeout_sec=pending_timeout,
                 )
                 if not outcome.succeeded:
+                    # The card first, before anything raises. The runner saves
+                    # its components on the failure path too, and the card
+                    # belonging to a step that died is the one worth having --
+                    # a @gpu_profile for a run that crashed mid-training is the
+                    # diagnostic. Replaying only on success left that card
+                    # showing what the *driver's* own profiling found, which on
+                    # a pod with no GPU is
+                    #   NVidia driver version / CUDA version: unknown unknown
+                    #   Devices: No GPU devices found.
+                    # i.e. it looked like the sampling had failed rather than
+                    # the step.
+                    _replay_card_components(
+                        cfg.payload_bucket, spec["output_prefix"], s3_client=driver_s3
+                    )
                     # Re-raise the step's own exception when the runner
                     # managed to save one. @catch(var="e") sits on this
                     # driver task, so without this it only ever caught a
