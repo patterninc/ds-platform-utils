@@ -31,6 +31,7 @@ import json
 import os
 import pickle
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -1171,23 +1172,39 @@ class _FakeSelf:
         return _placeholder
 
 
+# Where a pickle stops living in RAM and starts living on the pod's scratch
+# disk. Small outputs -- the overwhelming majority -- never touch it.
+SPILL_TO_DISK_BYTES = 64 * 1024 * 1024
+
+
 def _put_pickle(obj: Any, bucket: str, key: str, s3_client) -> tuple[int, str]:
     """Pickle obj, upload to S3, return (size_bytes, sha256_hex).
 
     Memory-hot path — we're routinely serialising DataFrames in the 1-30 GB
     range. Keep peak RAM to a single copy of the pickled bytes by:
-      1. Pickling into a BytesIO (allocation 1).
-      2. Streaming that BytesIO through sha256 in 4 MB chunks
-         (no bytes copy).
-      3. Handing the same BytesIO to boto3 for upload — put_object below
+      1. Pickling into a spooled temp file (allocation 1, and only up to
+         SPILL_TO_DISK_BYTES of it in RAM).
+      2. Streaming that back through sha256 in 4 MB chunks (no bytes copy).
+      3. Handing the same handle to boto3 for upload — put_object below
          100 MB, TransferManager upload_fileobj above (size-tuned
          multipart concurrency to saturate node egress).
 
-    Previous version did ``blob = buf.getvalue()`` + ``io.BytesIO(blob)``,
+    An earlier version did ``blob = buf.getvalue()`` + ``io.BytesIO(blob)``,
     pushing peak RAM to 3× the pickle size and OOM-killing the pod on
-    multi-GB outputs.
+    multi-GB outputs. A plain BytesIO fixed that but still held one whole
+    pickle per upload, and outputs are uploaded _OUTPUTS_PARALLELISM at a
+    time: a step ending with four 6 GB frames held 24 GB of live objects --
+    `fake` still references them -- plus 24 GB of pickles, and was OOM-killed
+    at STAGE=persist_outputs, i.e. after every bit of the compute was done and
+    with nothing saved. @retry then reproduced it exactly.
+
+    Spilling above the threshold caps that at roughly
+    _OUTPUTS_PARALLELISM × SPILL_TO_DISK_BYTES of RAM regardless of artifact
+    size. The spill lands on the pod's ephemeral storage, which is what
+    `ephemeral_gb` sizes, and costs a disk write plus read at gp3 speeds --
+    seconds for a multi-GB artifact, against an OOM.
     """
-    buf = io.BytesIO()
+    buf = tempfile.SpooledTemporaryFile(max_size=SPILL_TO_DISK_BYTES)
     pickle.dump(obj, buf, protocol=5)
     size = buf.tell()
 
