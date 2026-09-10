@@ -478,7 +478,15 @@ Legend for **Status**:
 - The `gpu_profile` **card is cleared before the replay**. The wrapper fills it
   on the driver at task start — "Drivers: unknown / unknown", "No GPU devices
   found" — and cannot be dropped, so without clearing the card shows those
-  blanks above the real numbers. `_gpu_profile_wrapper` renders everything
+  blanks above the real numbers.
+- **The sampler must finish before the card components are saved.** Its summary
+  is appended inside `finish()`, and saving first left that summary unrecorded —
+  the card then showed only the driver's blanks, which read as "the whole
+  feature is broken" when the sampling was fine. Card confirmed clean on
+  `GpuFlow` run 238632: zero `unknown` strings, real peak util and memory.
+- **Read `remote_gpu_profile`, not `gpu_profile_data`.** The card's own
+  "Detailed data saved in artifact gpu_profile_data" line is static text from
+  the wrapper and points at the driver's empty artifact. `_gpu_profile_wrapper` renders everything
   through `current.card["gpu_profile"]`, and a card written in the pod does not
   reach the driver's card. So the readings exist but the chart does not. Gap 6
   is the keystone here, not extra GPU work.
