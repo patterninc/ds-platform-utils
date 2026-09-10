@@ -116,6 +116,115 @@ EXCEPTION_FILENAME = "exception.pkl"
 RUN_TAGS_FILENAME = "run_tags.json"
 
 
+CARD_COMPONENTS_FILENAME = "card_components.pkl"
+
+
+class _CardRecorder:
+    """Stands in for `current.card` in the pod so card content survives.
+
+    `@card` runs on the driver task, so `current.card` does not exist in the
+    runner at all — `current.card.append(...)` raised AttributeError there, and
+    a step that guarded the call rendered an empty card either way.
+
+    This records what the body appends and the driver replays it into the real
+    card. Components are pickled: all of Metaflow's own components take that
+    except `Artifact`, which holds a module reference, and for those a Markdown
+    note is recorded instead so the card says what could not cross rather than
+    dropping it in silence.
+
+    Mirrors `CardComponentCollector`: `append`, `extend`, `clear`, `refresh`,
+    and `card[id]` for a specific card.
+    """
+
+    DEFAULT_ID = "_default"
+
+    def __init__(self, card_id: str | None = None, sink: dict | None = None):
+        self._card_id = card_id or self.DEFAULT_ID
+        # Shared across every per-id view so one save collects them all.
+        self._sink: dict[str, list[bytes]] = sink if sink is not None else {}
+        self._warned_refresh = False
+
+    def __getitem__(self, card_id: str) -> _CardRecorder:
+        return _CardRecorder(card_id=card_id, sink=self._sink)
+
+    def __setitem__(self, card_id: str, components) -> None:
+        self._sink[card_id] = []
+        self[card_id].extend(components)
+
+    def append(self, component, id=None) -> None:  # noqa: A002 - matches Metaflow
+        bucket = self._sink.setdefault(self._card_id, [])
+        try:
+            bucket.append(pickle.dumps(component, protocol=5))
+        except Exception:  # noqa: BLE001
+            bucket.append(self._unpicklable_note(component))
+
+    def extend(self, components) -> None:
+        for component in components or []:
+            self.append(component)
+
+    def clear(self) -> None:
+        self._sink[self._card_id] = []
+
+    def refresh(self, data=None, force=False) -> None:
+        """No-op. A live refresh cannot reach the driver's card mid-step."""
+        if not self._warned_refresh:
+            self._warned_refresh = True
+            sys.stdout.write(
+                "[remote_step] card.refresh() does nothing in a remote step — "
+                "the card is rendered on the driver once the step finishes.\n"
+            )
+
+    def get(self, card_id=None):
+        return self._sink.get(card_id or self._card_id, [])
+
+    @property
+    def components(self):
+        return self._sink.get(self._card_id, [])
+
+    @staticmethod
+    def _unpicklable_note(component) -> bytes:
+        """A Markdown standing in for a component that will not pickle."""
+        name = type(component).__name__
+        try:
+            from metaflow.cards import Markdown
+
+            return pickle.dumps(
+                Markdown(
+                    f"_`{name}` could not be carried out of the remote step "
+                    f"(not picklable). Assign the value as an artifact and "
+                    f"render it in a non-remote step._"
+                ),
+                protocol=5,
+            )
+        except Exception:  # noqa: BLE001
+            return pickle.dumps(None, protocol=5)
+
+    def pending(self) -> dict[str, list[bytes]]:
+        return {cid: comps for cid, comps in self._sink.items() if comps}
+
+
+def _save_card_components(recorder: _CardRecorder, spec: dict, s3_client=None) -> None:
+    """Persist recorded card components for the driver to replay."""
+    pending = recorder.pending()
+    if not pending:
+        return
+    prefix = spec.get("output_prefix")
+    bucket = spec.get("output_bucket")
+    if not prefix or not bucket:
+        return
+    try:
+        client = s3_client or _make_s3_client()
+        client.put_object(
+            Bucket=bucket,
+            Key=f"{prefix}/{CARD_COMPONENTS_FILENAME}",
+            Body=pickle.dumps(pending, protocol=5),
+        )
+        counts = {cid: len(c) for cid, c in pending.items()}
+        sys.stdout.write(f"[remote_step] recorded card components for the driver: {counts}\n")
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] could not save card components: {exc}\n")
+
+
 class _GpuSampler:
     """Samples GPU utilisation in the runner pod for the duration of the body.
 
@@ -678,11 +787,16 @@ def main(spec_uri: str | None = None) -> int:
     # `current.run` needs a Metaflow client the runner has no credentials for,
     # so hand the step a recorder and let the driver replay the tag edits.
     run_recorder = _RunRecorder()
+    # `current.card` does not exist in this process either — @card runs on the
+    # driver — so record what the body appends and let the driver replay it.
+    card_recorder = _CardRecorder()
     try:
         from metaflow import current as _current
 
         _current._run = run_recorder
         type(_current).run = property(fget=lambda _self: run_recorder)
+        _current._card = card_recorder
+        type(_current).card = property(fget=lambda _self: card_recorder)
     except Exception:  # noqa: BLE001
         pass
 
@@ -734,11 +848,13 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         _save_exception(exc, spec)
+        _save_card_components(card_recorder, spec)
         if gpu_sampler is not None:
             gpu_sampler.finish()
         return 1
     _stage("user_step_end", t0=t0)
     _save_run_tags(run_recorder, spec)
+    _save_card_components(card_recorder, spec)
     if gpu_sampler is not None:
         gpu_readings = gpu_sampler.finish()
         if gpu_readings is not None:

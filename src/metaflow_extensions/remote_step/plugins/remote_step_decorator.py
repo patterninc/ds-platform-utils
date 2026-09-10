@@ -1272,6 +1272,7 @@ class RemoteStepDecorator(StepDecorator):
                         job_name=outcome.job_name,
                     )
                 _apply_run_tags(cfg.payload_bucket, spec["output_prefix"], s3_client=driver_s3)
+                _replay_card_components(cfg.payload_bucket, spec["output_prefix"], s3_client=driver_s3)
                 outputs = read_manifest(
                     cfg.payload_bucket,
                     spec["output_prefix"],
@@ -1473,6 +1474,68 @@ def _find_timeout_minutes(decorators) -> int | None:
             found = True
             total = max(total, hours * 60 + minutes + (1 if seconds else 0))
     return total if found else None
+
+
+def _replay_card_components(bucket: str, output_prefix: str, s3_client=None) -> None:
+    """Append the components the step body built in the pod to the real card.
+
+    `@card` renders on this driver task, so a `current.card.append(...)` in the
+    runner had no card to reach — it raised there, or rendered nothing. The pod
+    records the components; this puts them where `@card` will find them.
+
+    Never allowed to fail the step: by this point the body has succeeded, and a
+    card is a report.
+    """
+    import pickle
+
+    from remote_step.runner_entry import CARD_COMPONENTS_FILENAME, _CardRecorder
+
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=f"{output_prefix}/{CARD_COMPONENTS_FILENAME}")["Body"].read()
+        pending = pickle.loads(body)
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(pending, dict) or not pending:
+        return
+
+    try:
+        from metaflow import current
+
+        collector = current.card
+    except Exception:  # noqa: BLE001
+        # The step appended to a card but has no @card to render it. Say so —
+        # the components are otherwise lost without explanation.
+        total = sum(len(v) for v in pending.values())
+        sys.stdout.write(
+            f"[remote_step] the step built {total} card component(s) but this "
+            f"step has no @card to render them. Add @card alongside "
+            f"@remote_step.\n"
+        )
+        return
+
+    applied = 0
+    for card_id, blobs in pending.items():
+        for blob in blobs:
+            try:
+                component = pickle.loads(blob)
+            except Exception:  # noqa: BLE001
+                continue
+            if component is None:
+                continue
+            try:
+                if card_id == _CardRecorder.DEFAULT_ID:
+                    collector.append(component)
+                else:
+                    collector[card_id].append(component)
+                applied += 1
+            except Exception as exc:  # noqa: BLE001
+                sys.stdout.write(f"[remote_step] could not append a card component to '{card_id}': {exc}\n")
+    if applied:
+        sys.stdout.write(f"[remote_step] replayed {applied} card component(s) from the step\n")
+        try:
+            collector.refresh(force=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _apply_run_tags(bucket: str, output_prefix: str, s3_client=None) -> None:

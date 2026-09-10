@@ -93,18 +93,27 @@ Legend for **Status**:
   `project_name`, `branch_name`, `is_user_branch`, `project_flow_name`.
 - Verified live alongside gap 4 (`ProjFlow` run 238586).
 
-### 6. `current.card` + `@card(type="html")` — ❌
+### 6. `current.card` + `@card(type="html")` — ✅ (replayed on the driver)
 - **Uses**: 220 `@card`-decorated steps, 66 `current.card.append(...)` sites.
 - **Bug**: `@card` runs in Metaflow's `task_finished` on the driver task, which
   sees a stripped-down `self` populated with `RemoteArtifact` refs. User's
   `current.card.append(Markdown(...))` inside the Batch step body writes into
   a Metaflow card sidecar that isn't connected to the driver's card rendering.
   Result: cards render empty for `@remote_step` steps.
-- **Options**:
-  a. Serialise `card_data` from Batch → driver replays `current.card` calls.
-  b. Hydrate specific outputs (marked by user) before card render.
-  c. Explicitly refuse `@card` on `@remote_step` and document.
-- **Decision needed**: (a) is the "right" answer, (b) is the pragmatic one.
+- **Now (option a)**: the pod gets a recorder in place of `current.card` that
+  captures what the body appends, and the driver replays it into the real card
+  before `@card` renders. `card[id]` is kept, so `@gpu_profile`'s own
+  `gpu_profile` card id works the same way.
+- Components travel as pickles. Every Metaflow component takes that except
+  `Artifact`, which holds a module reference; those become a Markdown note
+  saying what could not cross, rather than a silent hole in the card.
+- `card.refresh()` is a no-op with one explanatory line: a live refresh cannot
+  reach the driver's card while the pod is still running. The card appears when
+  the step finishes.
+- A step that appends components but has no `@card` is told so, rather than
+  losing them silently.
+- Card content is saved even when the body raises, so a failed step's
+  diagnostics survive.
 
 ### 7. `current.model` / `@model(load=[...])` — ❌
 - **Uses**: 19 sites (embedding models, sklearn, spaCy, `distilbart_mnli_12_3`, etc.).
@@ -528,7 +537,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@resources` | 112 | ✅ |
 | `@kubernetes` | 372 | ✅ (dropped + our small kube injected) |
 | `@retry` | 404 | ✅ retries the driver, which re-submits — intended |
-| `@card` | 220 | ❌ gap #6 |
+| `@card` | 220 | ✅ gap #6 |
 | `@secrets` | 97 | ✅ |
 | `@timeout` | 126 | ⚠️ gap #13 — shipped, not observed live |
 | `@catch` | 6 | ✅ gap #12 |
@@ -542,7 +551,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@batch` | 0 | 🚫 refused |
 | `@parallel` | 0 | 🚫 refused |
 | `current.is_production` | 209 | ✅ gap #4 |
-| `current.card` | 66 | ❌ gap #6 |
+| `current.card` | 66 | ✅ gap #6 |
 | `current.run_id` | 40 | ✅ |
 | `current.model` | 18 | ❌ gap #7 |
 | `current.huggingface_hub` | 17 | ❌ gap #8 |
