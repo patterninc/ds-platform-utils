@@ -361,9 +361,12 @@ above is developer convenience.
 ### R2. `@parallel` on the same step — 🚫
 - Metaflow parallel (jobset semantics) not implemented. Explicit refusal.
 
-### R3. `@remote_step` on `start` or `end` — 🚫
+### R3. `@remote_step` written by hand on `start` or `end` — 🚫
 - Metaflow's scheduler owns those steps; @remote_step on them would offload
   the wrong compute. Explicit refusal.
+- `--with remote_step:team=<team>` is the exception: a sweep cannot avoid
+  touching them, so those two are skipped silently rather than failing the
+  whole flow. Every other step is offloaded.
 
 ### R4. GPU workloads — 🚫 (for now)
 - CUDA / cuDNN / NVIDIA drivers deferred to a separate `remote-step-runner-gpu`

@@ -73,8 +73,9 @@ The driver never materialises a payload. It holds references, not data — see
 
 `step_init`, at flow initialisation:
 
-1. Reject unsupported combinations (`@parallel`, `@remote_step` on
-   `start`/`end`, missing `team=`).
+1. Reject unsupported combinations (`@parallel`, `@remote_step` written by
+   hand on `start`/`end`), and resolve the team from the decorator or the
+   run's `ds.domain:` tag (§8).
 2. Resolve the resource ask from `@resources` **and** `@kubernetes`, taking
    the max of each dimension.
 3. Resolve the pypi environment from `@pypi_base`/`@pypi`, caching it to
@@ -259,6 +260,57 @@ The decorator asks *what am I about to do*, not *where am I running*.
 | `argo-workflows create` + `trigger` | Argo pod | EKS |
 | `run --with local_step` | — | in-process |
 | `run --with local_step --with kubernetes` | — | Outerbounds pod |
+
+### Applying it to a whole flow
+
+`--with remote_step:team=<team>` offloads **every** step without decorating
+any of them, the same way `--with kubernetes` works:
+
+```bash
+run --with remote_step:team=forecasting
+argo-workflows create --with remote_step:team=forecasting
+```
+
+`start` and `end` are skipped. Hand-writing `@remote_step` on those is still
+an error — Metaflow's scheduler owns them and there is nothing to offload —
+but a `--with` sweep cannot avoid touching them, so refusing would make the
+flag unusable. `_attached_via_with()` tells the two cases apart by looking for
+a `--with` spec naming `remote_step` in `sys.argv`.
+
+Each step keeps its own `@resources`, so this is not one blanket size.
+
+This survives into Argo. `argo_workflows.py` re-emits every
+non-statically-defined decorator as `--with <spec>` in each step's baked
+command, so the pod re-attaches `@remote_step` and reaches the same conclusion
+the laptop did. Without that propagation the failure would be quiet and bad:
+step bodies running inside Argo pods at driver size, so a 63 GB step would OOM
+in 8 GB.
+
+### Where `team` comes from
+
+Resolution order:
+
+1. `team=` on the decorator
+2. `--tag ds.domain:<team>` on the run
+
+So `@remote_step()` and `--with remote_step` both work when the run is tagged,
+which for flows already tagged by domain removes the same string from every
+decorator. The trade-off is that the flow stops being self-contained: without
+the tag it fails at flow init, clearly and naming both fixes, but it does fail.
+`@remote_step(team=...)` in source always works regardless of how it is
+invoked.
+
+Read from `sys.argv` rather than `metaflow.current.tags` because the
+requirement is validated at flow init, before `current` is populated — and
+because Argo re-emits run tags into each step's command too, so argv agrees in
+the pod. Two `ds.domain:` tags naming different teams is an error rather than
+a coin flip. The resolved team is checked against the cluster's known teams, so
+a typo fails at flow init instead of surfacing as a namespace error mid-run.
+
+**This is not an authorisation check.** A tag is as user-supplied as `team=`;
+see finding 1 in [security_review.md](security_review.md).
+
+### Opting out
 
 `--with local_step` is a no-op marker decorator that makes `@remote_step`
 inert: siblings are left untouched and the step function is returned

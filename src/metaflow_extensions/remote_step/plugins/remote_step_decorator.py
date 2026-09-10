@@ -35,7 +35,11 @@ except ImportError:  # pragma: no cover - metaflow always present in prod
 from remote_step.artifact import RemoteArtifact
 from remote_step import keys
 from remote_step.code_package import resolve_code_package
-from remote_step.config import RemoteStepConfig, load as load_config
+from remote_step.config import (
+    RemoteStepConfig,
+    check_team,
+    load as load_config,
+)
 from remote_step.eks_auth import acquire as eks_acquire, api_client as eks_api_client
 from remote_step.errors import (
     ConfigError,
@@ -62,6 +66,9 @@ CACHED_ENV_FILENAME = ".remote_step_env.json"
 # inferred: @remote_step names where a step runs, the same way @kubernetes and
 # @batch do, and both of those submit on a plain `run`.
 MARKER_LOCAL = "local_step"
+# `--tag ds.domain:<team>` can stand in for team= on the decorator, since
+# flows already label their owning domain this way.
+TEAM_TAG_PREFIX = "ds.domain:"
 # The Metaflow mflog sidecar uploads task stdout to the datastore on a
 # sigmoid schedule that slows to a ~30 s cadence for long-running steps.
 # The Outerbounds UI reads the task's stdout from that upload, so users
@@ -251,6 +258,77 @@ def _is_k8s_task_runtime() -> bool:
     _should_submit(); see the note in _is_argo_context().
     """
     return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD"))
+
+
+def _cli_option_values(name: str) -> list[str]:
+    """Every value given for a repeatable CLI option, from sys.argv.
+
+    Handles both `--name value` and `--name=value`.
+    """
+    argv = sys.argv
+    out: list[str] = []
+    flag, eq = f"--{name}", f"--{name}="
+    for i, arg in enumerate(argv):
+        if arg == flag and i + 1 < len(argv):
+            out.append(argv[i + 1])
+        elif arg.startswith(eq):
+            out.append(arg.split("=", 1)[1])
+    return out
+
+
+def _team_from_tags() -> str | None:
+    """Team named by a `--tag ds.domain:<team>` on the command line.
+
+    Flows already label their owning domain that way, so it can stand in for
+    team= rather than repeating the same string on every step.
+
+    Read from sys.argv rather than `metaflow.current.tags`, for two reasons.
+    The requirement is validated at flow init, and `current` is only populated
+    once a task is running — by which point failing is far less useful. And
+    argv is the one source that agrees between a laptop and an Argo pod:
+    argo_workflows.py re-emits every run tag into each step's baked command,
+    the same way it re-emits `--with`.
+
+    Raises when two such tags name different teams; silently picking one would
+    put a step in a namespace nobody asked for.
+    """
+    found: list[str] = []
+    for val in _cli_option_values("tag"):
+        if val.startswith(TEAM_TAG_PREFIX):
+            team = val[len(TEAM_TAG_PREFIX) :].strip()
+            if team and team not in found:
+                found.append(team)
+    if not found:
+        return None
+    if len(found) > 1:
+        raise SizingError(
+            f"more than one {TEAM_TAG_PREFIX} tag, naming different teams "
+            f"({', '.join(found)}). Pass team= on the decorator to say which "
+            f"one this step belongs to."
+        )
+    return found[0]
+
+
+def _attached_via_with() -> bool:
+    """Whether @remote_step was applied by `--with`, not written in source.
+
+    Metaflow's `--with` attaches a decorator to *every* step, so `start` and
+    `end` receive it too. Written by hand on those steps that is a mistake
+    worth failing on — they run in the Metaflow scheduler and there is nothing
+    to offload. Attached in bulk it is simply the two steps a sweep cannot
+    cover, and refusing would make `--with remote_step:team=...` unusable,
+    which is the whole point of the flag.
+
+    Read from sys.argv because that is what Metaflow itself propagates:
+    `--with` travels in `top_level_options`, so the same flag appears on the
+    command built for a remote step and the answer is the same on a laptop and
+    inside a pod. Metaflow exposes no public API for the parsed decospecs.
+    """
+    # A decospec is `name` or `name:k=v,k2=v2`.
+    return any(
+        spec.split(":", 1)[0].strip() == "remote_step"
+        for spec in _cli_option_values("with")
+    )
 
 
 def _outerbounds_config() -> dict:
@@ -679,9 +757,18 @@ class RemoteStepDecorator(StepDecorator):
     ):
         """Runs once at flow init. Fails fast on refusals."""
         if step_name in ("start", "end"):
+            if _attached_via_with():
+                # `--with remote_step:team=...` sweeps every step. Skip these
+                # two quietly rather than failing the whole flow: they run in
+                # the Metaflow scheduler and have nothing to offload.
+                self._submit = False
+                return
             raise SizingError(
                 f"@remote_step on '{step_name}' — heavy compute must move to a "
-                f"downstream step; start/end run in the Metaflow scheduler.",
+                f"downstream step; start/end run in the Metaflow scheduler.\n"
+                f"  To apply it to every other step at once, use "
+                f"`--with remote_step:team=<team>` instead of decorating "
+                f"by hand.",
                 step_name=step_name,
             )
         for d in decorators:
@@ -697,15 +784,18 @@ class RemoteStepDecorator(StepDecorator):
                     f"@remote_step + @parallel not yet supported (step '{step_name}').",
                     step_name=step_name,
                 )
-        team = self.attributes.get("team")
+        # team= wins when given, so a single step can override the run's tag.
+        team = self.attributes.get("team") or _team_from_tags()
         if not team:
             raise SizingError(
-                f"@remote_step on '{step_name}' needs team=. It names the "
+                f"@remote_step on '{step_name}' needs a team. It names the "
                 f"Kubernetes namespace and therefore whose Kueue quota the "
                 f"step spends, so there is no safe default.\n"
-                f"  e.g. @remote_step(team=\"forecasting\")",
+                f'  on the decorator:  @remote_step(team="forecasting")\n'
+                f"  or for a whole run: --tag {TEAM_TAG_PREFIX}forecasting",
                 step_name=step_name,
             )
+        self._team = team
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._resources = resolve(
@@ -736,6 +826,9 @@ class RemoteStepDecorator(StepDecorator):
             self._config = load_config()
         except ConfigError:
             raise
+        # Advisory: cfg.teams is a snapshot from terraform, so this only
+        # fires on a clear typo, not on a namespace added since.
+        check_team(self._config, team)
 
         # The one decision. Everything below branches on it, and it must come
         # out the same here and inside whatever pod the task later lands in —
@@ -861,7 +954,7 @@ class RemoteStepDecorator(StepDecorator):
         cfg = self._config
         resources = self._resources
         env_spec = self._env_spec
-        team = self.attributes["team"]
+        team = self._team
         ctx = self._runtime_ctx
         pending_timeout = self.attributes["pending_timeout_minutes"] * 60
         step_name = getattr(step_func, "__name__", "unknown_step")
