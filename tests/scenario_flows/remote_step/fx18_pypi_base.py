@@ -13,7 +13,7 @@ from _check import check
 WANT = "3.10.7"
 
 
-@pypi_base(python="3.12", packages={"orjson": WANT})
+@pypi_base(python="3.11", packages={"orjson": WANT})
 class Fx18PypiBase(FlowSpec):
     @step
     def start(self):

@@ -460,13 +460,46 @@ def _find_resources(decorators) -> tuple[int, int, int, int, int]:
     )
 
 
+# The interpreter the runner's venv is built with, unless a @pypi /
+# @pypi_base says otherwise -- and the floor below which we will not go.
+#
+# 3.11 rather than 3.10 because the resolved package sets these flows carry
+# have moved past it: pandas 3.x requires >=3.11, so a spec asking for 3.10
+# produced
+#   Because the current Python version (3.10.21) does not satisfy Python>=3.11
+#   and pandas==3.0.5 depends on Python>=3.11 ... unsatisfiable
+# at STAGE=uv_pip_install, after the node had been provisioned and the image
+# pulled. The version can arrive from a stale cached env shipped inside an
+# Argo code package, so a default alone does not prevent it -- hence the
+# floor.
+DEFAULT_PYTHON = "3.11"
+MIN_PYTHON = (3, 11)
+
+
+def _python_at_least(version: str, floor: tuple = MIN_PYTHON) -> str:
+    """`version`, raised to the floor if it is older. Never lowers it."""
+    try:
+        parts = tuple(int(p) for p in str(version).split(".")[:2])
+    except (TypeError, ValueError):
+        return ".".join(str(p) for p in floor)
+    if parts >= floor:
+        return str(version)
+    raised = ".".join(str(p) for p in floor)
+    sys.stderr.write(
+        f"[remote_step] python {version} raised to {raised} for the runner venv: "
+        f"the resolved packages need it (pandas 3.x and friends require >=3.11), "
+        f"and installing them under {version} fails at uv_pip_install.\n"
+    )
+    return raised
+
+
 def _find_pypi_env(flow, decorators) -> dict:
     """Merge @pypi_base (on the flow class) and @pypi (on the step).
 
     Metaflow stores flow-level decorators in `_flow_decorators` — the shape
     varies across versions (list vs dict). We probe defensively.
     """
-    base_python = "3.12"
+    base_python = DEFAULT_PYTHON
     base_packages: dict[str, str] = {}
 
     def iter_flow_decos(f):
@@ -501,7 +534,10 @@ def _find_pypi_env(flow, decorators) -> dict:
             step_packages.update(attrs.get("packages") or {})
 
     merged = {**base_packages, **step_packages}
-    return {"python": step_python or base_python, "packages": merged}
+    return {
+        "python": _python_at_least(step_python or base_python),
+        "packages": merged,
+    }
 
 
 # Distributions that provide the `metaflow` module. Outerbounds ships a fork
@@ -1078,6 +1114,11 @@ class RemoteStepDecorator(StepDecorator):
             cached = _read_cached_env()
             if cached:
                 env_spec = cached
+                # A cached env can be old -- it is written next to the flow and
+                # shipped inside the Argo code package, so a file from an
+                # earlier era of the project reaches a pod unchanged. Floor its
+                # interpreter the same way a freshly resolved one is floored.
+                env_spec["python"] = _python_at_least(env_spec.get("python") or DEFAULT_PYTHON)
         else:
             _write_cached_env(env_spec)
         # Applied after the cache round-trip so the cached file keeps the

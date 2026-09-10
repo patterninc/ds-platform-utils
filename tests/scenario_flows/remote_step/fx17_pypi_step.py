@@ -18,7 +18,7 @@ class Fx17PypiStep(FlowSpec):
     def start(self):
         self.next(self.work)
 
-    @pypi(python="3.12", packages={"orjson": WANT_ORJSON})
+    @pypi(python="3.11", packages={"orjson": WANT_ORJSON})
     @remote_step
     @resources(cpu=1, memory=4000)
     @step

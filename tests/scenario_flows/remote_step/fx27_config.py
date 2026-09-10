@@ -14,7 +14,7 @@ naive "is it picklable" filter drops.
 from pathlib import Path
 
 from ds_platform_utils.metaflow import make_pydantic_parser_fn
-from metaflow import Config, FlowSpec, current, project, remote_step, resources, schedule, step
+from metaflow import Config, FlowSpec, current, project, pypi_base, remote_step, resources, schedule, step
 from pydantic import BaseModel, Field
 
 from _check import check
@@ -31,6 +31,18 @@ class FlowConfig(BaseModel):
     nested: dict = Field(default_factory=dict)
 
 
+# Exactly how out-of-stock declares it: the private git dependency listed in
+# @pypi_base, so every step -- plain ones included -- has the package that
+# provides make_pydantic_parser_fn. Without it a plain step under fast-bakery
+# gets only ob-metaflow and dies on the module-level import, which is what a
+# user meets first.
+@pypi_base(
+    python="3.11",
+    packages={
+        "pydantic": "",
+        "git+https://github.com/patterninc/ds-platform-utils.git": "@remote-step-eks",
+    },
+)
 @project(name="remote_step_config_probe")
 @schedule(cron="15 8 * * *", timezone="UTC")
 class Fx27Config(FlowSpec):
