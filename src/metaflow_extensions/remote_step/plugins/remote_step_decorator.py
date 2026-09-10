@@ -549,7 +549,48 @@ def _shrink_resources(decorators) -> None:
 # Outerbounds pool, and the driver *does* run on Outerbounds, so honouring it
 # is right — the step body is what runs elsewhere. Outerbounds derives
 # node_selector from compute_pool, so the two travel together.
-DRIVER_PLACEMENT_ATTRS = ("compute_pool", "node_selector", "namespace", "tolerations")
+DRIVER_PLACEMENT_ATTRS = (
+    "compute_pool",
+    "node_selector",
+    "namespace",
+    "tolerations",
+    # The image says what the driver runs in, not how big it is, so it carries
+    # over like the rest. Dropping it left the driver's @kubernetes with
+    # image=None, and under --environment=fast-bakery that is a second bake
+    # request with no base image, which the bakery rejects:
+    #   Bake [#02] failed: Server error:
+    "image",
+    "image_pull_policy",
+    "image_pull_secrets",
+)
+
+
+def _default_kubernetes_image() -> str:
+    """The image Metaflow would impute for a @kubernetes without one.
+
+    Mirrors KubernetesDecorator.step_init: the configured container image if
+    there is one, else a vanilla Python image matching the interpreter, with
+    the configured registry prefixed when the name carries none.
+    """
+    import platform
+
+    try:
+        from metaflow.metaflow_config import (
+            KUBERNETES_CONTAINER_IMAGE,
+            KUBERNETES_CONTAINER_REGISTRY,
+        )
+        from metaflow.plugins.kubernetes.kubernetes_decorator import get_docker_registry
+    except ImportError:  # pragma: no cover
+        major, minor = platform.python_version_tuple()[:2]
+        return f"python:{major}.{minor}"
+
+    image = KUBERNETES_CONTAINER_IMAGE
+    if not image:
+        major, minor = platform.python_version_tuple()[:2]
+        image = f"python:{major}.{minor}"
+    if not get_docker_registry(image) and KUBERNETES_CONTAINER_REGISTRY:
+        image = f"{KUBERNETES_CONTAINER_REGISTRY.rstrip('/')}/{image}"
+    return image
 
 
 def _inject_driver_kubernetes(decorators, dropped: list[dict] | None = None) -> None:
@@ -605,6 +646,11 @@ def _inject_driver_kubernetes(decorators, dropped: list[dict] | None = None) -> 
         attrs["gpu_vendor"] = "nvidia"
     if attrs.get("disk") is None:
         attrs["disk"] = 10240
+    # KubernetesDecorator imputes a missing image in its own step_init, which
+    # never runs for a decorator appended from inside another step_init. So we
+    # impute it here the same way it does, leaving nothing at None.
+    if not attrs.get("image"):
+        attrs["image"] = _default_kubernetes_image()
     driver_deco = KubernetesDecorator(attributes=attrs)
     decorators.append(driver_deco)
 
