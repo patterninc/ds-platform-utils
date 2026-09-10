@@ -8,7 +8,18 @@ authors = [
     { name = "Eric Riddoch", email = "eric.riddoch@pattern.com" },
     { name = "Vinay Shende", email = "vinay.shende@pattern.com" }
 ]
-# requires-python = ">=3.7"
+# The floor is what *consumers* must satisfy, and it is deliberately lower
+# than the interpreter this repo develops on (.python-version).
+#
+# 3.10 because that is still the floor across the org: sales-suite-backend is
+# pinned ">=3.10,<3.11", and sixteen of the projects in data-science-projects
+# ask for >=3.10 or ==3.10.15. Raising this would make the library
+# uninstallable for them.
+#
+# It was previously commented out entirely, which is why uv printed
+# "No `requires-python` value found in the workspace. Defaulting to >=3.10"
+# on every command -- the same floor, but by accident rather than intent.
+requires-python = ">=3.10"
 dependencies = [
     "outerbounds>=0.3.159",
     "pydantic>=2",
