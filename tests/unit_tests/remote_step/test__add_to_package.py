@@ -20,10 +20,7 @@ import os
 import metaflow  # noqa: F401  -- resolves plugins before the direct import below
 import pytest
 
-from remote_step.plugins.remote_step_decorator import (
-    CACHED_ENV_FILENAME,
-    RemoteStepDecorator,
-)
+from remote_step.plugins.remote_step_decorator import RemoteStepDecorator
 
 
 @pytest.fixture
@@ -67,19 +64,41 @@ def test_the_project_files_travel(project):
     assert ".python-version" in arcs
 
 
-def test_the_flows_own_env_cache_travels(project):
-    """Per flow, so a neighbouring flow's cache cannot be picked up."""
-    (project.parent / ".remote_step_env.MyFlow.json").write_text("{}")
-    (project.parent / ".remote_step_env.OtherFlow.json").write_text("{}")
+def test_every_step_of_the_flow_travels(project):
+    """One code package serves the whole flow, so every step's file must ship.
+
+    Metaflow calls add_to_package on whichever decorator instance it likes, so
+    yielding only the caller's own step would leave the rest of the flow's
+    pods with nothing to read.
+    """
+    (project.parent / ".remote_step_env.MyFlow.with_group.json").write_text("{}")
+    (project.parent / ".remote_step_env.MyFlow.without_group.json").write_text("{}")
     arcs = packaged(deco(project, "MyFlow"))
-    assert ".remote_step_env.MyFlow.json" in arcs
-    assert ".remote_step_env.OtherFlow.json" not in arcs, "another flow's cache must not ship"
+    assert ".remote_step_env.MyFlow.with_group.json" in arcs
+    assert ".remote_step_env.MyFlow.without_group.json" in arcs
 
 
-def test_the_legacy_shared_cache_still_travels(project):
-    """A project that has not been re-deployed since still has the old file."""
-    (project.parent / CACHED_ENV_FILENAME).write_text("{}")
-    assert CACHED_ENV_FILENAME in packaged(deco(project, "MyFlow"))
+def test_a_neighbouring_flows_cache_does_not_travel(project):
+    """A directory routinely holds several flows; only this one's may ship."""
+    (project.parent / ".remote_step_env.MyFlow.work.json").write_text("{}")
+    (project.parent / ".remote_step_env.OtherFlow.work.json").write_text("{}")
+    arcs = packaged(deco(project, "MyFlow"))
+    assert ".remote_step_env.MyFlow.work.json" in arcs
+    assert ".remote_step_env.OtherFlow.work.json" not in arcs, (
+        "another flow's cache must not ship"
+    )
+
+
+def test_the_legacy_shared_cache_does_not_travel(project):
+    """`.remote_step_env.json` is inert now, so shipping it is dead weight.
+
+    Nothing reads it any more: the reader asks for one exact
+    `.remote_step_env.<Flow>.<step>.json` and will not fall back to a less
+    specific name, because doing so is what handed fx13 another flow's
+    packages and fx20's `with_group` another step's.
+    """
+    (project.parent / ".remote_step_env.json").write_text("{}")
+    assert ".remote_step_env.json" not in packaged(deco(project, "MyFlow"))
 
 
 def test_missing_files_are_simply_absent(tmp_path):

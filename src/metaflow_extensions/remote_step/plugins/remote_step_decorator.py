@@ -19,6 +19,7 @@ Metaflow then persists those tiny refs as normal artifacts at task end.
 from __future__ import annotations
 
 import getpass
+import glob
 import json
 import importlib.metadata
 import os
@@ -65,7 +66,6 @@ DEFAULT_DRIVER_MEMORY_MB = 8192
 # The driver only holds a poll loop, so it never needs the step's scratch space.
 DEFAULT_DRIVER_DISK_MB = 10240
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
-CACHED_ENV_FILENAME = ".remote_step_env.json"
 # `--tag ds.domain:<team>` can stand in for team= on the decorator, since
 # flows already label their owning domain this way.
 TEAM_TAG_PREFIX = "ds.domain:"
@@ -194,24 +194,59 @@ class _MflogPusher:
                 pass
 
 
-def _cached_env_filename(flow_name: str | None) -> str:
-    """The cache file's name for one flow.
+def _cached_env_filename(flow_name: str | None, step_name: str | None = None) -> str | None:
+    """The cache file's name for one *step* of one flow.
 
-    Per flow, not per directory. A single directory routinely holds several
-    flows -- marketshare ships f0 through f4 in one src/ -- and one shared
-    file meant whichever flow deployed last decided what every other flow's
-    pods installed. That is how a GPU flow with no @pypi of its own ended up
-    with another flow's `pydantic + ds-platform-utils` and then died on
-    `cannot import name 'gpu_profile' from 'metaflow'`, an error naming
-    nothing that would lead you here.
+    This key has been wrong twice, in the same direction both times, and each
+    time the symptom was a pod installing an environment that belonged to
+    someone else.
+
+    Per directory was the first version. A single directory routinely holds
+    several flows -- marketshare ships f0 through f4 in one src/ -- so
+    whichever flow deployed last decided what every other flow's pods
+    installed. That is how a GPU flow with no @pypi of its own ended up with
+    another flow's `pydantic + ds-platform-utils` and then died on
+    `cannot import name 'gpu_profile' from 'metaflow'`.
+
+    Per flow was the second, and it is wrong for the same reason one level
+    down: @pypi and @uv_pypi are *step* decorators, so one flow legitimately
+    has a different environment per step, and one file per flow meant
+    whichever step resolved last won. fx20 caught it -- `with_group` asks for
+    the `extra` dependency group and its pod got `without_group`'s four
+    packages instead:
+
+        [remote_step] STAGE=user_step_end ERR No module named 'orjson'
+
+    Only on Argo, which is what let it hide: a local driver resolves packages
+    from uv.lock at task-run time and never reads the cache at all. The cache
+    exists because Metaflow blanks a step decorator's `packages` on the Argo
+    driver pod (F17), and that is exactly where the wrong file was read.
+
+    Returns None when either half of the key is missing. A cache entry that
+    cannot be addressed precisely is not worth reading: every bug above was a
+    file found under a name less specific than the thing it described.
+    """
+    if not flow_name or not step_name:
+        return None
+    safe_flow = re.sub(r"[^A-Za-z0-9_.-]", "_", str(flow_name))
+    safe_step = re.sub(r"[^A-Za-z0-9_.-]", "_", str(step_name))
+    return f".remote_step_env.{safe_flow}.{safe_step}.json"
+
+
+def _cached_env_glob(flow_name: str | None) -> str:
+    """Every cache file belonging to one flow.
+
+    One code package serves all of a flow's steps, so add_to_package has to
+    ship each step's file, not just the one belonging to the decorator
+    instance Metaflow happens to call it on.
     """
     if not flow_name:
-        return CACHED_ENV_FILENAME
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(flow_name))
-    return f".remote_step_env.{safe}.json"
+        return ".remote_step_env.*.json"
+    safe_flow = re.sub(r"[^A-Za-z0-9_.-]", "_", str(flow_name))
+    return f".remote_step_env.{safe_flow}.*.json"
 
 
-def _cached_env_path(flow_name: str | None = None) -> str | None:
+def _cached_env_path(flow_name: str | None = None, step_name: str | None = None) -> str | None:
     """Absolute path to the cached env JSON, next to the flow module.
 
     Used by the *writer* on the user's laptop at argo-workflows-create
@@ -223,9 +258,10 @@ def _cached_env_path(flow_name: str | None = None) -> str | None:
     flow_file = getattr(__main__, "__file__", None)
     if not flow_file:
         return None
-    return os.path.join(
-        os.path.dirname(os.path.abspath(flow_file)), _cached_env_filename(flow_name)
-    )
+    name = _cached_env_filename(flow_name, step_name)
+    if not name:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(flow_file)), name)
 
 
 def _cached_env_read_candidates() -> list[str]:
@@ -266,11 +302,13 @@ def _cached_env_read_candidates() -> list[str]:
     return dirs
 
 
-def _write_cached_env(env_spec: dict, flow_name: str | None = None) -> None:
-    """Write env_spec to `<flow_dir>/.remote_step_env.<FlowName>.json`."""
+def _write_cached_env(
+    env_spec: dict, flow_name: str | None = None, step_name: str | None = None
+) -> None:
+    """Write env_spec to `<flow_dir>/.remote_step_env.<Flow>.<step>.json`."""
     import json
 
-    path = _cached_env_path(flow_name)
+    path = _cached_env_path(flow_name, step_name)
     if not path:
         return
     try:
@@ -280,18 +318,27 @@ def _write_cached_env(env_spec: dict, flow_name: str | None = None) -> None:
         pass
 
 
-def _read_cached_env(flow_name: str | None = None) -> dict | None:
-    """Read env_spec from the JSON file if present.
+def _read_cached_env(flow_name: str | None = None, step_name: str | None = None) -> dict | None:
+    """Read env_spec from this step's JSON file if present.
 
     Probes every candidate location in ``_cached_env_read_candidates()``
     and returns the first one whose parsed body has non-empty
     ``packages``. Silently skips unreadable / empty entries so a stale
     file next to the flow doesn't shadow a fresh one in ``.mf_code/``.
+
+    Only this step's own file is consulted. There is deliberately no
+    fallback to a less specific name: reading another step's or another
+    flow's file is the very failure this key has produced twice, and a
+    missing entry degrades to "resolve nothing", which is recoverable.
     """
     import json
 
+    name = _cached_env_filename(flow_name, step_name)
+    if not name:
+        return None
+
     for d in _cached_env_read_candidates():
-        path = os.path.join(d, _cached_env_filename(flow_name))
+        path = os.path.join(d, name)
         if not os.path.isfile(path):
             continue
         try:
@@ -986,13 +1033,12 @@ class RemoteStepDecorator(StepDecorator):
         if not flow_file:
             return
         start = os.path.dirname(os.path.abspath(flow_file))
-        wanted = (
-            "uv.lock",
-            "pyproject.toml",
-            ".python-version",
-            _cached_env_filename(getattr(self, "_flow_name_for_cache", None)),
-            CACHED_ENV_FILENAME,
-        )
+        wanted = ("uv.lock", "pyproject.toml", ".python-version")
+        # Every step's cache file, not just this decorator instance's: one code
+        # package serves the whole flow, and Metaflow calls add_to_package on
+        # whichever instance it likes. Globbing also means a step whose name
+        # this instance cannot know still gets its file shipped.
+        env_glob = _cached_env_glob(getattr(self, "_flow_name_for_cache", None))
         seen: set[str] = set()
         cur = start
         for _ in range(6):
@@ -1003,6 +1049,12 @@ class RemoteStepDecorator(StepDecorator):
                 if os.path.isfile(p):
                     seen.add(name)
                     yield p, name
+            for p in sorted(glob.glob(os.path.join(cur, env_glob))):
+                name = os.path.basename(p)
+                if name in seen or not os.path.isfile(p):
+                    continue
+                seen.add(name)
+                yield p, name
             parent = os.path.dirname(cur)
             if parent == cur:
                 break
@@ -1197,9 +1249,14 @@ class RemoteStepDecorator(StepDecorator):
         # Recorded on the decorator because add_to_package() needs the same
         # name later and is not given the flow.
         self._flow_name_for_cache = getattr(type(flow), "__name__", None)
+        # The step name too: @pypi / @uv_pypi are step decorators, so one flow
+        # has an environment per step and a per-flow key hands a step whichever
+        # sibling resolved last (fx20: `with_group` got `without_group`'s
+        # packages and died on `No module named 'orjson'`).
+        self._step_name_for_cache = step_name
         env_spec = _find_pypi_env(flow, decorators)
         if not env_spec["packages"]:
-            cached = _read_cached_env(self._flow_name_for_cache)
+            cached = _read_cached_env(self._flow_name_for_cache, self._step_name_for_cache)
             if cached:
                 env_spec = cached
                 # A cached env can be old -- it is written next to the flow and
@@ -1208,7 +1265,7 @@ class RemoteStepDecorator(StepDecorator):
                 # interpreter the same way a freshly resolved one is floored.
                 env_spec["python"] = _python_at_least(env_spec.get("python") or DEFAULT_PYTHON)
         else:
-            _write_cached_env(env_spec, self._flow_name_for_cache)
+            _write_cached_env(env_spec, self._flow_name_for_cache, self._step_name_for_cache)
         # Applied after the cache round-trip so the cached file keeps the
         # user's declared set verbatim and the pin is re-derived each time.
         env_spec = _ensure_metaflow_in_env(env_spec)

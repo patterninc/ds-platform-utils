@@ -17,52 +17,114 @@ Both surfaced on the same GPU run and neither error named its cause.
        ImportError: cannot import name 'gpu_profile' from 'metaflow'
 """
 
+import json
+
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
 from remote_step.plugins import remote_step_decorator as rsd
 from remote_step.plugins.remote_step_decorator import (
-    CACHED_ENV_FILENAME,
     _cached_env_filename,
+    _cached_env_glob,
     _ensure_metaflow_in_env,
 )
 
 
-# ------------------------------------------------------- per-flow env cache
+# --------------------------------------------------- per-flow-per-step env cache
 
 
 def test_two_flows_in_one_directory_get_different_files():
-    """The defect: one file per directory meant one flow clobbered the rest."""
-    a = _cached_env_filename("F1AdSpendDataPrepFlow")
-    b = _cached_env_filename("F2AdSpendTrainUsFlow")
+    """The first defect: one file per directory, so one flow clobbered the rest."""
+    a = _cached_env_filename("F1AdSpendDataPrepFlow", "work")
+    b = _cached_env_filename("F2AdSpendTrainUsFlow", "work")
     assert a != b
 
 
-def test_the_filename_carries_the_flow_name():
-    assert "Fx13Gpu" in _cached_env_filename("Fx13Gpu")
+def test_two_steps_of_one_flow_get_different_files():
+    """The second defect, one level down.
+
+    @pypi / @uv_pypi are *step* decorators, so a flow legitimately has an
+    environment per step. Keyed per flow, whichever step resolved last won,
+    and fx20's `with_group` pod received `without_group`'s packages:
+
+        [remote_step] STAGE=user_step_end ERR No module named 'orjson'
+    """
+    a = _cached_env_filename("Fx20UvPypiGroup", "with_group")
+    b = _cached_env_filename("Fx20UvPypiGroup", "without_group")
+    assert a != b
 
 
-def test_an_unnamed_flow_falls_back_to_the_shared_name():
-    """Nothing should crash if the flow name is unavailable."""
-    assert _cached_env_filename(None) == CACHED_ENV_FILENAME
-    assert _cached_env_filename("") == CACHED_ENV_FILENAME
+def test_the_filename_carries_both_halves_of_the_key():
+    name = _cached_env_filename("Fx13Gpu", "train")
+    assert "Fx13Gpu" in name
+    assert "train" in name
+
+
+def test_a_key_that_cannot_be_addressed_precisely_is_refused():
+    """No name means no cache, rather than a shared one.
+
+    Every incarnation of this bug was a file found under a name less specific
+    than the thing it described, so an imprecise key returns None and the
+    driver resolves nothing instead of resolving something else's env.
+    """
+    assert _cached_env_filename(None, "work") is None
+    assert _cached_env_filename("", "work") is None
+    assert _cached_env_filename("MyFlow", None) is None
+    assert _cached_env_filename("MyFlow", "") is None
 
 
 @pytest.mark.parametrize("hostile", ["a/b", "..", "with space", "semi;colon", "a\\b"])
-def test_a_hostile_flow_name_cannot_escape_the_directory(hostile):
-    """The name reaches a filesystem path, so it has to be inert."""
-    name = _cached_env_filename(hostile)
-    assert "/" not in name
-    assert "\\" not in name
-    assert " " not in name
-    assert not name.startswith("..")
-    assert name.startswith(".remote_step_env.")
-    assert name.endswith(".json")
+def test_a_hostile_name_cannot_escape_the_directory(hostile):
+    """Both halves reach a filesystem path, so both have to be inert."""
+    for flow, step in ((hostile, "work"), ("MyFlow", hostile)):
+        name = _cached_env_filename(flow, step)
+        assert "/" not in name
+        assert "\\" not in name
+        assert " " not in name
+        assert not name.startswith("..")
+        assert name.startswith(".remote_step_env.")
+        assert name.endswith(".json")
 
 
-def test_the_same_flow_name_is_stable():
+def test_the_same_key_is_stable():
     """Writer and reader are separate processes; they must agree."""
-    assert _cached_env_filename("WeeklyForecastFlow") == _cached_env_filename("WeeklyForecastFlow")
+    assert _cached_env_filename("WeeklyForecastFlow", "fit") == _cached_env_filename(
+        "WeeklyForecastFlow", "fit"
+    )
+
+
+def test_the_glob_matches_every_step_of_its_own_flow_only():
+    """add_to_package ships all of a flow's files; one code package serves all."""
+    import fnmatch
+
+    pattern = _cached_env_glob("Fx20UvPypiGroup")
+    mine = [
+        _cached_env_filename("Fx20UvPypiGroup", "with_group"),
+        _cached_env_filename("Fx20UvPypiGroup", "without_group"),
+    ]
+    theirs = _cached_env_filename("SomeOtherFlow", "work")
+
+    assert all(fnmatch.fnmatch(m, pattern) for m in mine)
+    assert not fnmatch.fnmatch(theirs, pattern)
+
+
+def test_the_reader_will_not_fall_back_to_another_steps_file(tmp_path, monkeypatch):
+    """The whole point: a sibling's file must not answer for this step."""
+    sibling = tmp_path / _cached_env_filename("Fx20UvPypiGroup", "without_group")
+    sibling.write_text(json.dumps({"python": "3.12", "packages": {"pandas": "2.3.3"}}))
+    monkeypatch.setattr(rsd, "_cached_env_read_candidates", lambda: [str(tmp_path)])
+
+    assert rsd._read_cached_env("Fx20UvPypiGroup", "with_group") is None
+    assert rsd._read_cached_env("Fx20UvPypiGroup", "without_group") is not None
+
+
+def test_a_round_trip_returns_this_steps_own_env(tmp_path, monkeypatch):
+    spec = {"python": "3.12", "packages": {"orjson": "3.12.0"}}
+    path = tmp_path / _cached_env_filename("Fx20UvPypiGroup", "with_group")
+    path.write_text(json.dumps(spec))
+    monkeypatch.setattr(rsd, "_cached_env_read_candidates", lambda: [str(tmp_path)])
+
+    assert rsd._read_cached_env("Fx20UvPypiGroup", "with_group") == spec
 
 
 # ------------------------------------------------- the extensions distribution
