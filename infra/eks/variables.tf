@@ -328,6 +328,25 @@ variable "s3_integration_role_arns" {
     target roles live in other accounts, and an ARN list is auditable from
     this repo without reading tags in an account we may not control.
   EOT
-  type        = list(string)
-  default     = []
+  type = list(string)
+  default = [
+    # pattern-demand-forecast-models -- written by weekly_flow.publish_artifacts.
+    # Registered as the `demand-forecast-models` integration in the prod
+    # perimeter, and also assumed directly by ARN from the step body.
+    "arn:aws:iam::209479263910:role/ob-demand-forecast-models",
+    # market-mix-modeling. mmm-access-role backs the `market-mix-modeling`
+    # integration in the default perimeter; the prod-spectrum one is assumed
+    # directly by ARN with no registered integration.
+    "arn:aws:iam::209479263910:role/mmm-access-role",
+    "arn:aws:iam::209479263910:role/prod-spectrum-mmm-access-role",
+    # search-term-brand-link. Trusts only obp-5p6le9-task, so it is reachable
+    # from the default perimeter only.
+    "arn:aws:iam::209479263910:role/search-term-brand-link-access-role",
+    # niche-insights. The integration is registered in the default perimeter
+    # and points here, but the role does not exist in the account (GetRole ->
+    # NoSuchEntity), so that integration is currently broken for ordinary
+    # steps too. Listed so it works the moment the role returns; granting
+    # AssumeRole on a missing ARN is inert.
+    "arn:aws:iam::209479263910:role/niche-insights-access-role",
+  ]
 }
