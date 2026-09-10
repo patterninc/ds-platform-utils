@@ -18,9 +18,10 @@ fourth form from uv.lock; the fifth is what a hand-written `@pypi_base` tends
 to look like. Getting any of them wrong yields a requirement pip rejects, so
 the whole step fails to install rather than installing the wrong thing.
 
-The entrypoint calls `main()`, which writes a requirements file. A file rather
-than an argument list because a PEP 508 direct reference contains spaces, and
-an unquoted shell expansion splits one into three arguments.
+`main()` writes the rendered specs to stdout as NUL-terminated records, which
+entrypoint.sh reads into a bash array. NUL rather than newline because a PEP
+508 direct reference contains spaces, and an unquoted shell expansion would
+split one of those into three arguments.
 """
 
 from __future__ import annotations
@@ -33,9 +34,6 @@ URL_SCHEMES = ("git+", "http://", "https://", "file://")
 # A version that already starts with one of these is a specifier, not a bare
 # version, so it must be appended rather than pinned with '=='.
 SPECIFIER_STARTS = ("<", ">", "=", "!", "~")
-
-# Always present: the runner's own S3 access.
-ALWAYS = ("boto3",)
 
 
 def requirement_line(name: str, version: str) -> str:
@@ -65,29 +63,39 @@ def requirement_line(name: str, version: str) -> str:
 
 
 def build_requirements(packages: dict[str, str] | None) -> list[str]:
-    """Render every `packages` entry, `ALWAYS` first."""
-    return list(ALWAYS) + [requirement_line(name, version) for name, version in (packages or {}).items()]
+    """Render every `packages` entry.
+
+    `boto3` is not included: the entrypoint passes it separately, since the
+    runner needs S3 access whatever the flow declares.
+    """
+    return [requirement_line(name, version) for name, version in (packages or {}).items()]
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Read a spec, write a requirements file. `main(spec_path, out_path)`."""
+    """Read a spec, write NUL-terminated specs to stdout. `main(spec_path)`."""
     args = list(sys.argv[1:] if argv is None else argv)
     spec_path = args[0] if args else "/payload/spec.json"
-    out_path = args[1] if len(args) > 1 else "/payload/requirements.txt"
 
     with open(spec_path) as f:
         spec = json.load(f)
     packages = (spec.get("env") or {}).get("packages") or {}
-    lines = build_requirements(packages)
-
-    with open(out_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    specs = build_requirements(packages)
 
     sys.stderr.write(
         f"[remote_step] spec env packages ({len(packages)}): "
         f"{list(packages.items())[:20]}\n"
-        "[remote_step] requirements:\n" + "\n".join("  " + line for line in lines) + "\n"
+        "[remote_step] requirements:\n" + "".join(f"  {s}\n" for s in specs)
     )
+
+    # Only terminate when there is something to terminate. A trailing NUL on an
+    # empty set emits one empty record, which reaches uv as "" and fails with
+    #   error: Failed to parse: ``
+    #   Caused by: Empty field is not allowed for PEP508
+    # A step needing only the standard library is legitimate, so an empty set
+    # has to mean 'install nothing'.
+    if specs:
+        sys.stdout.buffer.write(("\0".join(specs) + "\0").encode())
+        sys.stdout.buffer.flush()
     return 0
 
 

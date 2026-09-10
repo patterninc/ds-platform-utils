@@ -73,15 +73,14 @@ def test_specifier_is_not_double_pinned():
     assert "==<" not in requirement_line("pyarrow", "<19.0.0")
 
 
-def test_boto3_is_always_present():
-    """The runner needs its own S3 access even when the flow declares nothing."""
-    assert build_requirements({}) == ["boto3"]
-    assert build_requirements(None) == ["boto3"]
+def test_no_packages_renders_nothing():
+    """boto3 is passed by the entrypoint, not rendered here."""
+    assert build_requirements({}) == []
+    assert build_requirements(None) == []
 
 
-def test_declared_packages_follow_boto3():
-    lines = build_requirements({"pandas": "", "numpy": "2.2.6"})
-    assert lines == ["boto3", "pandas", "numpy==2.2.6"]
+def test_renders_every_declared_package():
+    assert build_requirements({"pandas": "", "numpy": "2.2.6"}) == ["pandas", "numpy==2.2.6"]
 
 
 def test_renders_a_whole_uv_pypi_base_environment():
@@ -95,7 +94,6 @@ def test_renders_a_whole_uv_pypi_base_environment():
         }
     )
     assert lines == [
-        "boto3",
         "pandas",
         "pyarrow<19.0.0",
         f"ds-platform-utils @ git+{REPO}@{SHA}",
@@ -103,31 +101,43 @@ def test_renders_a_whole_uv_pypi_base_environment():
     ]
 
 
-def test_main_writes_the_file_the_entrypoint_installs_from(tmp_path):
+def write_spec(tmp_path, body):
     spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({"env": {"python": "3.12", "packages": {"ds-platform-utils": f"@ git+{REPO}@{SHA}"}}}))
-    out = tmp_path / "requirements.txt"
+    spec.write_text(json.dumps(body))
+    return str(spec)
 
-    assert main([str(spec), str(out)]) == 0
-    assert out.read_text() == f"boto3\nds-platform-utils @ git+{REPO}@{SHA}\n"
+
+def test_main_emits_nul_terminated_records(tmp_path, capsysbinary):
+    """entrypoint.sh reads these into a bash array with `read -d ''`."""
+    spec = write_spec(tmp_path, {"env": {"packages": {"pandas": "", "pyarrow": "<19.0.0"}}})
+
+    assert main([spec]) == 0
+    assert capsysbinary.readouterr().out == b"pandas\0pyarrow<19.0.0\0"
+
+
+def test_a_direct_reference_survives_as_one_record(tmp_path, capsysbinary):
+    """The spaces in a direct reference are why NUL is the separator."""
+    spec = write_spec(tmp_path, {"env": {"packages": {"ds-platform-utils": f"@ git+{REPO}@{SHA}"}}})
+
+    main([spec])
+    records = capsysbinary.readouterr().out.split(b"\0")[:-1]
+    assert records == [f"ds-platform-utils @ git+{REPO}@{SHA}".encode()]
 
 
 @pytest.mark.parametrize("env", [{}, {"env": {}}, {"env": {"packages": {}}}, {"env": {"packages": None}}])
-def test_main_tolerates_a_spec_with_no_packages(tmp_path, env):
-    """A flow with no @pypi at all still needs a runnable venv."""
-    spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps(env))
-    out = tmp_path / "requirements.txt"
+def test_an_empty_package_set_emits_nothing_at_all(tmp_path, capsysbinary, env):
+    """A trailing NUL here would reach uv as "" and fail PEP 508 parsing.
 
-    assert main([str(spec), str(out)]) == 0
-    assert out.read_text() == "boto3\n"
+    A step needing only the standard library is legitimate.
+    """
+    assert main([write_spec(tmp_path, env)]) == 0
+    assert capsysbinary.readouterr().out == b""
 
 
-def test_main_reports_what_it_wrote(tmp_path, capsys):
+def test_main_reports_what_it_rendered(tmp_path, capsysbinary):
     """The driver-side poller attributes install failures from this output."""
-    spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({"env": {"packages": {"pyarrow": "<19.0.0"}}}))
+    spec = write_spec(tmp_path, {"env": {"packages": {"pyarrow": "<19.0.0"}}})
 
-    main([str(spec), str(tmp_path / "requirements.txt")])
+    main([spec])
 
-    assert "pyarrow<19.0.0" in capsys.readouterr().err
+    assert b"pyarrow<19.0.0" in capsysbinary.readouterr().err

@@ -64,38 +64,24 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     chmod 600 ~/.netrc
 fi
 
-# Emit each package spec as one \0-terminated record so we can read them
-# into a bash array without word-splitting on spaces inside PEP 508 URLs
+# Read each package spec as one \0-terminated record so we can load them into
+# a bash array without word-splitting on spaces inside PEP 508 URLs
 # (e.g. "ds-dqv-tool @ git+https://...").
+#
+# The rendering itself lives in the package so it can be unit tested -- the
+# four environment decorators between them spell a dependency six ways, and
+# getting one wrong yields a requirement uv rejects, failing the whole step.
+# Nothing is emitted for an empty package set: writing the trailing NUL
+# unconditionally produces one empty record, which lands in PKG_SPECS as ""
+# and makes uv fail with
+#   error: Failed to parse: ``
+#   Caused by: Empty field is not allowed for PEP508
+# A step needing only the standard library is legitimate, so an empty set has
+# to mean 'install nothing', not 'install ""'.
 PKG_SPECS=()
 while IFS= read -r -d '' spec_line; do
     PKG_SPECS+=("$spec_line")
-done < <($PY -c "
-import json, sys
-spec = json.load(open('/payload/spec.json'))
-packages = spec['env'].get('packages', {})
-sys.stderr.write(f'[remote_step] spec env packages ({len(packages)}): {list(packages.items())[:20]}\n')
-out = []
-for name, ver in packages.items():
-    ver = (ver or '').strip()
-    if ver.startswith('@'):
-        out.append(f'{name} {ver}')
-    elif ver.startswith(('git+', 'http://', 'https://', 'file://')):
-        out.append(f'{name} @ {ver}')
-    elif name.startswith(('git+', 'http://', 'https://', 'file://')):
-        out.append(name if not ver else f'{name}{ver}')
-    else:
-        out.append(f'{name}=={ver}' if ver else name)
-if out:
-    # Only terminate when there is something to terminate. Writing the
-    # trailing NUL unconditionally emits one empty record for an empty
-    # package set, which lands in PKG_SPECS as \"\" and makes uv fail with
-    #   error: Failed to parse: \`\`
-    #   Caused by: Empty field is not allowed for PEP508
-    # A step that needs only the standard library is legitimate, so an
-    # empty set has to mean 'install nothing', not 'install \"\"'.
-    sys.stdout.buffer.write(('\0'.join(out) + '\0').encode())
-")
+done < <($PY -m metaflow_extensions.remote_step.requirements /payload/spec.json)
 
 t=$(date +%s)
 if ! /root/.local/bin/uv pip install --python /venv/bin/python \
