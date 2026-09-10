@@ -303,17 +303,31 @@ Legend for **Status**:
 - Verified live: `SibsFlow` run 238585 — `caught` holds the flow's own
   `KnownFailure`, message intact.
 
-### 13. `@timeout` sync driver ↔ runner — ⚠️ shipped, not yet observed live
+### 13. `@timeout` sync driver ↔ runner — ✅
 - **Uses**: 126 sites.
 - **Was**: `@timeout` bounded only the driver. When it fired, the driver was
   killed while the runner pod carried on running — and billing — against
   `job_timeout_minutes`, which knew nothing about the user's intent.
-- **Now**: a sibling `@timeout` sets the Job's `activeDeadlineSeconds` too,
-  plus 5 minutes of slack so the driver outlives the pod and is the one that
-  reports the timeout rather than both dying in a race. With no `@timeout`,
-  the decorator's own `job_timeout_minutes` still applies.
-- Unit-tested across seconds/minutes/hours; not yet watched fire on a real
-  long-running step.
+- **Now**: a sibling `@timeout` becomes the Job's `activeDeadlineSeconds`,
+  exactly. With no `@timeout` the decorator's own `job_timeout_minutes` still
+  applies.
+- **Never extended.** An earlier version added 5 minutes of slack, on the
+  theory that the driver should outlive the pod and report the timeout. That
+  was backwards: Metaflow kills the driver at the user's value, so a longer Job
+  deadline left the pod running — and billing — with nobody watching, which is
+  the very thing this entry exists to fix. The two now expire together, so
+  which side reports it is a race (usually Metaflow's driver timeout). Both
+  stop the work.
+- Verified live through Argo — `argo-timeoutflow-822rv`, a step asking for
+  `@timeout(minutes=1)` and then sleeping 6:
+
+  ```
+  rs-timeoutflow-slow-60167ed602-0  activeDeadlineSeconds= 60   # was 14400
+  rs-timeoutflow-slow-60167ed602-0  Failed  0/1  2m23s          # killed, not sleeping
+  ```
+
+  Before the fix that field carried the 240-minute default, so the pod outlived
+  its driver by hours.
 
 ### 14. `@gpu_profile()` — ⚠️ data half shipped, card half blocked on gap 6
 - **Uses**: 8 sites (advertising CR flows).
@@ -655,7 +669,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@retry` | 404 | ✅ retries the driver, which re-submits — intended |
 | `@card` | 220 | ✅ gap #6 |
 | `@secrets` | 97 | ✅ |
-| `@timeout` | 126 | ⚠️ gap #13 — shipped, not observed live |
+| `@timeout` | 126 | ✅ gap #13 |
 | `@catch` | 6 | ✅ gap #12 |
 | `@pypi` / `@pypi_base` | 92 | ✅ |
 | `@environment` | 1 | ✅ gap #11 |
