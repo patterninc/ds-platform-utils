@@ -36,8 +36,27 @@ metadata:
 spec:
   nodeLabels:
     pattern-ml-platform.pattern.com/pool: gpu
-  # Kueue applies these tolerations to admitted pods so they clear the
-  # NoSchedule taint Karpenter puts on GPU nodes.
+  # THE GATE. Kueue will only assign this flavor to a Workload whose pod spec
+  # already tolerates these taints, so a CPU-only step can never be placed
+  # here.
+  #
+  # Without it, flavors are simply tried in order and a team with GPU
+  # entitlement fell through to this one whenever its x86 and arm64 quota was
+  # exhausted: a pod asking for zero GPUs trivially fits `nvidia.com/gpu: 8`,
+  # so `content` running 256 cores of CPU work would put the next plain step
+  # on a g6e node -- or, with the arm64 default, leave it Pending forever,
+  # since this flavor's nodeLabels pin the amd64-only GPU pool against a pod
+  # whose nodeSelector says arm64. A zero GPU quota only closes that door for
+  # teams that have no GPU quota at all.
+  #
+  # Mirrors the taint the GPU NodePool applies (karpenter-nodepools.yaml).
+  nodeTaints:
+    - key: nvidia.com/gpu
+      value: "true"
+      effect: NoSchedule
+  # Applied by Kueue to admitted pods so they clear that same taint on the
+  # node. The runner adds it itself for a GPU step, which is what makes the
+  # gate above pass.
   tolerations:
     - key: nvidia.com/gpu
       value: "true"

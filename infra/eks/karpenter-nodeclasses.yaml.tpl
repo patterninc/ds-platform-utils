@@ -115,16 +115,35 @@ spec:
         volumeType: gp3
         deleteOnTermination: true
         encrypted: true
-    # Bigger and faster than the CPU class: GPU images carry CUDA + cuDNN,
-    # and model weights land here before they reach device memory.
+    # Small, because containerd and ephemeral storage live on the instance
+    # store instead -- see instanceStorePolicy below. This only has to hold
+    # what Bottlerocket itself puts on the data volume.
     - deviceName: /dev/xvdb
       ebs:
-        volumeSize: 500Gi
+        volumeSize: 100Gi
         volumeType: gp3
-        iops: 10000
-        throughput: 1000
+        iops: 6000
+        throughput: 500
         deleteOnTermination: true
         encrypted: true
+
+  # Every GPU instance type this pool may launch ships local NVMe, and it is
+  # already paid for in the instance price:
+  #
+  #   g6.xlarge        250 GB      g6e.2xlarge      450 GB
+  #   g6.2xlarge       450 GB      g6e.12xlarge   3,800 GB
+  #   g6.48xlarge    7,520 GB      p6-b200.48xlarge  30,400 GB
+  #
+  # Verified with describe-instance-types; every g6/g6e/p6-b200 size returns
+  # InstanceStorageSupported=true. Without this the disks sat idle while we
+  # paid separately for a 500 GB gp3 at 10,000 provisioned IOPS -- for the one
+  # workload that most wants local scratch, since datasets, checkpoints and
+  # weights all stage through it.
+  #
+  # RAID0 so multi-disk types present one filesystem. Instance store is wiped
+  # on stop/terminate, which costs nothing here: these nodes are ephemeral and
+  # the volumes are already deleteOnTermination.
+  instanceStorePolicy: RAID0
 
   userData: |
     [settings.kubernetes]

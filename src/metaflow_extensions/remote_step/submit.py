@@ -29,6 +29,9 @@ PRIORITY_LABEL = "kueue.x-k8s.io/priority-class"
 ARCH_LABEL = "kubernetes.io/arch"
 
 GPU_RESOURCE = "nvidia.com/gpu"
+# Karpenter taints GPU nodes with this; the `gpu` ResourceFlavor declares it
+# as nodeTaints so only a workload tolerating it can be admitted there.
+GPU_TAINT_KEY = "nvidia.com/gpu"
 
 VALID_ARCHES = ("x86_64", "arm64")
 # Kubernetes uses Go's GOARCH names, not uname's.
@@ -37,10 +40,21 @@ _ARCH_TO_K8S = {"x86_64": "amd64", "arm64": "arm64"}
 VALID_PRIORITIES = ("low", "normal", "high")
 
 
-# What a node's data volume can actually give one pod, from
-# infra/eks/karpenter-nodeclasses.yaml.tpl. The headroom covers the runner
-# image plus the kubelet's eviction thresholds; a request above this is
-# admitted by Kueue and then never schedules.
+# What one pod can get for scratch space, from
+# infra/eks/karpenter-nodeclasses.yaml.tpl. A request above this is admitted by
+# Kueue and then never schedules, so resolve() refuses it instead.
+#
+# CPU nodes: a 200 GB gp3 data volume, since no CPU instance family we allow
+# has an instance store. The headroom covers the runner image and the
+# kubelet's eviction thresholds.
+#
+# GPU nodes: the instance store, not the data volume. Every g6/g6e/p6-b200
+# type ships local NVMe (250 GB on the smallest, 30 TB on p6-b200.48xlarge)
+# and `instanceStorePolicy: RAID0` puts containerd and ephemeral storage
+# there, so the gp3 alongside it is only 100 GB. Karpenter reads the instance
+# store into the node's ephemeral-storage capacity, so a large ask simply
+# selects a bigger GPU type rather than failing -- the ceiling here is the
+# point past which no type we allow would be a sane choice.
 NODE_DATA_VOLUME_GB_CPU = 200
 NODE_DATA_VOLUME_GB_GPU = 500
 MAX_EPHEMERAL_GB_CPU = 170
@@ -319,13 +333,27 @@ def build_manifest(
         "ephemeral-storage": f"{resources.ephemeral_gb}Gi",
     }
     node_selector = {ARCH_LABEL: resources.k8s_arch}
+    tolerations: list[dict] = []
     if resources.gpus:
         # Extended resources must appear in limits; Kubernetes copies the
-        # value to requests. This single entry is what steers Kueue to the
-        # `gpu` ResourceFlavor and Karpenter to the gpu NodePool — and the
-        # flavor's toleration for the NoSchedule taint is applied by Kueue,
-        # so we do not set one here.
+        # value to requests. This single entry is what steers Karpenter to the
+        # gpu NodePool.
         limits[GPU_RESOURCE] = str(resources.gpus)
+        # The toleration has to be on the pod spec *before* admission, not
+        # only applied by Kueue afterwards. The `gpu` ResourceFlavor declares
+        # matching nodeTaints, and Kueue will only assign a flavor to a
+        # Workload that already tolerates them -- that is what stops a
+        # CPU-only step from being placed on the gpu flavor when its team's
+        # x86 and arm64 quota is exhausted. Kueue applies the same toleration
+        # again on admission, which is harmless.
+        tolerations.append(
+            {
+                "key": GPU_TAINT_KEY,
+                "value": "true",
+                "operator": "Equal",
+                "effect": "NoSchedule",
+            }
+        )
 
     return {
         "apiVersion": "batch/v1",
@@ -359,6 +387,7 @@ def build_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": cfg.service_account,
+                    "tolerations": tolerations,
                     "volumes": volumes,
                     "nodeSelector": node_selector,
                     # Steps are single-pod and stateless; on node loss
