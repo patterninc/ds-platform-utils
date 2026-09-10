@@ -73,6 +73,54 @@ def test_specifier_is_not_double_pinned():
     assert "==<" not in requirement_line("pyarrow", "<19.0.0")
 
 
+# Every spelling below was taken verbatim from a @pypi_base / @pypi in the DS
+# flow repos (pattern-nlp, demand-forecast, data-science-projects). They are
+# the shapes that actually have to work.
+PRODUCTION_SPELLINGS = {
+    # exact pins, including a post-release
+    "pandas": "2.1.4",
+    "scikit-learn": "1.4.1.post1",
+    "sentence-transformers": "5.1.2",
+    # unpinned
+    "torch": "",
+    "logfire": "",
+    # specifiers -- lower bounds are the common case, and one real upper bound
+    "catboost": ">=1.2.8",
+    "fastparquet": ">=2024.11.0",
+    "numpy": ">=1.26.1",
+    "pyarrow": "<19.0.0",
+    # private git repos, ref written on the value
+    "git+https://github.com/patterninc/ds-dqv-tool.git": "@v0.0.9",
+    "git+https://github.com/patterninc/ds-platform-utils.git": "@main",
+}
+
+PRODUCTION_EXPECTED = [
+    "pandas==2.1.4",
+    "scikit-learn==1.4.1.post1",
+    "sentence-transformers==5.1.2",
+    "torch",
+    "logfire",
+    "catboost>=1.2.8",
+    "fastparquet>=2024.11.0",
+    "numpy>=1.26.1",
+    "pyarrow<19.0.0",
+    "git+https://github.com/patterninc/ds-dqv-tool.git@v0.0.9",
+    "git+https://github.com/patterninc/ds-platform-utils.git@main",
+]
+
+
+def test_renders_the_production_flow_corpus():
+    assert build_requirements(PRODUCTION_SPELLINGS) == PRODUCTION_EXPECTED
+
+
+@pytest.mark.parametrize("version", ["", "@main", "@v1", "@v0.0.9"])
+def test_a_private_repo_url_key_stays_one_record(version):
+    """All four value forms seen on a git URL key across the flow repos."""
+    line = requirement_line("git+https://github.com/patterninc/ds-dqv-tool.git", version)
+    assert line == f"git+https://github.com/patterninc/ds-dqv-tool.git{version}"
+    assert " " not in line
+
+
 def test_no_packages_renders_nothing():
     """boto3 is passed by the entrypoint, not rendered here."""
     assert build_requirements({}) == []
