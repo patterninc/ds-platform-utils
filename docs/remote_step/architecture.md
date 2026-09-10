@@ -191,17 +191,36 @@ Enabling one takes two changes, and **both** are required:
    them, so ordinary steps keep working:
 
 ```json
-"Principal": {
-  "AWS": [
-    "arn:aws:iam::209479263910:role/obp-5p6le9-task",
-    "arn:aws:iam::209479263910:role/obp-301bcf-task--prod",
-    "arn:aws:iam::209479263910:role/pattern-ml-platform-ob-runner"
-  ]
+{
+  "Effect": "Allow",
+  "Principal": {
+    "AWS": [
+      "arn:aws:iam::209479263910:role/obp-5p6le9-task",
+      "arn:aws:iam::209479263910:role/obp-301bcf-task--prod",
+      "arn:aws:iam::209479263910:role/pattern-ml-platform-ob-runner"
+    ]
+  },
+  "Action": ["sts:AssumeRole", "sts:SetSourceIdentity", "sts:TagSession"]
 }
 ```
 
-Keep `sts:SetSourceIdentity` in the action list for the same reason it is
-needed on the submitter hop.
+`sts:TagSession` is required on **both** sides, and its absence is the one
+that does not look like itself. Pod Identity stamps the namespace and service
+account onto the runner's session — that is what makes a CloudTrail S3 call
+attributable to a team — and STS then needs `sts:TagSession` on the *target*
+role for those tags to survive the hop. Without it the assume fails with
+
+```
+not authorized to perform: sts:TagSession on resource: <role>
+```
+
+which reads like a missing `AssumeRole` grant and sends you looking at the
+wrong statement. Keep `sts:SetSourceIdentity` for the same reason the
+submitter hop needs it.
+
+Verified end to end: a `@remote_step` pod running as
+`pattern-ml-platform-ob-runner` assumes `ob-demand-forecast-models` and lists
+`pattern-demand-forecast-models`.
 
 The `obp-*-task` roles belong to Outerbounds and must not be edited. The
 integration role itself is ours.

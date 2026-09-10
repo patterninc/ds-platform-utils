@@ -57,8 +57,16 @@ data "aws_iam_policy_document" "runner_permissions" {
   dynamic "statement" {
     for_each = length(var.s3_integration_role_arns) > 0 ? [1] : []
     content {
-      sid       = "AssumeS3IntegrationRoles"
-      actions   = ["sts:AssumeRole"]
+      sid = "AssumeS3IntegrationRoles"
+      # TagSession as well as AssumeRole. Pod Identity stamps the namespace
+      # and service account onto the runner's session -- that is what makes a
+      # CloudTrail S3 call attributable to a team -- and STS then requires
+      # sts:TagSession on the *target* role for those tags to propagate
+      # through the hop. Without it the assume fails with
+      #   not authorized to perform: sts:TagSession on resource: <role>
+      # which reads like a missing AssumeRole grant. The target role's trust
+      # policy has to allow the same action.
+      actions   = ["sts:AssumeRole", "sts:TagSession"]
       resources = var.s3_integration_role_arns
     }
   }
