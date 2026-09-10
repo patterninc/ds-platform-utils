@@ -254,17 +254,24 @@ borrowing is opportunistic, not a transfer.
 | team | cpu (nominal/borrow) | memory | gpu |
 |---|---|---|---|
 | forecasting | 256 / 512 | 1024Gi / 2048Gi | 0 / 4 |
-| nlp | 256 / 512 | 1024Gi / 2048Gi | 8 / 16 |
+| content | 256 / 512 | 1024Gi / 2048Gi | 8 / 16 |
 | market-intelligence | 256 / 512 | 1024Gi / 2048Gi | 0 / 4 |
 | advertising | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
 | operations | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
-| content | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
+| revops | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
+| reference | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
+| demand-generation | 128 / 512 | 512Gi / 2048Gi | 0 / 4 |
+| sandbox | 32 / 64 | 128Gi / 256Gi | 0 / 0 |
+
+`content` carries NLP's work, which is why it holds the cluster's only GPU
+quota. `sandbox` is where a step lands when nothing names a team — small on
+purpose, and with no GPU so an untagged run cannot take a GPU node.
 
 > **These are per flavor and therefore additive.** `cpu_quota=256` grants 256
 > x86 cores *and* 256 arm64 cores, so a team's real nominal is double what the
-> table reads and the cohort totals 2304 rather than 1152. Defensible as "256
-> of each architecture"; halve them if the intent is N cores regardless. The
-> NodePool `limits` are the true ceiling either way.
+> table reads. Defensible as "256 of each architecture"; halve them if the
+> intent is N cores regardless. The NodePool `limits` are the true ceiling
+> either way.
 
 `ephemeral-storage` is declared at 10Ti nominal and borrow on both CPU
 flavors — effectively unlimited, present only because admission requires

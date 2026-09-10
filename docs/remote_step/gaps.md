@@ -348,8 +348,11 @@ told apart by looking for a `--with` spec naming `remote_step` in `sys.argv`.
 Each step keeps its own `@resources`, so this is not one blanket size.
 
 `team` may come from `--tag ds.domain:<team>` instead of the decorator, in
-which case the flow stops being self-contained: without the tag it fails at
-flow init. That failure is clear and names both fixes, but it is a failure.
+which case the flow stops being self-contained — and since an untagged run
+falls back to `sandbox` rather than failing, a flow that loses its tag runs on
+the wrong quota instead of stopping. The fallback is announced on stderr and
+sandbox is too small for a real flow, so it surfaces as a stalled or cramped
+run rather than a clear error.
 
 ### E4. `argo-workflows create + trigger` (production) — ✅
 

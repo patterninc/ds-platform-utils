@@ -76,11 +76,11 @@ cross-account `s3:GetObject`.
 
 **Impact**
 Nothing validates that the caller is entitled to the namespace it names. Any
-Outerbounds user who can run a flow can set `team="nlp"` and:
+Outerbounds user who can run a flow can set `team="forecasting"` and:
 
-- consume NLP's Kueue quota, starving their jobs;
-- run arbitrary code in NLP's namespace under NLP's runner identity;
-- read and write NLP's artifacts in the payload bucket (see finding 5).
+- consume that team's Kueue quota, starving their jobs;
+- run arbitrary code in their namespace under their runner identity;
+- read and write their artifacts in the payload bucket (see finding 5).
 
 Teams are separated by convention, not by a boundary. There is no audit signal
 that distinguishes this from legitimate use — the Job looks identical.

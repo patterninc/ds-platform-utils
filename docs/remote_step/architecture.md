@@ -319,13 +319,24 @@ Resolution order:
 
 1. `team=` on the decorator
 2. `--tag ds.domain:<team>` on the run
+3. `sandbox`
 
 So `@remote_step()` and `--with remote_step` both work when the run is tagged,
 which for flows already tagged by domain removes the same string from every
-decorator. The trade-off is that the flow stops being self-contained: without
-the tag it fails at flow init, clearly and naming both fixes, but it does fail.
-`@remote_step(team=...)` in source always works regardless of how it is
-invoked.
+decorator. `@remote_step(team=...)` in source always works regardless of how
+it is invoked.
+
+An untagged, undecorated run lands in `sandbox` rather than failing, because
+every scheduled flow tags its domain — so an untagged run is ad-hoc by
+definition, and ad-hoc work wanting a pod is the common case. The fallback is
+announced on stderr.
+
+The cost is that this failure is no longer loud. A **production** flow that
+loses its tag now runs, on the wrong quota in a namespace nobody owns, instead
+of stopping at flow init. `sandbox` is sized to make that survivable rather
+than silent: 32 CPU / 128Gi, borrowing 64 / 256Gi, and no GPU — enough for
+exploratory work, visibly not enough for a real flow, and never able to take a
+GPU node. Anything scheduled should still name its team.
 
 Read from `sys.argv` rather than `metaflow.current.tags` because the
 requirement is validated at flow init, before `current` is populated — and
@@ -427,8 +438,12 @@ The API endpoint is public with a CIDR allow-list. Private-only was
 investigated and rejected as disproportionate — see the rationale on
 `var.enable_public_endpoint`.
 
-Teams are `advertising`, `content`, `forecasting`, `market-intelligence`,
-`nlp`, `operations`. Adding one is a change to `var.teams`, not new Terraform.
+Teams are `advertising`, `content`, `demand-generation`, `forecasting`,
+`market-intelligence`, `operations`, `reference`, `revops`, plus the `sandbox`
+fallback. Adding one is a change to `var.teams`, not new Terraform.
+
+NLP is part of `content`, which is why that namespace holds the cluster's only
+GPU quota and a larger CPU/memory allocation than the other domains.
 
 ---
 
@@ -445,6 +460,34 @@ uploads.
 Driver tasks record `kubernetes-pod-name` / `-pod-id` / `-node-ip` as task
 metadata, which is what lets Outerbounds join its per-task CPU/memory panel to
 cluster metrics.
+
+Every Job is labelled for selecting and accounting:
+
+```
+kueue.x-k8s.io/queue-name, kueue.x-k8s.io/priority-class
+remote-step.pattern.com/{flow,step,run-id,attempt,perimeter}
+```
+
+with the unsanitised flow/step names, task id and user in annotations, since
+those are not always valid label values.
+
+`perimeter` matters because a team namespace holds every perimeter's pods —
+without it a prod run and an ad-hoc one are indistinguishable to `kubectl` and
+to anything reading labels for cost attribution:
+
+```
+kubectl get jobs -n forecasting -l remote-step.pattern.com/perimeter=prod
+```
+
+It also disambiguates `run-id`: run ids are unique only *within* a perimeter
+(§5), so selecting on `run-id` alone can match pods from two of them. The Job
+name is unaffected — it hashes `(run_id, task_id)` rather than embedding the
+run id.
+
+This is observability only. Separating perimeters by *scheduling* (their own
+quota or priority) or by *isolation* (a namespace per perimeter, so a non-prod
+pod cannot reach prod data through the shared runner identity) are open
+decisions, both needing Terraform.
 
 **Not implemented:** log retention for the runner pod itself. `logs.tf`
 provisions a CloudWatch group but nothing ships to it, so once a pod is reaped
