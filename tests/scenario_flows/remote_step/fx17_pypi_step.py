@@ -27,7 +27,13 @@ class Fx17PypiStep(FlowSpec):
 
         print(f"[fx17] orjson {orjson.__version__} in the pod", flush=True)
         check("the @pypi package is importable", orjson.__version__, WANT_ORJSON)
-        check("it actually works", orjson.loads(orjson.dumps({"a": 1})), {"a": 1})
+        # pylint cannot introspect a C extension, so it reports orjson.loads /
+        # orjson.dumps as no-member and Metaflow fails the deploy on it.
+        check(
+            "it actually works",
+            orjson.loads(orjson.dumps({"a": 1})),  # pylint: disable=no-member
+            {"a": 1},
+        )
         self.version = orjson.__version__
         self.next(self.end)
 

@@ -656,6 +656,48 @@ Legend for **Status**:
   `num_parallel` at step_init; rebuild the correct `self.next(...)` call at
   driver end.
 
+### F24. `cannot import name 'gpu_profile' from 'metaflow'` — ✅
+- **Root**: the extension decorators (`@gpu_profile`, `@checkpoint`, `@model`)
+  live in `ob-metaflow-extensions`, a distribution separate from metaflow, and
+  whether it reached the pod depended on the resolver having walked
+  ds-platform-utils → outerbounds → ob-metaflow-extensions. A flow declaring
+  no packages of its own got only `ob-metaflow`, and the pod died at
+  `STAGE=import_step` naming neither the missing distribution nor the
+  decorator that needed it.
+- **Also**: the first fix keyed on
+  `importlib.metadata.version("ob-metaflow-extensions")`, which looks right on
+  a laptop but is wrong on a fast-bakery task — there the extensions arrive
+  inside the code package (`.mf_code/metaflow_extensions/outerbounds/`), not
+  as an installed distribution, so the lookup raised and the fix skipped
+  exactly the case it was written for.
+- **Fix**: key on whether the *module* imports, and pin the distribution
+  unpinned when there is no version to read. `requirements.py` already renders
+  an empty version as a bare name, and a test now covers that seam because the
+  two modules ship separately (one via the flow's git pin, one in the image).
+
+### F25. A pod installing someone else's environment — ✅ (three times)
+- **Root**: the cached env file, which exists because Metaflow blanks a step
+  decorator's `packages` on the Argo driver pod (see F17), was keyed less
+  specifically than the thing it described. Each fix exposed the next:
+  - **per directory** — a directory holds several flows (marketshare ships f0
+    through f4 in one `src/`), so whichever flow deployed last decided what
+    every other flow's pods installed. This is how a GPU flow with no `@pypi`
+    inherited another flow's `pydantic + ds-platform-utils`, which is also the
+    only reason F24 stayed hidden as long as it did.
+  - **per flow** — `@pypi` / `@uv_pypi` are *step* decorators, so a flow
+    legitimately has an environment per step, and whichever step resolved last
+    won. fx20's `with_group` asks for the `extra` dependency group and its pod
+    got `without_group`'s four packages: `No module named 'orjson'`.
+  - **per flow + step** — correct.
+- **Argo-only, both times**, which is what let it hide: a local driver resolves
+  packages from `uv.lock` at task-run time and never reads the cache. fx20
+  passed locally and failed on Argo in the same minute.
+- **Fix**: key on flow *and* step; `add_to_package` globs
+  `.remote_step_env.<Flow>.*.json` because one code package serves every step;
+  and the reader consults that one file with **no fallback** to a less specific
+  name — the fallback is the bug, in all three of its forms. A missing entry
+  degrades to "resolve nothing", which is recoverable.
+
 ---
 
 ## Execution modes
