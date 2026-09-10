@@ -1136,19 +1136,23 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         _save_exception(exc, spec)
-        _save_card_components(card_recorder, spec)
+        # Sampler first: finish() appends its summary to the gpu_profile card,
+        # so saving before it would leave that summary behind.
         if gpu_sampler is not None:
             gpu_sampler.finish()
+        _save_card_components(card_recorder, spec)
         return 1
     _stage("user_step_end", t0=t0)
     _save_run_tags(run_recorder, spec)
-    _save_card_components(card_recorder, spec)
+    # The GPU sampler has to finish BEFORE the card components are saved:
+    # finish() appends its summary to the gpu_profile card, and saving first
+    # left that summary unrecorded — the card then showed only what the
+    # driver's own @gpu_profile wrapper had written, all unknowns.
     if gpu_sampler is not None:
         gpu_readings = gpu_sampler.finish()
         if gpu_readings is not None:
-            # Named the way @gpu_profile names its own artifact, so user code
-            # that already reads it keeps working.
             setattr(fake, _GpuSampler.ARTIFACT_NAME, gpu_readings)
+    _save_card_components(card_recorder, spec)
 
     # 5. Snapshot new/modified attrs.
     new_attrs = {

@@ -231,3 +231,48 @@ def test_the_reader_is_pumped_before_reading(monkeypatch):
 
     assert calls == ["update", "read"], calls
     assert out["readings"]
+
+
+def test_the_card_summary_is_recorded_before_the_cards_are_saved(monkeypatch):
+    """finish() appends to the gpu_profile card, so it must run before the save.
+
+    Saving first left that summary unrecorded, and the card then showed only
+    what the driver's own wrapper had written — all unknowns.
+    """
+    import metaflow_extensions.outerbounds.profilers.gpu as gpu_mod
+
+    from remote_step.runner_entry import _CardRecorder
+
+    class FakeMonitor:
+        def __init__(self, interval=1):
+            pass
+
+        def create_new_monitor(self):
+            pass
+
+        def _update_readings(self):
+            pass
+
+        def read(self):
+            return {"0": {"gpu_utilization": ["42"], "memory_used": ["512"]}}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(
+        gpu_mod.GPUProfiler,
+        "read_gpu_info",
+        staticmethod(lambda: {"devices": [{"device_id": "0"}], "driver_version": "580"}),
+    )
+    monkeypatch.setattr(gpu_mod, "GPUMonitor", FakeMonitor)
+
+    recorder = _CardRecorder()
+    monkeypatch.setattr("metaflow.current.card", recorder, raising=False)
+
+    sampler = _GpuSampler()
+    sampler.start()
+    sampler.finish()
+
+    # finish() must already have populated the recorder — a save at this point
+    # would carry the summary.
+    assert _GpuSampler.CARD_ID in recorder.pending()
