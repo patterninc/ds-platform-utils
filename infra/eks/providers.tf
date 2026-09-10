@@ -8,6 +8,25 @@ provider "aws" {
       ManagedBy = "terraform"
     }
   }
+
+  # Tags applied to our resources by tooling outside this state.
+  #
+  # `QSConfigId-*` comes from an org-managed AWS Systems Manager Quick Setup
+  # patch policy, which stamps it on the IAM roles it manages — here the
+  # Karpenter node role, which also carries that policy's
+  # AWSQuickSetupPatchPolicyBaselineAccess and AmazonSSMPatchAssociation.
+  #
+  # Without this, every plan wants to strip the tag, because the role is
+  # declared inside the Karpenter submodule and there is no resource block of
+  # ours to hang `ignore_changes` on. Stripping it is the wrong fix twice
+  # over: it may take those nodes out of Quick Setup's scope, and Quick Setup
+  # would likely re-apply it and reintroduce the drift on the next plan.
+  #
+  # Ignoring by prefix rather than by exact key because the id is per-config:
+  # a rebuilt or re-pointed Quick Setup config issues a new one.
+  ignore_tags {
+    key_prefixes = ["QSConfigId-"]
+  }
 }
 
 # The kubernetes/helm/kubectl providers all authenticate the same way: ask the
