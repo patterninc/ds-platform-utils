@@ -1417,11 +1417,10 @@ def _project_context() -> dict:
     return out
 
 
-# A user @timeout longer than the job's own deadline would let the pod be
-# killed while the driver still waits, so the job deadline is the user's value
-# plus this much slack — the driver outlives the pod and reports the timeout
-# rather than both dying in a race.
-DRIVER_TIMEOUT_SLACK_MINUTES = 5
+# Deliberately no slack. An earlier version added 5 minutes to the user's
+# @timeout, which had it exactly backwards: it let the runner pod outlive the
+# driver, which is the runaway-billing problem @timeout is supposed to prevent.
+# The Job deadline is the user's value, full stop.
 
 
 def _declares_conda_packages(decorator) -> bool:
@@ -1792,14 +1791,20 @@ def _reraise_step_exception(bucket: str, output_prefix: str, step_name: str, s3_
 def _job_timeout_minutes(user_timeout: int | None, attr_timeout: int) -> int:
     """The runner Job's deadline.
 
-    A user @timeout is the step's real intent, so it wins — plus slack, so the
-    driver is the one that notices the timeout and reports it rather than
-    being killed alongside the pod. With no @timeout, the decorator's own
-    `job_timeout_minutes` stands.
+    A user @timeout is the step's real intent, so it wins outright. It is
+    never extended: Metaflow kills the *driver* at that same moment, and a Job
+    deadline beyond it would leave the pod running — and billing — with nobody
+    watching, which is the whole reason this exists.
+
+    The two therefore expire together, so which side reports the timeout is a
+    race: usually Metaflow's own driver timeout, sometimes the runner's
+    `activeDeadlineSeconds`. Both stop the work, which is what matters.
+
+    With no @timeout the decorator's own `job_timeout_minutes` stands.
     """
     if not user_timeout:
         return int(attr_timeout)
-    return int(user_timeout) + DRIVER_TIMEOUT_SLACK_MINUTES
+    return int(user_timeout)
 
 
 def _join_branches(inputs) -> list[dict]:

@@ -8,7 +8,6 @@ be read here and carried across, or the body silently runs without it.
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 from remote_step.plugins.remote_step_decorator import (
-    DRIVER_TIMEOUT_SLACK_MINUTES,
     _declares_conda_packages,
     _find_env_vars,
     _find_timeout_minutes,
@@ -80,12 +79,16 @@ def test_no_timeout_decorator():
     assert _find_timeout_minutes([Deco("retry", times=2)]) is None
 
 
-def test_a_user_timeout_sets_the_job_deadline_with_slack():
-    """The driver must outlive the pod.
+def test_a_user_timeout_becomes_the_job_deadline_exactly():
+    """Never extended.
 
-    Otherwise a timeout kills both in a race and nothing reports why.
+    Metaflow kills the driver at the same moment, so a longer Job deadline
+    would leave the pod running and billing with nobody watching — the very
+    thing @timeout is meant to stop. An earlier version added 5 minutes and
+    had it backwards.
     """
-    assert _job_timeout_minutes(30, 240) == 30 + DRIVER_TIMEOUT_SLACK_MINUTES
+    assert _job_timeout_minutes(30, 240) == 30
+    assert _job_timeout_minutes(1, 240) == 1
 
 
 def test_without_a_user_timeout_the_decorator_attribute_stands():
@@ -93,9 +96,10 @@ def test_without_a_user_timeout_the_decorator_attribute_stands():
     assert _job_timeout_minutes(0, 240) == 240
 
 
-def test_the_pod_is_never_given_a_shorter_deadline_than_the_step_asked_for():
+def test_the_pod_is_never_given_a_longer_deadline_than_the_step_asked_for():
+    """A pod outliving its driver is the runaway-billing case."""
     for minutes in (1, 5, 60, 600):
-        assert _job_timeout_minutes(minutes, 240) > minutes
+        assert _job_timeout_minutes(minutes, 240) <= minutes
 
 
 # ------------------------------------------------------------------- @conda
