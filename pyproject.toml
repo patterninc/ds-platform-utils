@@ -25,9 +25,11 @@ authors = [
 #   than any pyproject change (operations/*, content/pocs/*, seller-report,
 #   forecasting/pocs/buybox-forecast)
 #
-# sales-suite-backend is ">=3.10,<3.11" today but is being upgraded, so it is
-# no longer a blocker. The five hard pins above are: raise this to >=3.11 once
-# they move, and the eleven soft ones will follow without edits.
+# All of these are slated to move off 3.10, sales-suite-backend included. The
+# floor is therefore temporary: raise it to ">=3.11" once the five hard pins
+# above are gone, and the eleven soft ones follow without edits. It is left at
+# 3.10 only because raising it before they land would break their installs in
+# the meantime -- there is nothing else holding it here.
 #
 # It was previously commented out entirely, which is why uv printed
 # "No `requires-python` value found in the workspace. Defaulting to >=3.10"
