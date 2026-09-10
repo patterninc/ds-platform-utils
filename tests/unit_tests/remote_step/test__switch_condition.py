@@ -32,11 +32,20 @@ def ref(value, size=8, kind="builtins.bool"):
     return a
 
 
-def test_a_remote_artifact_is_the_problem_being_solved():
-    """The behaviour that made this necessary."""
-    assert RemoteArtifact.__hash__ is None
-    with pytest.raises(TypeError, match="unhashable"):
-        ref(True) in {True: 1, False: 2}  # noqa: B015
+def test_hashing_a_ref_now_resolves_it_rather_than_raising():
+    """The root cause is fixed too, so this is belt and braces.
+
+    RemoteArtifact was a dataclass with a generated __eq__, which sets
+    __hash__ to None -- so `condition_value not in switch_cases` raised
+    `TypeError: unhashable type` from inside Metaflow's own next(). The proxy
+    now forwards __hash__ and __eq__ to the loaded value.
+
+    _hydrate_condition still runs first, so the driver resolves the condition
+    itself with a clear log line and a size guard, rather than depending on a
+    lazy load firing inside Metaflow's internals.
+    """
+    assert RemoteArtifact.__hash__ is not None
+    assert ref(True) in {True: 1, False: 2}
 
 
 def test_a_bool_condition_is_loaded():

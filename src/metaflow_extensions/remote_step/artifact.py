@@ -323,6 +323,108 @@ class RemoteArtifact:
     def __bool__(self) -> bool:
         return bool(self._proxy_target())
 
+    # Comparison, arithmetic and conversion, all proxied.
+    #
+    # Without these a downstream *non-remote* step got answers that were
+    # quietly wrong rather than errors. `self.result == 499500` was False --
+    # RemoteArtifact is a dataclass, so the generated __eq__ compared refs --
+    # and `f"{self.total}"` rendered the ref's repr into a log line. Both look
+    # like data bugs in the user's own code. `self.count > 100` and
+    # `self.total + 1` at least raised TypeError, but on a line that reads
+    # perfectly and works in a plain step.
+    #
+    # __eq__ keeps ref-to-ref comparison for two refs, which is what our own
+    # code and tests mean by equality, and proxies anything else.
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, RemoteArtifact):
+            return (
+                self.s3_uri == other.s3_uri
+                and self.sha256 == other.sha256
+                and self.size_bytes == other.size_bytes
+            )
+        return self._proxy_target() == other
+
+    def __ne__(self, other: Any) -> bool:
+        return not self.__eq__(other)
+
+    # Defining __eq__ on a class sets __hash__ to None unless it is given
+    # explicitly. Proxying it means a ref can be a dict key or land in a set,
+    # which is what `self.next({True: ...}, condition="flag")` needs: Metaflow
+    # evaluates that with `value not in switch_cases`.
+    def __hash__(self) -> int:
+        return hash(self._proxy_target())
+
+    def __lt__(self, other: Any) -> bool:
+        return self._proxy_target() < other
+
+    def __le__(self, other: Any) -> bool:
+        return self._proxy_target() <= other
+
+    def __gt__(self, other: Any) -> bool:
+        return self._proxy_target() > other
+
+    def __ge__(self, other: Any) -> bool:
+        return self._proxy_target() >= other
+
+    def __add__(self, other: Any) -> Any:
+        return self._proxy_target() + other
+
+    def __radd__(self, other: Any) -> Any:
+        return other + self._proxy_target()
+
+    def __sub__(self, other: Any) -> Any:
+        return self._proxy_target() - other
+
+    def __rsub__(self, other: Any) -> Any:
+        return other - self._proxy_target()
+
+    def __mul__(self, other: Any) -> Any:
+        return self._proxy_target() * other
+
+    def __rmul__(self, other: Any) -> Any:
+        return other * self._proxy_target()
+
+    def __truediv__(self, other: Any) -> Any:
+        return self._proxy_target() / other
+
+    def __rtruediv__(self, other: Any) -> Any:
+        return other / self._proxy_target()
+
+    def __floordiv__(self, other: Any) -> Any:
+        return self._proxy_target() // other
+
+    def __mod__(self, other: Any) -> Any:
+        return self._proxy_target() % other
+
+    def __pow__(self, other: Any) -> Any:
+        return self._proxy_target() ** other
+
+    def __neg__(self) -> Any:
+        return -self._proxy_target()
+
+    def __abs__(self) -> Any:
+        return abs(self._proxy_target())
+
+    def __int__(self) -> int:
+        return int(self._proxy_target())
+
+    def __float__(self) -> float:
+        return float(self._proxy_target())
+
+    def __index__(self) -> int:
+        return self._proxy_target().__index__()
+
+    # __str__ and __format__ load; __repr__ deliberately does not. So
+    # `print(self.df)` and f-strings show the data, as they would in a plain
+    # step, while a debugger, a traceback or one of our own log lines still
+    # describes the reference cheaply.
+    def __str__(self) -> str:
+        return str(self._proxy_target())
+
+    def __format__(self, spec: str) -> str:
+        return format(self._proxy_target(), spec)
+
     # No __call__ on purpose. Adding one makes `callable(remote_artifact)`
     # return True, which trips heuristics elsewhere that skip callables
     # when serialising (Metaflow's own artifact filters and our own
