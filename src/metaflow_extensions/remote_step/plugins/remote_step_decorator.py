@@ -974,7 +974,7 @@ class RemoteStepDecorator(StepDecorator):
             "uv.lock",
             "pyproject.toml",
             ".python-version",
-            _cached_env_filename(getattr(type(flow), "__name__", None)),
+            _cached_env_filename(getattr(self, "_flow_name_for_cache", None)),
             CACHED_ENV_FILENAME,
         )
         seen: set[str] = set()
@@ -1178,9 +1178,12 @@ class RemoteStepDecorator(StepDecorator):
         # time (env already baked into the argo pod image), so we cache the
         # resolved env to a JSON file alongside the flow module and ship it
         # via add_to_package — driver reads it back on the argo pod.
+        # Recorded on the decorator because add_to_package() needs the same
+        # name later and is not given the flow.
+        self._flow_name_for_cache = getattr(type(flow), "__name__", None)
         env_spec = _find_pypi_env(flow, decorators)
         if not env_spec["packages"]:
-            cached = _read_cached_env(getattr(type(flow), "__name__", None))
+            cached = _read_cached_env(self._flow_name_for_cache)
             if cached:
                 env_spec = cached
                 # A cached env can be old -- it is written next to the flow and
@@ -1189,7 +1192,7 @@ class RemoteStepDecorator(StepDecorator):
                 # interpreter the same way a freshly resolved one is floored.
                 env_spec["python"] = _python_at_least(env_spec.get("python") or DEFAULT_PYTHON)
         else:
-            _write_cached_env(env_spec, getattr(type(flow), "__name__", None))
+            _write_cached_env(env_spec, self._flow_name_for_cache)
         # Applied after the cache round-trip so the cached file keeps the
         # user's declared set verbatim and the pin is re-derived each time.
         env_spec = _ensure_metaflow_in_env(env_spec)
