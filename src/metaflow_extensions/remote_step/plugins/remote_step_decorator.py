@@ -574,7 +574,8 @@ _METAFLOW_DISTS = ("ob-metaflow", "metaflow")
 #   ImportError: cannot import name 'gpu_profile' from 'metaflow'
 # at STAGE=import_step, naming neither the missing distribution nor the
 # decorator that needed it.
-_METAFLOW_EXTENSION_DISTS = ("ob-metaflow-extensions",)
+# (distribution to pin, module that proves it is in use)
+_METAFLOW_EXTENSION_DISTS = (("ob-metaflow-extensions", "metaflow_extensions.outerbounds"),)
 
 
 def _ensure_metaflow_in_env(env_spec: dict) -> dict:
@@ -607,13 +608,28 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
         did not, the pod died at STAGE=import_step on
         `cannot import name 'gpu_profile' from 'metaflow'`.
         """
-        for ext in _METAFLOW_EXTENSION_DISTS:
+        for ext, module in _METAFLOW_EXTENSION_DISTS:
             if ext in pkgs:
+                continue
+            # Presence of the *module* is the signal, not the distribution.
+            # On a fast-bakery task the extensions arrive inside the code
+            # package rather than as something pip installed, so
+            # importlib.metadata raises PackageNotFoundError even though
+            # `from metaflow import gpu_profile` works on the driver. Keying
+            # on the distribution therefore skipped exactly the case that
+            # needed it, and the pod died at STAGE=import_step.
+            try:
+                importlib.import_module(module)
+            except Exception:  # noqa: BLE001
                 continue
             try:
                 pkgs[ext] = importlib.metadata.version(ext)
             except Exception:  # noqa: BLE001
-                continue
+                # Importable but not an installed distribution. Ship it
+                # unpinned and let uv pick a version compatible with the
+                # metaflow already pinned beside it -- an unpinned entry is
+                # better than the decorator silently not existing in the pod.
+                pkgs[ext] = ""
         return pkgs
 
     if any(d in packages for d in _METAFLOW_DISTS):

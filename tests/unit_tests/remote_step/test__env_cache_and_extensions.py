@@ -20,6 +20,7 @@ Both surfaced on the same GPU run and neither error named its cause.
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
+from remote_step.plugins import remote_step_decorator as rsd
 from remote_step.plugins.remote_step_decorator import (
     CACHED_ENV_FILENAME,
     _cached_env_filename,
@@ -97,3 +98,62 @@ def test_an_explicit_extensions_pin_is_not_overridden():
 def test_the_python_version_is_untouched():
     env = _ensure_metaflow_in_env({"python": "3.13", "packages": {}})
     assert env["python"] == "3.13"
+
+
+# --------------------------------- extensions that are not a pip distribution
+#
+# The first fix keyed on `importlib.metadata.version("ob-metaflow-extensions")`
+# and skipped the extension when that raised. On a fast-bakery task the
+# Outerbounds extensions arrive inside the *code package*
+# (`.mf_code/metaflow_extensions/outerbounds/...`) rather than as an installed
+# distribution, so the metadata lookup raises even though
+# `from metaflow import gpu_profile` works on the driver. The fix therefore
+# skipped exactly the case it was written for, and the pod kept dying at
+# STAGE=import_step with the spec showing one package:
+#
+#   [remote_step] spec env packages (1): [('ob-metaflow', '2.19.37.3')]
+
+
+def test_an_extension_shipped_in_the_code_package_is_still_pinned(monkeypatch):
+    """Importable module, no distribution metadata -- the fast-bakery case."""
+    absent_dist = "not-an-installed-distribution-xyz"
+    monkeypatch.setattr(
+        rsd, "_METAFLOW_EXTENSION_DISTS", ((absent_dist, "json"),)
+    )  # `json` stands in for an importable extension module
+
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {"ob-metaflow": "2.19.37.3"}})
+
+    assert absent_dist in env["packages"], (
+        "an extension whose module imports must be pinned even when "
+        "importlib.metadata knows nothing about it"
+    )
+    assert env["packages"][absent_dist] == "", "with no version to pin, ship it unpinned"
+
+
+def test_an_extension_that_is_not_in_use_is_not_pinned(monkeypatch):
+    """No importable module means nothing needs it -- do not pin it."""
+    monkeypatch.setattr(
+        rsd,
+        "_METAFLOW_EXTENSION_DISTS",
+        (("some-extension", "a_module_that_does_not_exist_anywhere"),),
+    )
+
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {"ob-metaflow": "2.19.37.3"}})
+
+    assert "some-extension" not in env["packages"]
+
+
+def test_the_declared_metaflow_pin_survives_an_unpinned_extension(monkeypatch):
+    monkeypatch.setattr(rsd, "_METAFLOW_EXTENSION_DISTS", (("absent-dist-abc", "json"),))
+
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {"ob-metaflow": "2.19.37.3"}})
+
+    assert env["packages"]["ob-metaflow"] == "2.19.37.3"
+    assert env["python"] == "3.11"
+
+
+def test_the_real_extension_is_resolved_however_it_arrived():
+    """No patching: whichever way it is installed here, it must land."""
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {}})
+    assert EXT in env["packages"]
+    assert env["packages"][EXT] is not None
