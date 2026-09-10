@@ -99,16 +99,9 @@ git commit --allow-empty -m "chore: release 1.0.0" -m "Release-As: 1.0.0"
 
 | Prefix | Use for |
 | ------ | ------- |
-| `chore:` | deps, lockfile, formatting with no user-facing change |
-| `ci:` | this repo's GitHub Actions only |
-| `test:` | tests only |
-| `refactor:` | same behavior, internal structure |
-| `style:` | formatting |
-| `build:` | packaging / build tooling |
+| `chore:` | lockfile, formatting, or other work with no user-facing change |
 
-`docs:` is treated as PATCH by the Python Release Please strategy (user-facing docs).
-
-If a refactor or chore **does** break callers, put `!` on it (`refactor!: ...`) or add a `BREAKING CHANGE:` footer.
+`docs:`, `perf:`, `deps:`, and `revert:` are PATCH (they appear in the changelog, so they open a release PR). Hidden types above do not. If a refactor or chore **does** break callers, put `!` on it (`refactor!: ...`) or add a `BREAKING CHANGE:` footer.
 
 ### Quick chooser
 
@@ -124,7 +117,7 @@ Wrong prefix = wrong version. `feat:` on a one-line bugfix cuts a MINOR. `fix:` 
 1. Release Please opens or updates a release PR (`pyproject.toml`, `uv.lock`, `CHANGELOG.md`).
 2. Merge that PR when you want to publish. It tags `vX.Y.Z` and creates a GitHub Release.
 
-Enable **Allow GitHub Actions to create and approve pull requests** under **Settings → Actions → General**. To run CI on the release PR, point `release-please.yaml` at a PAT with `contents` and `pull-requests` instead of `GITHUB_TOKEN`.
+Enable **Allow GitHub Actions to create and approve pull requests** under **Settings → Actions → General**. To run CI on the release PR, point `release-please.yaml` at a PAT with `contents`, `pull-requests`, and `issues` instead of `GITHUB_TOKEN`.
 
 ### FAQ
 
@@ -198,5 +191,5 @@ No. Merge more feature PRs; the bot updates the same release PR. Merge the relea
 
 **My feature PR failed `Disallow manual version bumps`.**
 
-Revert the `version =` change in `pyproject.toml`. Leave versioning to the bot.
+Revert the `version =` change in `pyproject.toml` (and the matching `ds-platform-utils` version in `uv.lock`). Leave versioning to the bot. Other `uv.lock` dependency updates are allowed.
 

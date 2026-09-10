@@ -17,7 +17,7 @@ on:
 jobs:
   guard-manual-version-bump:
     name: Disallow manual version bumps
-    if: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--branches--') }}
+    if: ${{ github.event_name == 'pull_request' && !(startsWith(github.head_ref, 'release-please--branches--') && github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -25,16 +25,66 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
-      - name: Fail if this PR changes pyproject.toml version
+      - name: Fail if this PR changes the package version
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PACKAGE_NAME: ds-platform-utils
         run: |
-          if git diff "${BASE_SHA}...${HEAD_SHA}" -- pyproject.toml | grep -qE '^[+-]version = '; then
-            echo "::error::Do not bump project.version in feature PRs. Release Please updates the version in a dedicated release PR based on Conventional Commits and SemVer."
-            exit 1
-          fi
+          python3 <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          base_sha = os.environ["BASE_SHA"]
+          head_sha = os.environ["HEAD_SHA"]
+          package_name = os.environ["PACKAGE_NAME"]
+
+
+          def git_show(sha: str, path: str) -> str:
+              result = subprocess.run(
+                  ["git", "show", f"{sha}:{path}"],
+                  capture_output=True,
+                  text=True,
+              )
+              return result.stdout if result.returncode == 0 else ""
+
+
+          def pyproject_version(text: str) -> str | None:
+              match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+              return match.group(1) if match else None
+
+
+          def lock_package_version(text: str, name: str) -> str | None:
+              match = re.search(
+                  rf'name = "{re.escape(name)}"\nversion = "([^"]+)"',
+                  text,
+              )
+              return match.group(1) if match else None
+
+
+          errors = []
+          base_py = pyproject_version(git_show(base_sha, "pyproject.toml"))
+          head_py = pyproject_version(git_show(head_sha, "pyproject.toml"))
+          if base_py != head_py:
+              errors.append(f"pyproject.toml version {base_py} -> {head_py}")
+
+          base_lock = lock_package_version(git_show(base_sha, "uv.lock"), package_name)
+          head_lock = lock_package_version(git_show(head_sha, "uv.lock"), package_name)
+          if base_lock != head_lock:
+              errors.append(f"uv.lock {package_name} version {base_lock} -> {head_lock}")
+
+          if errors:
+              print(
+                  "::error::Do not bump the package version in feature PRs. "
+                  "Release Please updates pyproject.toml and uv.lock in a dedicated release PR."
+              )
+              print("\n".join(errors))
+              sys.exit(1)
+          PY
 
   code-quality-checks:
     name: Lint, Format, and Static Code Quality Checks
