@@ -897,6 +897,27 @@ class _FakeBranch:
         """Content hash per attribute, for merge_artifacts conflict checks."""
         return {name: (e or {}).get("sha256") or "" for name, e in self._entries.items()}
 
+    def _entry(self, name: str) -> dict:
+        """The raw spec entry, without loading anything."""
+        return self._entries.get(name) or {}
+
+    def _ref_of(self, name: str):
+        """The branch's value as a RemoteArtifact ref, or None if inline.
+
+        Lets merge_artifacts hand an artifact straight to the output manifest
+        without ever downloading it.
+        """
+        e = self._entry(name)
+        if e.get("kind") != "RemoteArtifact":
+            return None
+        return RemoteArtifact(
+            s3_uri=e["s3_uri"],
+            size_bytes=e.get("size_bytes", 0),
+            kind=e.get("type_kind", ""),
+            sha256=e.get("sha256", ""),
+            pickle_protocol=e.get("pickle_protocol", 5),
+        )
+
     def __getattr__(self, name: str) -> Any:
         # __getattr__ only fires when normal lookup fails, so the instance
         # attributes set in __init__ never reach here.
@@ -952,6 +973,15 @@ def _build_join_inputs(spec: dict, s3_client=None) -> _FakeInputs | None:
     return _FakeInputs(branches)
 
 
+def _default_pending_loader(name: str, entry: dict):
+    """Load a pending entry with a fresh S3 client.
+
+    Used when merge_artifacts defers something on a step that had no deferred
+    inputs of its own, so no loader was installed.
+    """
+    return _hydrate_input(name, entry, _make_s3_client())
+
+
 class _FakeSelf:
     """Object presented to the user step body in place of Metaflow's `self`.
 
@@ -969,6 +999,10 @@ class _FakeSelf:
         # `defer_inputs`, drained by __getattr__ on first read.
         object.__setattr__(self, "_pending", {})
         object.__setattr__(self, "_pending_loader", None)
+        # Artifacts merged from a join branch that already live in S3:
+        # {name: RemoteArtifact}. They go into the output manifest as
+        # pointers, so a join republishes them without moving the bytes.
+        object.__setattr__(self, "_merged_refs", {})
         # Underscored so the outputs snapshot skips it: this is context handed
         # in, not something the step produced.
         self._foreach_input = foreach_input
@@ -1137,7 +1171,21 @@ class _FakeSelf:
             )
 
         for name, (branch, _sha) in to_merge.items():
-            setattr(self, name, getattr(branch, name))
+            ref = branch._ref_of(name)
+            if ref is None:
+                # Inline in the spec: tiny by construction, so just take it.
+                setattr(self, name, getattr(branch, name))
+                continue
+            # Already in S3. Record the pointer for the manifest and make the
+            # name readable lazily, rather than downloading 16 GB into the pod
+            # and pickling it straight back out to a new key. A join over a
+            # static split merging a 12 GB model and a 4 GB frame used to move
+            # all 16 GB twice for no change in content.
+            self._merged_refs[name] = ref
+            self._pending[name] = branch._entry(name)
+            object.__setattr__(self, "_pending_loader", self._pending_loader or _default_pending_loader)
+            # Still an output: downstream steps have to see it under this task.
+            self._assigned.add(name)
 
     def __getattr__(self, name):
         """Missing attrs resolve to a no-op callable — usually a step-method reference.
@@ -1454,6 +1502,13 @@ def main(spec_uri: str | None = None) -> int:
 
     # 5. Snapshot new/modified attrs.
     outputs = _detect_outputs(vars(fake), fake._assigned)
+    # Artifacts merged from a join branch that the body never read stay
+    # pointers: they are not in vars(fake), so _detect_outputs cannot see
+    # them, but downstream steps still have to find them under this task.
+    # A merged name the body *did* read is already in `outputs` as a real
+    # object and takes the ordinary upload path.
+    for _name, _ref in (fake._merged_refs or {}).items():
+        outputs.setdefault(_name, _ref)
 
     # 6. Persist outputs. Parallelise across attrs so a step with many
     # multi-GB DataFrames doesn't pay the per-upload wall-clock N times
@@ -1482,6 +1537,12 @@ def main(spec_uri: str | None = None) -> int:
 
     def _upload_one(item: tuple[str, Any]) -> None:
         name, val = item
+        if isinstance(val, RemoteArtifact):
+            # Already in S3 and unchanged, so the manifest points at it rather
+            # than pickling a ref-wrapping-a-ref to a new key.
+            with manifest_lock:
+                manifest_outputs[name] = val
+            return
         key = f"{prefix}/{name}.pkl"
         size, sha = _put_pickle(val, bucket, key, _worker_s3())
         ref = RemoteArtifact(

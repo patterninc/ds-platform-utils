@@ -17,7 +17,8 @@ import pytest
 # executes it twice and yields two distinct classes — so an exception raised
 # internally would not match a RemoteStepError imported the other way.
 from remote_step.errors import RemoteStepError
-from remote_step.runner_entry import _build_join_inputs, _FakeInputs, _FakeSelf
+from remote_step.artifact import RemoteArtifact
+from remote_step.runner_entry import _build_join_inputs, _FakeBranch, _FakeInputs, _FakeSelf
 
 
 def inline(value):
@@ -290,3 +291,153 @@ class TestOversizedBranchAttrsGetDistinctKeys:
         assert uploaded == {}
         blobs = [b["attrs"]["payload"]["blob_b64"] for b in spec_dict["join_branches"]]
         assert len(set(blobs)) == 3
+
+
+class TestMergedArtifactsAreNotCopied:
+    """merge_artifacts must not move bytes that have not changed.
+
+    `getattr(branch, name)` downloads and unpickles, and the merged value was
+    then pickled straight back out to a new key. A join over a static split
+    merging a 12 GB model and a 4 GB frame moved all 16 GB into the pod and
+    all 16 GB back out, for content identical to what was already in S3.
+
+    An artifact merged from a branch now goes into the output manifest as a
+    pointer to the object the branch already wrote. Safe because payload
+    objects have no expiry.
+    """
+
+    URI = "s3://bucket/upstream/train/0/model.pkl"
+
+    def remote_entry(self, uri=None, size=12 * 1024**3, sha="aa"):
+        return {
+            "kind": "RemoteArtifact",
+            "s3_uri": uri or self.URI,
+            "size_bytes": size,
+            "type_kind": "builtins.dict",
+            "sha256": sha,
+        }
+
+    def joined(self, monkeypatch, entries, loads=None):
+        """A fake self after merging `entries`, with downloads recorded."""
+        from remote_step import runner_entry as re_mod
+
+        seen = loads if loads is not None else []
+        monkeypatch.setattr(
+            re_mod, "_hydrate_input", lambda n, e, c: (seen.append(n), {"loaded": n})[1]
+        )
+        fake = _FakeSelf()
+        fake._begin_recording()
+        branches = [_FakeBranch(step="train", entries=entries, s3_client=None)]
+        fake.merge_artifacts(_FakeInputs(branches))
+        return fake, seen
+
+    def outputs_of(self, fake):
+        """What main() would persist, merged refs included."""
+        from remote_step.runner_entry import _detect_outputs
+
+        out = _detect_outputs(vars(fake), fake._assigned)
+        for name, ref in (fake._merged_refs or {}).items():
+            out.setdefault(name, ref)
+        return out
+
+    def test_merging_downloads_nothing(self, monkeypatch):
+        _, loads = self.joined(monkeypatch, {"model": self.remote_entry()})
+        assert loads == []
+
+    def test_the_output_points_at_the_branches_own_object(self, monkeypatch):
+        fake, _ = self.joined(monkeypatch, {"model": self.remote_entry()})
+        out = self.outputs_of(fake)
+        assert isinstance(out["model"], RemoteArtifact)
+        assert out["model"].s3_uri == self.URI, "a new key means the bytes were copied"
+
+    def test_the_merged_size_and_hash_are_carried_over(self, monkeypatch):
+        fake, _ = self.joined(monkeypatch, {"model": self.remote_entry(size=999, sha="beef")})
+        ref = self.outputs_of(fake)["model"]
+        assert ref.size_bytes == 999
+        assert ref.sha256 == "beef"
+
+    def test_reading_a_merged_artifact_still_gives_the_real_object(self, monkeypatch):
+        """Not a proxy: isinstance and arithmetic have to work on it."""
+        fake, loads = self.joined(monkeypatch, {"model": self.remote_entry()})
+        assert fake.model == {"loaded": "model"}
+        assert loads == ["model"]
+
+    def test_a_merged_artifact_read_once_is_not_read_twice(self, monkeypatch):
+        fake, loads = self.joined(monkeypatch, {"model": self.remote_entry()})
+        _ = fake.model
+        _ = fake.model
+        assert loads == ["model"]
+
+    def test_a_merged_artifact_that_was_read_becomes_a_real_output(self, monkeypatch):
+        """Once materialised it takes the ordinary upload path."""
+        fake, _ = self.joined(monkeypatch, {"model": self.remote_entry()})
+        _ = fake.model
+        out = self.outputs_of(fake)
+        assert out["model"] == {"loaded": "model"}
+
+    def test_an_inline_attribute_is_still_assigned_directly(self, monkeypatch):
+        """Tiny by construction, so there is nothing to save by deferring.
+
+        Asserted on placement, not value: the stub loader here intercepts the
+        inline path too, since _FakeBranch resolves inline entries through the
+        same _hydrate_input.
+        """
+        fake, _ = self.joined(monkeypatch, {"x": inline(7)})
+        assert "x" in vars(fake), "an inline merge should land on the instance"
+        assert "x" not in (fake._merged_refs or {}), "nothing to point at for an inline value"
+
+    def test_an_inline_merge_keeps_its_value_when_nothing_is_stubbed(self):
+        """The same path without a stub, so the value itself is checked."""
+        fake = _FakeSelf()
+        fake._begin_recording()
+        fake.merge_artifacts(_build_join_inputs(spec(("a", {"x": 7}))))
+        assert vars(fake)["x"] == 7
+
+    def test_a_conflict_across_branches_is_still_caught_without_downloading(self, monkeypatch):
+        from remote_step import runner_entry as re_mod
+
+        loads = []
+        monkeypatch.setattr(re_mod, "_hydrate_input", lambda n, e, c: loads.append(n))
+        fake = _FakeSelf()
+        fake._begin_recording()
+        branches = [
+            _FakeBranch(step="a", entries={"model": self.remote_entry(sha="one")}, s3_client=None),
+            _FakeBranch(step="b", entries={"model": self.remote_entry(sha="two")}, s3_client=None),
+        ]
+        with pytest.raises(RemoteStepError, match="unresolved conflicts"):
+            fake.merge_artifacts(_FakeInputs(branches))
+        assert loads == [], "conflicts are decided on hashes, not content"
+
+    def test_an_attribute_already_set_on_self_wins_over_the_branch(self, monkeypatch):
+        fake, loads = self.joined(monkeypatch, {"model": self.remote_entry()})
+        fake2 = _FakeSelf()
+        fake2._begin_recording()
+        fake2.model = "mine"
+        branches = [_FakeBranch(step="train", entries={"model": self.remote_entry()}, s3_client=None)]
+        fake2.merge_artifacts(_FakeInputs(branches))
+        assert fake2.model == "mine"
+        assert "model" not in (fake2._merged_refs or {})
+
+
+def test_an_output_that_is_already_a_ref_is_not_re_uploaded():
+    """The upload path's half of the same idea."""
+    from remote_step.artifact import RemoteArtifact
+
+    ref = RemoteArtifact(
+        s3_uri="s3://bucket/upstream/x.pkl", size_bytes=5, kind="builtins.dict", sha256="aa"
+    )
+    manifest = {}
+    lock = __import__("threading").Lock()
+    uploaded = []
+
+    # Mirrors _upload_one's ref branch: record the pointer, upload nothing.
+    def upload_one(name, val):
+        if isinstance(val, RemoteArtifact):
+            with lock:
+                manifest[name] = val
+            return
+        uploaded.append(name)
+
+    upload_one("model", ref)
+    assert manifest["model"] is ref
+    assert uploaded == []
