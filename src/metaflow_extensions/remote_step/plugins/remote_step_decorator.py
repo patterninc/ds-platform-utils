@@ -846,7 +846,7 @@ class RemoteStepDecorator(StepDecorator):
                     f"@remote_step + @parallel not yet supported (step '{step_name}').",
                     step_name=step_name,
                 )
-            if getattr(d, "name", "") in ("conda", "conda_base"):
+            if _declares_conda_packages(d):
                 # The runner builds its venv from @pypi/@pypi_base packages
                 # only. Accepting @conda would run the step in an environment
                 # that quietly lacks its conda dependencies, so refuse and say
@@ -1394,6 +1394,25 @@ def _project_context() -> dict:
 # plus this much slack — the driver outlives the pod and reports the timeout
 # rather than both dying in a race.
 DRIVER_TIMEOUT_SLACK_MINUTES = 5
+
+
+def _declares_conda_packages(decorator) -> bool:
+    """Whether this is a *user's* @conda / @conda_base, not Metaflow's own.
+
+    The decorator name alone is not enough. `CondaEnvironment.decospecs()`
+    returns ("conda",), so `--environment=pypi|conda|fast-bakery` attaches a
+    `conda` decorator to *every* step to manage the task lifecycle — and
+    refusing on the name refuses every flow that uses fast-bakery, which is
+    all of them.
+
+    The lifecycle one carries the defaults, `packages={}` and `libraries={}`.
+    A user asking for conda dependencies fills one of those in, and that is
+    the thing we cannot honour.
+    """
+    if getattr(decorator, "name", "") not in ("conda", "conda_base"):
+        return False
+    attrs = getattr(decorator, "attributes", {}) or {}
+    return bool(attrs.get("packages")) or bool(attrs.get("libraries"))
 
 
 def _find_env_vars(decorators) -> dict[str, str]:

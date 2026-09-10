@@ -10,6 +10,7 @@ import pytest
 
 from remote_step.plugins.remote_step_decorator import (
     DRIVER_TIMEOUT_SLACK_MINUTES,
+    _declares_conda_packages,
     _find_env_vars,
     _find_timeout_minutes,
     _job_timeout_minutes,
@@ -94,3 +95,34 @@ def test_without_a_user_timeout_the_decorator_attribute_stands():
 def test_the_pod_is_never_given_a_shorter_deadline_than_the_step_asked_for():
     for minutes in (1, 5, 60, 600):
         assert _job_timeout_minutes(minutes, 240) > minutes
+
+
+# ------------------------------------------------------------------- @conda
+
+
+def test_metaflows_own_lifecycle_conda_is_not_a_user_conda():
+    """`--environment=fast-bakery` attaches a bare `conda` to every step.
+
+    CondaEnvironment.decospecs() returns ("conda",), so refusing on the name
+    alone refuses every flow that uses fast-bakery — which is all of them.
+    """
+    assert not _declares_conda_packages(Deco("conda", packages={}, libraries={}))
+    assert not _declares_conda_packages(Deco("conda"))
+
+
+@pytest.mark.parametrize(
+    "attrs",
+    [
+        {"libraries": {"numpy": "1.26"}},
+        {"packages": {"scipy": "1.11"}},
+        {"libraries": {"a": "1"}, "packages": {"b": "2"}},
+    ],
+)
+def test_a_user_conda_asking_for_packages_is_recognised(attrs):
+    assert _declares_conda_packages(Deco("conda", **attrs))
+    assert _declares_conda_packages(Deco("conda_base", **attrs))
+
+
+def test_unrelated_decorators_are_not_conda():
+    assert not _declares_conda_packages(Deco("pypi", packages={"pandas": ""}))
+    assert not _declares_conda_packages(Deco("resources", cpu=2))
