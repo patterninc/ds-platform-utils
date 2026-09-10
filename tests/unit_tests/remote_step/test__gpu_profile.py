@@ -276,3 +276,101 @@ def test_the_card_summary_is_recorded_before_the_cards_are_saved(monkeypatch):
     # finish() must already have populated the recorder — a save at this point
     # would carry the summary.
     assert _GpuSampler.CARD_ID in recorder.pending()
+
+
+class TestLongBodyKeepsItsReadings:
+    """A body longer than the monitor's nominal duration must keep its samples.
+
+    `create_new_monitor()` spawns `nvidia-smi -l` and nothing pumps the reader
+    while the body runs, so `_current_readings` is still empty when the step
+    ends. Past that duration (300s by default) `_update_readings()` folds that
+    empty dict into `_past_readings`, discards the CSV holding every real
+    sample, spawns a fresh nvidia-smi and reads *that* -- so every training
+    step long enough to be worth profiling reported one sample and the card
+    said "peak 0% util".
+    """
+
+    SAMPLES = [
+        "00000000:00:1E.0, 2026/09/10 12:00:0%d.000, %d, %d, 23028" % (i, 40 + i, 1000 * i)
+        for i in range(6)
+    ]
+
+    def monitor_with_csv(self, tmp_path, monkeypatch, ended):
+        """A real GPUMonitor whose CSV is already populated."""
+        from metaflow_extensions.outerbounds.profilers.gpu import GPUMonitor
+
+        m = GPUMonitor.__new__(GPUMonitor)
+        m._interval = 1
+        m._duration = 300
+        m._finished = False
+        m._max_samples = None
+        # Class-level mutables on GPUMonitor are shared between instances, so
+        # reset them per test rather than inheriting another test's data.
+        m._current_readings = {}
+        m._past_readings = {}
+
+        csv = tmp_path / "gpu.csv"
+        csv.write_text("\n".join(self.SAMPLES) + "\n")
+        monkeypatch.setattr(type(m), "_current_file", property(lambda _s: str(csv)))
+        monkeypatch.setattr(m, "current_process_has_ended", lambda: ended)
+        monkeypatch.setattr(m, "current_process_is_running", lambda: not ended)
+
+        # If the reset path is taken it must not really spawn nvidia-smi; make
+        # the replacement CSV hold a single sample, as it would in practice.
+        def fake_new_monitor():
+            fresh = tmp_path / "fresh.csv"
+            fresh.write_text(self.SAMPLES[0] + "\n")
+            monkeypatch.setattr(type(m), "_current_file", property(lambda _s: str(fresh)))
+
+        monkeypatch.setattr(m, "clear_current_monitor", lambda: None)
+        monkeypatch.setattr(m, "create_new_monitor", fake_new_monitor)
+        monkeypatch.setattr(m, "cleanup", lambda: None)
+        return m
+
+    def sampler_for(self, monitor):
+        from remote_step.runner_entry import _GpuSampler
+
+        s = _GpuSampler(interval=1)
+        s._monitor = monitor
+        s.info = {"driver_version": "580.65", "cuda_version": "12.8", "devices": [{"name": "L40S"}]}
+        return s
+
+    def count(self, result):
+        readings = result["readings"]
+        gpu = next(iter(readings.values()))
+        return len(gpu["gpu_utilization"])
+
+    def test_a_long_body_keeps_every_sample(self, tmp_path, monkeypatch):
+        """The regression: 6 samples must not collapse to 1."""
+        m = self.monitor_with_csv(tmp_path, monkeypatch, ended=True)
+        result = self.sampler_for(m).finish()
+        assert result is not None
+        assert self.count(result) == len(self.SAMPLES)
+
+    def test_a_short_body_still_works(self, tmp_path, monkeypatch):
+        """The case that always worked, kept working."""
+        m = self.monitor_with_csv(tmp_path, monkeypatch, ended=False)
+        result = self.sampler_for(m).finish()
+        assert self.count(result) == len(self.SAMPLES)
+
+    def test_the_peak_reflects_the_whole_body(self, tmp_path, monkeypatch):
+        """Utilisation rises through the samples; the summary must see the top."""
+        m = self.monitor_with_csv(tmp_path, monkeypatch, ended=True)
+        result = self.sampler_for(m).finish()
+        gpu = next(iter(result["readings"].values()))
+        assert max(int(x) for x in gpu["gpu_utilization"]) == 45
+
+    def test_an_empty_csv_falls_back_rather_than_returning_nothing(self, tmp_path, monkeypatch):
+        """A body shorter than one sampling interval."""
+        from metaflow_extensions.outerbounds.profilers.gpu import GPUMonitor
+
+        m = GPUMonitor.__new__(GPUMonitor)
+        m._interval, m._duration, m._finished, m._max_samples = 1, 300, False, None
+        m._current_readings, m._past_readings = {}, {}
+        empty = tmp_path / "empty.csv"
+        empty.write_text("")
+        monkeypatch.setattr(type(m), "_current_file", property(lambda _s: str(empty)))
+        monkeypatch.setattr(m, "_update_readings", lambda: None)
+        monkeypatch.setattr(m, "read", lambda: {})
+        monkeypatch.setattr(m, "cleanup", lambda: None)
+        assert self.sampler_for(m).finish() is None

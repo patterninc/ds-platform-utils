@@ -614,19 +614,41 @@ class _GpuSampler:
         """Stop sampling and return the readings, or None if none were taken."""
         if self._monitor is None:
             return None
+        # Read the CSV the monitor has been appending to for the whole body.
+        #
+        # Directly, NOT through `_update_readings()`. `create_new_monitor()`
+        # only spawns the `nvidia-smi -l` process, and nothing pumps the
+        # reader while the body runs, so `_current_readings` is still empty
+        # when the step ends. Once the process's nominal duration has passed
+        # -- 300s by default -- `_update_readings()` folds that empty
+        # `_current_readings` into `_past_readings`, discards the CSV holding
+        # every real sample, spawns a fresh nvidia-smi, sleeps a second and
+        # reads *that*. So a body over five minutes, which is every training
+        # step worth profiling, reported one sample and the card showed
+        # "peak 0% util".
+        #
+        # The spawned command has no time limit of its own (`time_duration` is
+        # formatted into it but unused), so the first CSV covers the entire
+        # body and one read of it is the whole picture.
+        readings = None
         try:
-            # Pump the reader first. `create_new_monitor()` only spawns the
-            # `nvidia-smi -l` process, which appends to a CSV; nothing parses
-            # that file until `_update_readings()` runs, so `read()` on its own
-            # returns an empty dict and the artifact is never produced.
-            self._monitor._update_readings()
-        except Exception as exc:  # noqa: BLE001
-            sys.stdout.write(f"[remote_step] gpu_profile: update failed: {exc}\n")
-        try:
-            readings = self._monitor.read()
+            readings = self._monitor._read_monitor()
         except Exception as exc:  # noqa: BLE001
             sys.stdout.write(f"[remote_step] gpu_profile: read failed: {exc}\n")
-            readings = None
+        if not readings:
+            # No CSV yet -- a body shorter than one sampling interval. Fall
+            # back to the pump-and-read path, which at least starts a process
+            # and takes a single reading. The pump and the read are tried
+            # separately: a monitor that cannot pump can often still be read.
+            try:
+                self._monitor._update_readings()
+            except Exception as exc:  # noqa: BLE001
+                sys.stdout.write(f"[remote_step] gpu_profile: update failed: {exc}\n")
+            try:
+                readings = self._monitor.read()
+            except Exception as exc:  # noqa: BLE001
+                sys.stdout.write(f"[remote_step] gpu_profile: read failed: {exc}\n")
+                readings = None
         try:
             self._monitor.cleanup()
         except Exception:  # noqa: BLE001
