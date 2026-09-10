@@ -15,7 +15,7 @@ from metaflow import FlowSpec, current, gpu_profile, remote_step, resources, ste
 
 from _check import check
 
-BODY_SECONDS = 330  # past the sampler's 300s process duration
+BODY_SECONDS = 320  # past the sampler's 300s process duration
 
 
 class Fx13Gpu(FlowSpec):
