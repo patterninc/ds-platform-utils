@@ -205,7 +205,17 @@ def build_spec(
             {
                 "step": step,
                 "attrs": {
-                    name: _serialise(f"{step}.{name}", val) for name, val in (branch.get("attrs") or {}).items()
+                    # The branch index is in the key, not just the step name.
+                    # Every branch of a *foreach* join comes from the same
+                    # step, so keying on `{step}.{name}` alone gave all N
+                    # branches one S3 key: each upload overwrote the last and
+                    # every branch then resolved to the last branch's value.
+                    # A join computing sum(i.total for i in inputs) returned
+                    # N x the final branch, with no error anywhere. Only bit
+                    # attrs over INLINE_ATTR_LIMIT_BYTES, since smaller ones
+                    # are inlined per-branch inside the spec.
+                    name: _serialise(f"{step}.{i}.{name}", val)
+                    for name, val in (branch.get("attrs") or {}).items()
                 },
             }
         )

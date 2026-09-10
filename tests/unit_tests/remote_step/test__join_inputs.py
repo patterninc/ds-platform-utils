@@ -204,3 +204,89 @@ def test_underscored_branch_attributes_are_never_merged():
     # hasattr is useless here: _FakeSelf.__getattr__ answers any non-dunder
     # name with a placeholder, so the instance dict is the only real evidence.
     assert "_private" not in vars(fake)
+
+
+class TestOversizedBranchAttrsGetDistinctKeys:
+    """A foreach join's branches must not share one S3 key.
+
+    Every branch of a foreach join comes from the same step, so keying an
+    uploaded branch attr on `{step}.{name}` alone gave all N branches one key:
+    each upload overwrote the last, and every branch then resolved to the last
+    branch's value. `sum(i.total for i in inputs)` returned N x the final
+    branch, with no error anywhere.
+
+    Only attrs above INLINE_ATTR_LIMIT_BYTES are affected -- smaller ones are
+    inlined per-branch inside the spec -- which is why a flow joining on a
+    string or a float never showed it.
+    """
+
+    def build(self, n_branches, attr_bytes):
+        """build_spec over a foreach join, capturing what got uploaded where."""
+        from remote_step.payload import DriverContext, build_spec
+
+        uploaded = {}
+
+        class FakeS3:
+            def create_multipart_upload(self, **kw):
+                uploaded[kw["Key"]] = b""
+                return {"UploadId": "u1"}
+
+            def upload_part(self, **kw):
+                uploaded[kw["Key"]] += kw["Body"].read()
+                return {"ETag": "e1"}
+
+            def complete_multipart_upload(self, **kw):
+                return {}
+
+            def abort_multipart_upload(self, **kw):
+                return {}
+
+            def put_object(self, **kw):
+                body = kw["Body"]
+                uploaded[kw["Key"]] = body.read() if hasattr(body, "read") else body
+                return {}
+
+        ctx = DriverContext(
+            flow_module="m",
+            flow_class="F",
+            step_name="gather",
+            flow_name="F",
+            run_id="1",
+            task_id="t",
+            attempt=0,
+            code_package_url="",
+            code_package_sha="",
+            datastore_root="",
+            mfconfig={},
+            is_join=True,
+            # Same step name on every branch -- this is what a foreach join is.
+            join_branches=[
+                {"step": "work", "attrs": {"payload": ("b%d" % i).encode() * attr_bytes}} for i in range(n_branches)
+            ],
+        )
+        spec_dict = build_spec(ctx, {}, {}, "bucket", s3_client=FakeS3())
+        return spec_dict, uploaded
+
+    def test_each_branch_uploads_to_its_own_key(self):
+        spec_dict, uploaded = self.build(n_branches=3, attr_bytes=3 * 1024 * 1024)
+        keys = [b["attrs"]["payload"]["s3_uri"] for b in spec_dict["join_branches"]]
+        assert len(set(keys)) == 3, f"branches share an S3 key: {keys}"
+        assert len(uploaded) == 3, f"expected 3 uploads, got {sorted(uploaded)}"
+
+    def test_each_branch_round_trips_its_own_value(self):
+        """The failure that matters: every branch reading the last one's data."""
+        import pickle as _pickle
+
+        spec_dict, uploaded = self.build(n_branches=3, attr_bytes=3 * 1024 * 1024)
+        seen = []
+        for b in spec_dict["join_branches"]:
+            key = b["attrs"]["payload"]["s3_uri"].split("bucket/", 1)[1]
+            seen.append(_pickle.loads(uploaded[key])[:2])
+        assert seen == [b"b0", b"b1", b"b2"], seen
+
+    def test_small_attrs_were_never_affected(self):
+        """Inline attrs live inside the spec per branch, so they never collided."""
+        spec_dict, uploaded = self.build(n_branches=3, attr_bytes=1)
+        assert uploaded == {}
+        blobs = [b["attrs"]["payload"]["blob_b64"] for b in spec_dict["join_branches"]]
+        assert len(set(blobs)) == 3

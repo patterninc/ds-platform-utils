@@ -67,6 +67,16 @@ def test_an_empty_vars_mapping_is_fine():
         ({"hours": 2}, 120),
         ({"hours": 1, "minutes": 30}, 90),
         ({"seconds": 45}, 1),  # rounds up: a sub-minute deadline is still one
+        # Seconds as the ONLY unit. A flat "+1 if seconds" collapsed all of
+        # these to 1, so @timeout(seconds=1800) got a pod killed 60s in. The
+        # 45s case above passes either way, which is how it went unnoticed.
+        ({"seconds": 1800}, 30),
+        ({"seconds": 600}, 10),
+        ({"seconds": 61}, 2),
+        ({"seconds": 60}, 1),
+        # Seconds alongside a coarser unit still rounds the total up.
+        ({"minutes": 5, "seconds": 30}, 6),
+        ({"hours": 1, "minutes": 30, "seconds": 1}, 91),
         ({"hours": 0, "minutes": 0, "seconds": 0}, None),  # @timeout() with nothing set
         ({}, None),
     ],

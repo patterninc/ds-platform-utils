@@ -1690,7 +1690,18 @@ def _find_timeout_minutes(decorators) -> int | None:
         hours = int(attrs.get("hours") or 0)
         if seconds or minutes or hours:
             found = True
-            total = max(total, hours * 60 + minutes + (1 if seconds else 0))
+            # Metaflow sums the three units, so they have to be summed here
+            # too and only then rounded up to whole minutes -- the Job
+            # deadline has no finer granularity.
+            #
+            # Adding a flat `1 if seconds else 0` instead treated seconds as
+            # a rounding nudge on top of the coarser units. That is right for
+            # @timeout(minutes=5, seconds=30) -> 6, but when seconds is the
+            # only unit given it collapsed the whole request to one minute:
+            # @timeout(seconds=1800) asked for 30 minutes and got a pod
+            # killed 60 seconds in.
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            total = max(total, -(-total_seconds // 60))
     return total if found else None
 
 
