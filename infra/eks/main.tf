@@ -122,17 +122,21 @@ module "eks" {
       })
     }
     eks-pod-identity-agent = { before_compute = true }
-    aws-ebs-csi-driver = {
-      # The controller calls EC2 to create and attach volumes, so it needs a
-      # role. Omitting this leaves it with no credentials and no IMDS to fall
-      # back to (Bottlerocket withholds IMDS from pods), which crashloops
-      # `ebs-plugin` and hangs the addon in CREATING until terraform times
-      # out. See ebs-csi.tf.
-      pod_identity_association = [{
-        role_arn        = aws_iam_role.ebs_csi.arn
-        service_account = "ebs-csi-controller-sa"
-      }]
-    }
+    # No aws-ebs-csi-driver on purpose. Nothing here claims a volume: a step's
+    # scratch space is the container's writable layer on the node's data
+    # volume, metered as `ephemeral-storage` (see @remote_step's
+    # `ephemeral_gb`), and anything that has to outlive the pod goes to S3.
+    #
+    # An EBS PVC would be the wrong tool anyway — attach/detach adds tens of
+    # seconds to a pod whose whole life may be a minute, and it pins the pod
+    # to one AZ, which fights Karpenter's instance selection.
+    #
+    # Running the driver with nothing to provision cost a controller
+    # Deployment plus a DaemonSet pod on every ephemeral node. If a future
+    # workload does need a volume, re-adding this also needs a StorageClass on
+    # `ebs.csi.aws.com`: the only class EKS ships is `gp2` on the *in-tree*
+    # `kubernetes.io/aws-ebs` provisioner, which no longer provisions, so a PVC
+    # against the default class sits in Pending rather than failing.
   }
 
   # REQUIRED. Kueue's visibility extension API server listens on 8082, and
