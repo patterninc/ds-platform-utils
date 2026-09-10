@@ -68,8 +68,19 @@ def test_merges_step_packages_on_top_of_flow_packages():
 
 
 def test_step_python_overrides_the_flow_python():
+    env = _find_pypi_env(FakeFlow([pypi_base(python="3.12", packages={})]), [pypi(python="3.13", packages={})])
+    assert env["python"] == "3.13"
+
+
+def test_a_step_python_below_the_floor_is_raised_not_honoured():
+    """The step still wins over the flow -- but not below 3.11.
+
+    The resolved package sets these flows carry need >=3.11 (pandas 3.x), and
+    a 3.10 venv fails at uv_pip_install after the node is already up. See
+    test__python_floor.py.
+    """
     env = _find_pypi_env(FakeFlow([pypi_base(python="3.12", packages={})]), [pypi(python="3.10", packages={})])
-    assert env["python"] == "3.10"
+    assert env["python"] == "3.11"
 
 
 def test_flow_python_survives_a_step_that_does_not_name_one():
@@ -77,8 +88,8 @@ def test_flow_python_survives_a_step_that_does_not_name_one():
     assert env["python"] == "3.11"
 
 
-def test_defaults_to_3_12_when_nothing_names_a_python():
-    assert _find_pypi_env(FakeFlow([]), [])["python"] == "3.12"
+def test_defaults_to_the_floor_when_nothing_names_a_python():
+    assert _find_pypi_env(FakeFlow([]), [])["python"] == "3.11"
 
 
 def test_no_pypi_decorators_yields_no_packages():
