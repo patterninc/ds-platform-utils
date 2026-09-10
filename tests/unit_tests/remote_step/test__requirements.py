@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from metaflow_extensions.remote_step.requirements import (
+from remote_step.requirements import (
     build_requirements,
     main,
     requirement_line,

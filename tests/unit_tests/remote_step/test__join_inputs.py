@@ -12,7 +12,7 @@ import pickle
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
-# Imported through the `remote_step` alias, not `metaflow_extensions.remote_step`.
+# Imported through the `remote_step` alias, not `remote_step`.
 # Both names reach the same files, but importing a submodule under each one
 # executes it twice and yields two distinct classes — so an exception raised
 # internally would not match a RemoteStepError imported the other way.
@@ -87,7 +87,7 @@ def test_a_branch_attribute_is_hydrated_once():
 
 def test_a_branch_is_lazy_until_read(monkeypatch):
     """Nothing is fetched at construction — that is the point for wide joins."""
-    import metaflow_extensions.remote_step.runner_entry as re_mod
+    import remote_step.runner_entry as re_mod
 
     def explode(*a, **k):
         raise AssertionError("hydrated a branch attribute that was never read")

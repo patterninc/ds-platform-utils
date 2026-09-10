@@ -883,6 +883,10 @@ class RemoteStepDecorator(StepDecorator):
         self._env_vars = _find_env_vars(decorators)
         self._user_timeout_minutes = _find_timeout_minutes(decorators)
         self._gpu_profile = _find_gpu_profile(decorators)
+        self._model_loads = _find_model_loads(decorators)
+        if self._model_loads:
+            # Read before dropping, since dropping removes the attributes.
+            _drop_model(decorators)
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._resources = resolve(
@@ -1157,6 +1161,7 @@ class RemoteStepDecorator(StepDecorator):
                     has_foreach_input=_has_foreach_input,
                     is_join=(node_type == "join"),
                     join_branches=_join_branches(inputs),
+                    model_loads=getattr(self, "_model_loads", None),
                     gpu_profile=bool(getattr(self, "_gpu_profile", None)),
                     gpu_profile_interval=((getattr(self, "_gpu_profile", None) or {}).get("interval") or 1),
                 )
@@ -1418,6 +1423,52 @@ def _declares_conda_packages(decorator) -> bool:
         return False
     attrs = getattr(decorator, "attributes", {}) or {}
     return bool(attrs.get("packages")) or bool(attrs.get("libraries"))
+
+
+def _find_model_loads(decorators) -> dict | None:
+    """A sibling @model's `load` request, or None if the step has none.
+
+    Only the *names* travel. `@model(load=["my_model"])` resolves the model
+    through `getattr(flow, "my_model")` — the reference is an ordinary flow
+    artifact, a small dict, which the spec already ships as an input. So the
+    pod can fetch the model itself and nothing large crosses the driver.
+    """
+    for d in decorators:
+        if getattr(d, "name", "") != "model":
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        load = attrs.get("load")
+        if not load:
+            return None
+        # Normalise to [name, ...] / [[name, path], ...] so it survives JSON.
+        refs: list = []
+        if isinstance(load, str):
+            refs = [load]
+        else:
+            for item in load:
+                if isinstance(item, (tuple, list)) and len(item) == 2:
+                    refs.append([item[0], item[1]])
+                else:
+                    refs.append(item)
+        return {"load": refs, "temp_dir_root": attrs.get("temp_dir_root")}
+    return None
+
+
+def _drop_model(decorators) -> list[dict]:
+    """Remove a sibling @model so the *driver* does not download the model.
+
+    Its `task_pre_step` downloads every `load=` model onto the task running
+    it. For a remote step that is the driver — a Small-tier pod with 10 GB of
+    disk that will never touch the file. Dropping it and re-loading in the pod
+    puts the download next to the GPU and keeps a multi-GB model off the
+    driver entirely.
+    """
+    removed: list[dict] = []
+    for d in list(decorators):
+        if getattr(d, "name", "") == "model":
+            removed.append(dict(getattr(d, "attributes", {}) or {}))
+            decorators.remove(d)
+    return removed
 
 
 def _find_gpu_profile(decorators) -> dict | None:

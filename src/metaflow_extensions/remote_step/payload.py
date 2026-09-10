@@ -95,6 +95,9 @@ class DriverContext:
     # decorator samples on the driver, which has no GPU, so the runner does it.
     gpu_profile: bool = False
     gpu_profile_interval: int = 1
+    # A sibling @model's `load` request. Names only — the model reference is an
+    # ordinary flow artifact, so the pod fetches the model itself.
+    model_loads: dict[str, Any] = None  # type: ignore[assignment]
 
 
 def build_spec(
@@ -227,6 +230,7 @@ def build_spec(
         "join_branches": join_branches,
         "gpu_profile": bool(ctx.gpu_profile),
         "gpu_profile_interval": int(ctx.gpu_profile_interval or 1),
+        "model_loads": dict(ctx.model_loads or {}),
     }
 
 

@@ -116,6 +116,101 @@ EXCEPTION_FILENAME = "exception.pkl"
 RUN_TAGS_FILENAME = "run_tags.json"
 
 
+class _ModelStandIn:
+    """Stands in for `current.model` in the pod, with `loaded` populated.
+
+    `@model(load=[...])` downloads in `task_pre_step`, which for a remote step
+    runs on the *driver* — so the files landed on a Small-tier pod that never
+    touches them, and `current.model.loaded[...]` did not exist here at all.
+
+    The download happens here instead, which puts the model next to the GPU
+    and keeps a multi-GB file off the driver. It works because the model
+    *reference* is an ordinary flow artifact: `@model` resolves it through
+    `getattr(flow, name)`, and the stand-in `self` already carries it.
+    """
+
+    def __init__(self, loaded=None):
+        self.loaded = loaded
+
+    def save(self, *args, **kwargs):
+        raise RemoteStepError(
+            "current.model.save() is not supported inside @remote_step yet — "
+            "only @model(load=...). Save the model as an ordinary artifact "
+            "(self.<name> = ...), or drop @remote_step from this step."
+        )
+
+    def load(self, reference, path=None):
+        """Fetch a model by reference, as `current.model.load` does."""
+        import tempfile
+
+        from metaflow_extensions.obcheckpoint.plugins.machine_learning_utilities.modeling_utils.core import (  # noqa: E501
+            _load_model,
+        )
+
+        backend = _model_storage_backend()
+        if backend is None:
+            raise RemoteStepError("could not reach the model store from the runner pod")
+        dest = path or tempfile.mkdtemp(prefix="remote_step_model_")
+        os.makedirs(dest, exist_ok=True)
+        key = reference.get("key") if isinstance(reference, dict) else reference
+        _load_model(backend, model_key=key, path=dest)
+        return dest
+
+
+def _model_storage_backend():
+    """The artifact store the model lives in, built from the forwarded config.
+
+    `datastore_context.get()` falls back to a default built from the
+    `METAFLOW_*` datastore settings, which the driver forwards into this pod —
+    and reading Outerbounds' datastore from here is known to work.
+    """
+    try:
+        from metaflow_extensions.obcheckpoint.plugins.machine_learning_utilities.datastore.context import (  # noqa: E501
+            datastore_context,
+        )
+
+        return datastore_context.get()
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] model store unavailable: {exc}\n")
+        return None
+
+
+def _load_models(spec: dict, fake) -> _ModelStandIn | None:
+    """Populate `current.model.loaded` for the step, or None if unused."""
+    request = spec.get("model_loads") or {}
+    refs = request.get("load")
+    if not refs:
+        return None
+
+    backend = _model_storage_backend()
+    if backend is None:
+        return None
+    try:
+        from metaflow_extensions.obcheckpoint.plugins.machine_learning_utilities.modeling_utils.core import (  # noqa: E501
+            LoadedModels,
+        )
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] @model unavailable in the runner: {exc}\n")
+        return None
+
+    # Tuples do not survive JSON, so they arrive as [name, path] pairs.
+    artifact_references = [tuple(r) if isinstance(r, list) else r for r in refs]
+    try:
+        loaded = LoadedModels(
+            storage_backend=backend,
+            flow=fake,
+            artifact_references=artifact_references,
+            temp_dir_root=request.get("temp_dir_root"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Loud: the body is about to read a path that will not be there.
+        raise RemoteStepError(f"@model(load=...) failed in the runner pod: {exc}") from exc
+
+    names = [str(n) for n in artifact_references]
+    sys.stdout.write(f"[remote_step] @model loaded {names} in the runner pod\n")
+    return _ModelStandIn(loaded=loaded)
+
+
 CARD_COMPONENTS_FILENAME = "card_components.pkl"
 
 
@@ -799,6 +894,18 @@ def main(spec_uri: str | None = None) -> int:
         type(_current).card = property(fget=lambda _self: card_recorder)
     except Exception:  # noqa: BLE001
         pass
+
+    # @model(load=...) downloads in task_pre_step, which for a remote step runs
+    # on the driver — the wrong machine. Do it here, where the step body is.
+    model_standin = _load_models(spec, fake)
+    if model_standin is not None:
+        try:
+            from metaflow import current as _current
+
+            _current._model = model_standin
+            type(_current).model = property(fget=lambda _self: model_standin)
+        except Exception:  # noqa: BLE001
+            pass
 
     # 3. Import user step. Find the flow module file anywhere under /workspace.
     t0 = time.time()

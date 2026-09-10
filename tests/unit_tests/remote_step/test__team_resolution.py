@@ -8,7 +8,7 @@ the step spends. Three sources, in order: `team=` on the decorator, then
 import metaflow  # noqa: F401  -- resolves plugins before the direct import below
 import pytest
 
-from metaflow_extensions.remote_step.plugins.remote_step_decorator import (
+from remote_step.plugins.remote_step_decorator import (
     FALLBACK_TEAM,
     TEAM_TAG_PREFIX,
     _team_from_tags,

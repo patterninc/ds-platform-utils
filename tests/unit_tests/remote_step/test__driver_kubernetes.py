@@ -9,7 +9,7 @@ including the image -- while forcing everything that says *how big* it is.
 import metaflow  # noqa: F401  -- resolves plugins before the direct import below
 import pytest
 
-from metaflow_extensions.remote_step.plugins.remote_step_decorator import (
+from remote_step.plugins.remote_step_decorator import (
     DEFAULT_DRIVER_CPU,
     DEFAULT_DRIVER_MEMORY_MB,
     _default_kubernetes_image,

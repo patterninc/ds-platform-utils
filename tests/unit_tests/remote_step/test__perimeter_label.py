@@ -8,9 +8,9 @@ reading labels for cost attribution.
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
-from metaflow_extensions.remote_step import keys
-from metaflow_extensions.remote_step.config import RemoteStepConfig
-from metaflow_extensions.remote_step.submit import StepResources, build_manifest
+from remote_step import keys
+from remote_step.config import RemoteStepConfig
+from remote_step.submit import StepResources, build_manifest
 
 PERIMETER_LABEL = "remote-step.pattern.com/perimeter"
 

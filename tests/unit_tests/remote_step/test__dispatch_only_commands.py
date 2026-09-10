@@ -9,7 +9,7 @@ reach it, and requiring one made a tag-derived team unusable with Argo.
 import metaflow  # noqa: F401  -- resolves plugins before the direct import below
 import pytest
 
-from metaflow_extensions.remote_step.plugins.remote_step_decorator import (
+from remote_step.plugins.remote_step_decorator import (
     _is_dispatch_only_command,
 )
 

@@ -16,7 +16,7 @@ import pytest
 # decorator module directly makes it import metaflow, whose plugin resolution
 # imports this same module again -- and re-entering it half-initialised fails
 # to find RemoteStepDecorator. Letting metaflow finish first avoids that.
-from metaflow_extensions.remote_step.plugins.remote_step_decorator import _find_pypi_env
+from remote_step.plugins.remote_step_decorator import _find_pypi_env
 
 
 class FakeDecorator:

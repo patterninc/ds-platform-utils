@@ -115,17 +115,28 @@ Legend for **Status**:
 - Card content is saved even when the body raises, so a failed step's
   diagnostics survive.
 
-### 7. `current.model` / `@model(load=[...])` — ❌
+### 7. `current.model` / `@model(load=[...])` — ✅ load; save still refused
 - **Uses**: 19 sites (embedding models, sklearn, spaCy, `distilbart_mnli_12_3`, etc.).
 - **Bug**: `@model` downloads model artifacts on the driver argo pod, populates
   `current.model.loaded[...]`. Batch container has neither the files nor the
   populated dict.
-- **Options**:
-  a. Ship `current.model.loaded` mapping as part of spec, re-download models
-     via boto3 on Batch.
-  b. Replay `@model` decorator's `task_pre_step` on Batch (import Metaflow
-     model_load plugin server-side).
-  c. Refuse `@remote_step` when `@model` is present.
+- **Now**: the download happens in the pod, not on the driver, and only the
+  *names* travel in the spec. That works because the model reference is an
+  ordinary flow artifact — `@model` resolves it with `getattr(flow, name)` —
+  which the spec already ships as an input, so the pod has everything it needs
+  to fetch the model itself.
+- `@model` is **dropped from the driver**, the same way `@kubernetes` is.
+  Otherwise its `task_pre_step` downloads a multi-GB model onto a Small-tier
+  pod with 10 GB of disk that never reads it. Now the file lands next to the
+  GPU and never crosses the driver.
+- The store is reached with `datastore_context.get()`, which builds itself from
+  the forwarded `METAFLOW_*` config — viable because gap 9 established that the
+  pod can read Outerbounds' datastore.
+- A failed load raises rather than warning: the body is about to read a path
+  that would not be there.
+- **`current.model.save()` is still refused**, with a message pointing at a
+  plain artifact instead. Saving needs write access to the model store from
+  the pod, which is a separate piece of work.
 
 ### 8. `current.huggingface_hub` / `@huggingface_hub` — ❌
 - **Uses**: 17 sites.
@@ -543,7 +554,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@catch` | 6 | ✅ gap #12 |
 | `@pypi` / `@pypi_base` | 92 | ✅ |
 | `@environment` | 1 | ✅ gap #11 |
-| `@model` | 19 | ❌ gap #7 |
+| `@model` | 19 | ✅ load, gap #7 |
 | `@huggingface_hub` | 17 | ❌ gap #8 |
 | `@gpu_profile` | 14 | ⚠️ gap #14 — data yes, card blocked on #6 |
 | `compute_pool` (kwarg on `@kubernetes`) | 10 | ✅ gap #15 |
@@ -553,7 +564,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `current.is_production` | 209 | ✅ gap #4 |
 | `current.card` | 66 | ✅ gap #6 |
 | `current.run_id` | 40 | ✅ |
-| `current.model` | 18 | ❌ gap #7 |
+| `current.model` | 18 | ✅ load, gap #7 |
 | `current.huggingface_hub` | 17 | ❌ gap #8 |
 | `current.flow_name` | 14 | ✅ |
 | `current.run.add_tags(...)` | 7 | ✅ gap #10 |

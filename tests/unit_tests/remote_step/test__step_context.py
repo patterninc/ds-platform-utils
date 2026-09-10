@@ -10,11 +10,11 @@ here, or the body silently sees a default.
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
-from metaflow_extensions.remote_step.plugins.remote_step_decorator import (
+from remote_step.plugins.remote_step_decorator import (
     PROJECT_CONTEXT_KEYS,
     _project_context,
 )
-from metaflow_extensions.remote_step.runner_entry import (
+from remote_step.runner_entry import (
     _FakeSelf,
     _hydrate_foreach_input,
     _patch_project_context,
