@@ -1268,6 +1268,7 @@ class RemoteStepDecorator(StepDecorator):
                         exit_code=outcome.exit_code,
                         job_name=outcome.job_name,
                     )
+                _apply_run_tags(cfg.payload_bucket, spec["output_prefix"], s3_client=driver_s3)
                 outputs = read_manifest(
                     cfg.payload_bucket,
                     spec["output_prefix"],
@@ -1454,6 +1455,42 @@ def _find_timeout_minutes(decorators) -> int | None:
             found = True
             total = max(total, hours * 60 + minutes + (1 if seconds else 0))
     return total if found else None
+
+
+def _apply_run_tags(bucket: str, output_prefix: str, s3_client=None) -> None:
+    """Replay the tag edits the step body asked for inside the pod.
+
+    `current.run` in the runner is a recorder, not a real `Run` — the pod has
+    no credentials for Outerbounds' metadata service, so the call there did
+    nothing. The driver is authenticated, so it makes the write.
+
+    Never allowed to fail the step: the body has already succeeded by this
+    point, and a tag is metadata.
+    """
+    import json
+
+    from remote_step.runner_entry import RUN_TAGS_FILENAME
+
+    try:
+        body = s3_client.get_object(Bucket=bucket, Key=f"{output_prefix}/{RUN_TAGS_FILENAME}")["Body"].read()
+        pending = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return
+    added = pending.get("added") or []
+    removed = pending.get("removed") or []
+    if not added and not removed:
+        return
+    try:
+        from metaflow import current
+
+        run = current.run
+        if added:
+            run.add_tags(added)
+        if removed:
+            run.remove_tags(removed)
+        sys.stdout.write(f"[remote_step] applied run tags from the step: +{added} -{removed}\n")
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] could not apply run tags {added or removed}: {exc}\n")
 
 
 def _reraise_step_exception(bucket: str, output_prefix: str, step_name: str, s3_client=None):

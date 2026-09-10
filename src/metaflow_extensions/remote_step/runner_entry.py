@@ -113,6 +113,79 @@ def _hydrate_input(name: str, ref: dict, s3_client) -> Any:
 
 
 EXCEPTION_FILENAME = "exception.pkl"
+RUN_TAGS_FILENAME = "run_tags.json"
+
+
+class _RunRecorder:
+    """Stands in for `current.run` so tag edits survive out of the pod.
+
+    A real `Run` needs a Metaflow client, and the runner has no credentials on
+    Outerbounds' metadata service — so `current.run.add_tags([...])` had
+    nothing to call and quietly did nothing. Recording the calls and letting
+    the driver replay them keeps the write on the side that is authenticated
+    for it.
+
+    Only tag edits are recorded. Reads (`run.data`, `run.tags`) would need the
+    client that is missing, so they still raise rather than return a lie.
+    """
+
+    def __init__(self):
+        self.added: list[str] = []
+        self.removed: list[str] = []
+
+    @staticmethod
+    def _as_list(tags) -> list[str]:
+        if isinstance(tags, str):
+            return [tags]
+        return [str(t) for t in (tags or [])]
+
+    def add_tag(self, tag):
+        self.added.extend(self._as_list(tag))
+
+    def add_tags(self, tags):
+        self.added.extend(self._as_list(tags))
+
+    def remove_tag(self, tag):
+        self.removed.extend(self._as_list(tag))
+
+    def remove_tags(self, tags):
+        self.removed.extend(self._as_list(tags))
+
+    def replace_tag(self, old, new):
+        self.remove_tag(old)
+        self.add_tag(new)
+
+    def replace_tags(self, old, new):
+        self.remove_tags(old)
+        self.add_tags(new)
+
+    def pending(self) -> dict[str, list[str]]:
+        # De-duplicated, order preserved, so replaying is idempotent.
+        return {
+            "added": list(dict.fromkeys(self.added)),
+            "removed": list(dict.fromkeys(self.removed)),
+        }
+
+
+def _save_run_tags(recorder: _RunRecorder, spec: dict, s3_client=None) -> None:
+    """Persist recorded tag edits for the driver to apply."""
+    pending = recorder.pending()
+    if not pending["added"] and not pending["removed"]:
+        return
+    prefix = spec.get("output_prefix")
+    bucket = spec.get("output_bucket")
+    if not prefix or not bucket:
+        return
+    try:
+        client = s3_client or _make_s3_client()
+        client.put_object(
+            Bucket=bucket,
+            Key=f"{prefix}/{RUN_TAGS_FILENAME}",
+            Body=json.dumps(pending).encode(),
+        )
+        sys.stdout.write(f"[remote_step] recorded run tag edits for the driver: {pending}\n")
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _save_exception(exc: BaseException, spec: dict, s3_client=None) -> None:
@@ -513,6 +586,16 @@ def main(spec_uri: str | None = None) -> int:
     except Exception:  # noqa: BLE001
         pass
     _patch_project_context(spec)
+    # `current.run` needs a Metaflow client the runner has no credentials for,
+    # so hand the step a recorder and let the driver replay the tag edits.
+    run_recorder = _RunRecorder()
+    try:
+        from metaflow import current as _current
+
+        _current._run = run_recorder
+        type(_current).run = property(fget=lambda _self: run_recorder)
+    except Exception:  # noqa: BLE001
+        pass
 
     # 3. Import user step. Find the flow module file anywhere under /workspace.
     t0 = time.time()
@@ -558,6 +641,7 @@ def main(spec_uri: str | None = None) -> int:
         _save_exception(exc, spec)
         return 1
     _stage("user_step_end", t0=t0)
+    _save_run_tags(run_recorder, spec)
 
     # 5. Snapshot new/modified attrs.
     new_attrs = {
