@@ -175,3 +175,16 @@ def test_dropping_when_there_is_no_gpu_profile_changes_nothing():
     decorators = [Deco("resources", gpu=1)]
     assert _drop_gpu_profile(decorators) == []
     assert len(decorators) == 1
+
+
+def test_a_classic_decorator_still_carries_its_interval():
+    """The hand-written shape is the only one that has `interval`."""
+    assert _find_gpu_profile([Deco("gpu_profile", interval=5)]) == {"interval": 5}
+
+
+def test_the_mutator_shape_samples_at_one_second():
+    """`interval=` is given to the wrapper, not the card, so it cannot be
+    recovered from the card. 1 s is the finest setting, so no sample is lost.
+    """
+    decos = [Deco("card", type="blank", id="gpu_profile", refresh_interval=5)]
+    assert _find_gpu_profile(decos) == {"interval": 1}

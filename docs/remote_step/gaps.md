@@ -325,6 +325,24 @@ Legend for **Status**:
   same name the decorator uses — plus a peak-utilisation line per device so the
   log alone answers "was the GPU actually used". Sampling also stops and
   reports when the body raises.
+- **Detection is verified live.** `@gpu_profile` is a `StepMutator`: by the
+  time `step_init` runs it has rewritten itself into a `card(type="blank",
+  id="gpu_profile")` plus a `user_step_decorator`, so **nothing in the
+  decorator list is named `gpu_profile`** and the obvious name match finds
+  nothing — which is exactly how the first attempt failed silently. Detection
+  keys off the injected card id instead, confirmed on `GpuDetectFlow` run
+  238612 whose uploaded spec carries `gpu_profile: True`.
+- A user `interval=` is **not** propagated: the mutator gives it to the
+  wrapper and the card only gets `refresh_interval = max(5, interval)`, which
+  is not invertible. Sampling falls back to 1 s — the decorator's own default
+  and the finest setting, so nothing is missed.
+- The wrapper cannot be dropped either, for the same reason it cannot be
+  found, so it keeps running on the driver and writing `gpu_profile_data`.
+  The runner therefore writes **`remote_gpu_profile`**, which the driver's
+  empty reading cannot clobber, and appends its summary to the `gpu_profile`
+  card through the card recorder so that card shows real numbers.
+- **Still to verify live:** the sampling itself and the card summary, both of
+  which run in the pod and so need a new runner image.
 - **Blocked on gap 6 for the rest.** `_gpu_profile_wrapper` renders everything
   through `current.card["gpu_profile"]`, and a card written in the pod does not
   reach the driver's card. So the readings exist but the chart does not. Gap 6

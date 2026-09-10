@@ -1605,6 +1605,13 @@ def _find_gpu_profile(decorators) -> dict | None:
         attrs = getattr(d, "attributes", {}) or {}
         # Written by hand as a classic decorator (older Metaflow), or found
         # via the card its mutator injects (current Metaflow).
+        #
+        # Only the classic shape carries `interval`. The mutator hands it to
+        # the user_step_decorator wrapper and gives the card only
+        # `refresh_interval = max(5, interval)`, which is not invertible — so
+        # the card shape falls back to 1 s. That is the decorator's own default
+        # and the finest setting, so no sample is lost; a larger `interval=`
+        # just costs a little more memory than was asked for.
         if name == "gpu_profile" or (name == "card" and attrs.get("id") == GPU_PROFILE_CARD_ID):
             return {"interval": int(attrs.get("interval") or 1)}
     return None
