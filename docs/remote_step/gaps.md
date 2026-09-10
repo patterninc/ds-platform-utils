@@ -827,6 +827,37 @@ touches the bytes, and the join's own pod reads only what its body asks for.
 Failing that, keep broadcast state small, or re-read it from S3 in the join
 rather than carrying it through the graph.
 
+### L2. Per-step `@uv_pypi` leaves plain steps unable to import the flow — ⚠️
+
+Under `--environment=fast-bakery` every step is baked its own environment
+(`CondaEnvironment.decospecs()` returns `("conda",)`, so each step carries a
+bare `conda`), and a step with no pypi decorator gets one holding metaflow
+alone. But Metaflow imports the **flow module** in every task, and a flow that
+uses `@uv_pypi` must import it at module scope — it is a decorator, applied at
+class-definition time, so there is nowhere later to put it.
+
+The result is that a plain step in such a flow cannot import the flow module at
+all, and the run dies before any step body runs:
+
+    [238827/start/1926750] from ds_platform_utils.metaflow import uv_pypi
+    [238827/start/1926750] ModuleNotFoundError: No module named 'ds_platform_utils'
+
+The error names `ds_platform_utils` and the step that could not import it, but
+nothing connects it to the decorator on a *different* step, which is what makes
+this expensive to diagnose. It cost a full round of "fx20 is broken" before the
+cause was clear, and it is the same failure fx27 hit earlier.
+
+Nothing in `@remote_step` can fix it: a step decorator cannot reach the other
+steps in a flow, and the import has to resolve in an environment chosen before
+any of our code runs.
+
+**Workaround, and the recommended pattern:** use `@uv_pypi_base` /
+`@pypi_base`, which cover every step at once and are what both production repos
+already do. If per-step control is genuinely needed, every step that executes
+the module — including plain `start` / `end` steps that need nothing themselves
+— has to carry a bare `@uv_pypi`. `tests/scenario_flows/remote_step/fx20` is
+the worked example of the second form; `fx19` of the first.
+
 ---
 
 ## Coverage-status snapshot
