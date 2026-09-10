@@ -260,24 +260,33 @@ The second is not ours — it is whatever the invocation would do without this
 decorator at all. And because the driver is itself an ordinary Metaflow task,
 it lands in that same place. So one column determines two.
 
-| invocation | steps on EKS | every other task, driver included |
+Two clusters are in play and they are easy to conflate. `--with kubernetes` is
+Metaflow's own decorator and schedules onto **Outerbounds'** cluster. Our EKS
+cluster is reached *only* through `@remote_step`. In the logs:
+
+```
+Outerbounds   t-7836b8ce-hh98m-wjf27       namespace jobs-default
+our EKS       rs-weeklyforecastflow-…-0    namespace forecasting
+```
+
+| invocation | which steps reach **our EKS** | where every other task runs, driver included |
 |---|---|---|
 | `run` | those decorated | local process |
-| `run --with kubernetes` | those decorated | Outerbounds pod |
-| `argo-workflows create` + `trigger` | those decorated | Argo pod |
-| `run --with remote_step:team=X` | all but `start`/`end` | local process |
-| `run --with remote_step:team=X --with kubernetes` | all but `start`/`end` | Outerbounds pod |
-| `argo-workflows create --with remote_step:team=X` | all but `start`/`end` | Argo pod |
-| `run --with local_step` | none | local process |
-| `run --with local_step --with kubernetes` | none | Outerbounds pod |
+| `run --with kubernetes` | those decorated | Outerbounds pod — *all* steps |
+| `argo-workflows create` + `trigger` | those decorated | Argo pod — *all* steps |
+| `run --with remote_step:team=X` | all but `start`/`end` | local process (`start`/`end`) |
+| `run --with remote_step:team=X --with kubernetes` | all but `start`/`end` | Outerbounds pod (`start`/`end`) |
+| `argo-workflows create --with remote_step:team=X` | all but `start`/`end` | Argo pod (`start`/`end`) |
+| `run --with local_step` | none | local process — *all* steps |
+| `run --with local_step --with kubernetes` | none | Outerbounds pod — *all* steps |
 
 "those decorated" means the steps carrying `@remote_step` in the flow source.
 
-Note `--with kubernetes` covers **every** step, `start` and `end` included —
+`--with kubernetes` covers **every** step, `start` and `end` included —
 Metaflow's `_attach_decorators` has no exclusion for them, so an undecorated
-step runs in an Outerbounds pod rather than locally. Only a `--with
-remote_step` sweep skips those two, and only because `@remote_step` itself
-refuses them.
+step runs in an Outerbounds pod rather than locally. It never puts anything on
+our EKS. Only a `--with remote_step` sweep skips those two steps, and only
+because `@remote_step` itself refuses them.
 
 `--with local_step` wins over everything, including a `--with remote_step`
 sweep in the same command: every step goes inert and runs wherever the right
