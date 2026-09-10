@@ -60,6 +60,8 @@ from remote_step.submit import (
 
 DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
+# The driver only holds a poll loop, so it never needs the step's scratch space.
+DEFAULT_DRIVER_DISK_MB = 10240
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
 # `--tag ds.domain:<team>` can stand in for team= on the decorator, since
@@ -504,21 +506,62 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     return {**env_spec, "packages": packages}
 
 
-def _drop_kubernetes(decorators) -> list[dict]:
-    """Remove any sibling @kubernetes decorator, returning what was removed.
+def _retarget_kubernetes(decorators) -> list[dict]:
+    """Resize any sibling @kubernetes to driver scale, IN PLACE.
 
     Only called when the step body is going to EKS, where a @kubernetes
     decorator would otherwise size the *driver* pod to the step's full ask.
-    The caller reports the discarded attributes: Outerbounds-specific ones
-    like compute_pool do not carry over, and vanishing in silence makes the
-    pod look mysteriously misplaced.
+    Returns a snapshot of what each one asked for, so the caller can report
+    the parts that do not carry over -- Outerbounds-specific ones like
+    compute_pool vanishing in silence makes the pod look mysteriously
+    misplaced.
+
+    IN PLACE, and never removed, because Metaflow hands `step_init` the very
+    list it is iterating:
+
+        for deco in step.decorators:
+            deco.step_init(flow, graph, step.__name__, step.decorators, ...)
+
+    Removing an element at a lower index shifts the list left under that
+    iterator, so it skips the element that slides into the vacated slot --
+    the decorator written directly above @remote_step. For
+
+        @card
+        @remote_step(team="content")
+        @kubernetes(cpu=3, memory=29000)
+        @step
+
+    the list is [kubernetes, remote_step, card]; dropping kubernetes and
+    appending a driver-sized one made the iterator visit
+    [kubernetes, remote_step, kubernetes-driver] and `card.step_init` never
+    ran at all, so the card was silently never registered. Which decorator
+    got skipped depended on how many were written above @remote_step, which
+    is no way to run anything.
+
+    Mutating attributes keeps every position stable, so every sibling still
+    gets its step_init. Metaflow's own KubernetesDecorator.step_init only
+    records internal state and validates -- nothing it derives depends on
+    cpu/memory -- and the sizing is read from `attributes` at task-render
+    time, so overwriting them afterwards is safe. It also means Metaflow
+    imputes the image itself, rather than us having to.
     """
-    removed: list[dict] = []
-    for d in list(decorators):
-        if getattr(d, "name", "") == "kubernetes":
-            removed.append(dict(getattr(d, "attributes", {}) or {}))
-            decorators.remove(d)
-    return removed
+    snapshots: list[dict] = []
+    for d in decorators:
+        if getattr(d, "name", "") != "kubernetes":
+            continue
+        attrs = getattr(d, "attributes", None)
+        if attrs is None:
+            continue
+        snapshots.append(dict(attrs))
+        # Size only. Everything that says *where* the driver runs --
+        # compute_pool, node_selector, namespace, tolerations, image -- is
+        # already on this decorator and is deliberately left alone.
+        attrs["cpu"] = DEFAULT_DRIVER_CPU
+        attrs["memory"] = DEFAULT_DRIVER_MEMORY_MB
+        attrs["gpu"] = 0
+        if attrs.get("disk"):
+            attrs["disk"] = DEFAULT_DRIVER_DISK_MB
+    return snapshots
 
 
 def _shrink_resources(decorators) -> None:
@@ -642,15 +685,12 @@ def _inject_driver_kubernetes(decorators, dropped: list[dict] | None = None) -> 
                               CPU/memory panel to cluster metrics through
                               those keys, so without this a driver task
                               reports no resource usage at all.
-      dropped                 the operator supplied @kubernetes and
-                              _drop_kubernetes removed it. Replacing it with a
-                              driver-sized one honours the request instead of
-                              discarding it — without this, `run --with
-                              kubernetes` left the step with no @kubernetes at
-                              all and the driver ran on the operator's laptop,
-                              holding the log stream, the token refresh and
-                              the final manifest read, so a closed lid or an
-                              SSO expiry killed a run whose pod was healthy.
+      dropped                 legacy path, kept for callers that remove a
+                              @kubernetes themselves. step_init no longer
+                              does: _retarget_kubernetes resizes the sibling
+                              in place instead, because removing it from the
+                              list Metaflow is iterating skipped whichever
+                              decorator was written above @remote_step.
 
     `dropped` also supplies placement: the driver inherits where to run but
     never how big to be. A step asking for a 29 GB pool gets its driver on
@@ -972,8 +1012,11 @@ class RemoteStepDecorator(StepDecorator):
             # full ask, so it goes; same for @resources, which Metaflow
             # reconciles with @kubernetes at task-render time. The real ask is
             # already captured on self._resources for the Job manifest.
-            dropped = _drop_kubernetes(decorators)
-            _inject_driver_kubernetes(decorators, dropped)
+            dropped = _retarget_kubernetes(decorators)
+            if not dropped:
+                # No sibling @kubernetes to resize, so the driver may still
+                # need one of its own -- see _inject_driver_kubernetes.
+                _inject_driver_kubernetes(decorators, None)
             _shrink_resources(decorators)
             for attrs in dropped:
                 pool = attrs.get("compute_pool")
