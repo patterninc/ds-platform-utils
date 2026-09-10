@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import getpass
 import json
+import importlib.metadata
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -192,7 +194,24 @@ class _MflogPusher:
                 pass
 
 
-def _cached_env_path() -> str | None:
+def _cached_env_filename(flow_name: str | None) -> str:
+    """The cache file's name for one flow.
+
+    Per flow, not per directory. A single directory routinely holds several
+    flows -- marketshare ships f0 through f4 in one src/ -- and one shared
+    file meant whichever flow deployed last decided what every other flow's
+    pods installed. That is how a GPU flow with no @pypi of its own ended up
+    with another flow's `pydantic + ds-platform-utils` and then died on
+    `cannot import name 'gpu_profile' from 'metaflow'`, an error naming
+    nothing that would lead you here.
+    """
+    if not flow_name:
+        return CACHED_ENV_FILENAME
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(flow_name))
+    return f".remote_step_env.{safe}.json"
+
+
+def _cached_env_path(flow_name: str | None = None) -> str | None:
     """Absolute path to the cached env JSON, next to the flow module.
 
     Used by the *writer* on the user's laptop at argo-workflows-create
@@ -204,7 +223,9 @@ def _cached_env_path() -> str | None:
     flow_file = getattr(__main__, "__file__", None)
     if not flow_file:
         return None
-    return os.path.join(os.path.dirname(os.path.abspath(flow_file)), CACHED_ENV_FILENAME)
+    return os.path.join(
+        os.path.dirname(os.path.abspath(flow_file)), _cached_env_filename(flow_name)
+    )
 
 
 def _cached_env_read_candidates() -> list[str]:
@@ -245,11 +266,11 @@ def _cached_env_read_candidates() -> list[str]:
     return dirs
 
 
-def _write_cached_env(env_spec: dict) -> None:
-    """Write env_spec to `<flow_dir>/.remote_step_env.json`."""
+def _write_cached_env(env_spec: dict, flow_name: str | None = None) -> None:
+    """Write env_spec to `<flow_dir>/.remote_step_env.<FlowName>.json`."""
     import json
 
-    path = _cached_env_path()
+    path = _cached_env_path(flow_name)
     if not path:
         return
     try:
@@ -259,7 +280,7 @@ def _write_cached_env(env_spec: dict) -> None:
         pass
 
 
-def _read_cached_env() -> dict | None:
+def _read_cached_env(flow_name: str | None = None) -> dict | None:
     """Read env_spec from the JSON file if present.
 
     Probes every candidate location in ``_cached_env_read_candidates()``
@@ -270,7 +291,7 @@ def _read_cached_env() -> dict | None:
     import json
 
     for d in _cached_env_read_candidates():
-        path = os.path.join(d, CACHED_ENV_FILENAME)
+        path = os.path.join(d, _cached_env_filename(flow_name))
         if not os.path.isfile(path):
             continue
         try:
@@ -545,6 +566,16 @@ def _find_pypi_env(flow, decorators) -> dict:
 # miss it and pin a second, conflicting copy.
 _METAFLOW_DISTS = ("ob-metaflow", "metaflow")
 
+# Distributions that register Metaflow *extensions* -- @gpu_profile,
+# @checkpoint, @model and the rest live here, not in metaflow itself. The
+# runner imports the user's flow module, and any flow using one of those does
+# `from metaflow import gpu_profile` at module scope, so without these the
+# import fails with
+#   ImportError: cannot import name 'gpu_profile' from 'metaflow'
+# at STAGE=import_step, naming neither the missing distribution nor the
+# decorator that needed it.
+_METAFLOW_EXTENSION_DISTS = ("ob-metaflow-extensions",)
+
 
 def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     """Guarantee the runner can import the flow module.
@@ -564,8 +595,29 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     the driver also avoids the two sides disagreeing about artifact formats.
     """
     packages = dict(env_spec.get("packages") or {})
+
+    def _with_extensions(pkgs: dict) -> dict:
+        """Ensure the extensions distribution, whatever else is pinned.
+
+        Checked on every path, not only when metaflow is absent. A flow that
+        already carries metaflow transitively still needs this: the extension
+        decorators live in a *separate* distribution, and whether it comes
+        along depends on the resolver having walked
+        ds-platform-utils -> outerbounds -> ob-metaflow-extensions. When it
+        did not, the pod died at STAGE=import_step on
+        `cannot import name 'gpu_profile' from 'metaflow'`.
+        """
+        for ext in _METAFLOW_EXTENSION_DISTS:
+            if ext in pkgs:
+                continue
+            try:
+                pkgs[ext] = importlib.metadata.version(ext)
+            except Exception:  # noqa: BLE001
+                continue
+        return pkgs
+
     if any(d in packages for d in _METAFLOW_DISTS):
-        return env_spec
+        return {**env_spec, "packages": _with_extensions(packages)}
 
     # Installed-distribution metadata first: correct when the driver runs in
     # an environment where metaflow was pip-installed.
@@ -574,7 +626,7 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
     for dist in _METAFLOW_DISTS:
         try:
             packages[dist] = _md.version(dist)
-            return {**env_spec, "packages": packages}
+            return {**env_spec, "packages": _with_extensions(packages)}
         except Exception:  # noqa: BLE001
             continue
 
@@ -586,9 +638,9 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
 
         version = str(getattr(_mf, "__version__", "") or "").split("+")[0].strip()
     except Exception:  # noqa: BLE001
-        return env_spec
+        return {**env_spec, "packages": _with_extensions(packages)}
     if not version:
-        return env_spec
+        return {**env_spec, "packages": _with_extensions(packages)}
 
     # Pick the right distribution name. Outerbounds publishes its fork as
     # `ob-metaflow`; pinning plain `metaflow` next to the fork's extensions
@@ -620,7 +672,18 @@ def _ensure_metaflow_in_env(env_spec: dict) -> dict:
 
     dist = "ob-metaflow" if is_ob else "metaflow"
     packages[dist] = version
-    return {**env_spec, "packages": packages}
+
+    # And the extensions distribution, which is where @gpu_profile,
+    # @checkpoint, @model and friends actually live. The runner imports the
+    # user's flow module, and a flow using any of them does
+    # `from metaflow import gpu_profile` at module scope -- so without this
+    # the pod dies at STAGE=import_step with
+    #   ImportError: cannot import name 'gpu_profile' from 'metaflow'
+    # which names neither the missing distribution nor the decorator that
+    # needed it. Pinned to the driver's own version for the same reason
+    # metaflow itself is: the two sides disagreeing about a decorator's
+    # behaviour is worse than either being old.
+    return {**env_spec, "packages": _with_extensions(packages)}
 
 
 def _retarget_kubernetes(decorators) -> list[dict]:
@@ -907,7 +970,13 @@ class RemoteStepDecorator(StepDecorator):
         if not flow_file:
             return
         start = os.path.dirname(os.path.abspath(flow_file))
-        wanted = ("uv.lock", "pyproject.toml", ".python-version", CACHED_ENV_FILENAME)
+        wanted = (
+            "uv.lock",
+            "pyproject.toml",
+            ".python-version",
+            _cached_env_filename(getattr(type(flow), "__name__", None)),
+            CACHED_ENV_FILENAME,
+        )
         seen: set[str] = set()
         cur = start
         for _ in range(6):
@@ -1111,7 +1180,7 @@ class RemoteStepDecorator(StepDecorator):
         # via add_to_package — driver reads it back on the argo pod.
         env_spec = _find_pypi_env(flow, decorators)
         if not env_spec["packages"]:
-            cached = _read_cached_env()
+            cached = _read_cached_env(getattr(type(flow), "__name__", None))
             if cached:
                 env_spec = cached
                 # A cached env can be old -- it is written next to the flow and
@@ -1120,7 +1189,7 @@ class RemoteStepDecorator(StepDecorator):
                 # interpreter the same way a freshly resolved one is floored.
                 env_spec["python"] = _python_at_least(env_spec.get("python") or DEFAULT_PYTHON)
         else:
-            _write_cached_env(env_spec)
+            _write_cached_env(env_spec, getattr(type(flow), "__name__", None))
         # Applied after the cache round-trip so the cached file keeps the
         # user's declared set verbatim and the pin is re-derived each time.
         env_spec = _ensure_metaflow_in_env(env_spec)
