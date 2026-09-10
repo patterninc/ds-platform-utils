@@ -18,13 +18,20 @@ from metaflow import FlowMutator, FlowSpec, current, remote_step, resources, ste
 
 from _check import check
 
-WRAPPED = []
-
 
 @user_step_decorator
 def marker_decorator(step_name, flow, inputs=None, attributes=None):
-    """Wraps a step, exactly as the real cleanup decorator does."""
-    WRAPPED.append(step_name)
+    """Wraps a step, exactly as the real cleanup decorator does.
+
+    Records onto the *flow* rather than a module global. Each Metaflow step
+    runs in its own process, so a module-level list is only ever visible to
+    the step that appended to it -- an earlier version of this flow asserted
+    against one and failed even though the wrapper had plainly run.
+    """
+    seen = list(getattr(flow, "wrapped_steps", None) or [])
+    if step_name not in seen:
+        seen.append(step_name)
+    flow.wrapped_steps = seen
     print(f"[fx29] wrapper entered for {step_name}", flush=True)
     try:
         yield
@@ -64,9 +71,12 @@ class Fx29MutatorAndHooks(FlowSpec):
     def end(self):
         check("the remote step completed", bool(self.ran), True)
         # Every step in this flow was wrapped by the mutator, including the
-        # one @remote_step rewrote.
-        print(f"[fx29] wrapper saw steps: {WRAPPED}", flush=True)
-        check("the mutator wrapped the remote step too", "work", predicate=lambda s: s in WRAPPED)
+        # one @remote_step rewrote. Carried as an artifact, since the wrapper
+        # for `work` ran in a different process to this one.
+        seen = list(self.wrapped_steps or [])
+        print(f"[fx29] wrapper saw steps: {seen}", flush=True)
+        check("the mutator wrapped the remote step too", "work", predicate=lambda s: s in seen)
+        check("and wrapped the plain steps as well", "start", predicate=lambda s: s in seen)
         print("[fx29] OK")
 
 
