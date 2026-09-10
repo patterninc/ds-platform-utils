@@ -1059,6 +1059,16 @@ class RemoteStepDecorator(StepDecorator):
             if gh_src:
                 _inject_secrets(decorators, gh_src)
 
+            # A user's own @secrets is fetched on the driver and does not
+            # reach the pod on its own -- see _resolve_secret_env. Recorded
+            # here because task_decorate is not given the decorator list.
+            self._secret_sources = _find_secret_sources(decorators, injected=gh_src)
+            self._secret_role = None
+            for _d in decorators:
+                if getattr(_d, "name", "") == "secrets":
+                    self._secret_role = (getattr(_d, "attributes", {}) or {}).get("role")
+                    break
+
         # sys.stdout.write, not logger(): Metaflow's logger stamps every
         # line with "YYYY-MM-DD HH:MM:SS.mmm ", which every other
         # [remote_step] line — all written from the driver body — does not
@@ -1332,6 +1342,19 @@ class RemoteStepDecorator(StepDecorator):
                 # step body runs here — not on the driver Metaflow set them
                 # on. Applied last so an explicit @environment wins over the
                 # forwarded Outerbounds context.
+                # A sibling @secrets, resolved here because the pod inherits
+                # nothing from the driver's environment. Before @environment
+                # so an explicit @environment(vars=...) still wins.
+                _secret_env = _resolve_secret_env(
+                    getattr(self, "_secret_sources", None) or [],
+                    getattr(self, "_secret_role", None),
+                )
+                if _secret_env:
+                    # Names only. The values are the secret.
+                    sys.stdout.write(
+                        f"[remote_step] forwarding @secrets to the runner: {', '.join(sorted(_secret_env))}\n"
+                    )
+                    runner_env.update(_secret_env)
                 runner_env.update(getattr(self, "_env_vars", None) or {})
                 if "METAFLOW_SERVICE_HEADERS" not in runner_env:
                     _auth = runner_env.get("METAFLOW_SERVICE_AUTH_KEY")
@@ -1641,6 +1664,67 @@ def _drop_hf_hub(decorators) -> list[dict]:
 # Cap what we are willing to pull into a Small-tier driver to do it: a report
 # is kilobytes, and silently loading a 10 GB DataFrame would OOM the driver.
 MAX_CARD_ATTR_BYTES = 64 * 1024 * 1024
+
+
+def _find_secret_sources(decorators, injected: str | None = None) -> list:
+    """Sources on a sibling @secrets, excluding one we injected ourselves.
+
+    Kept separate from resolution so step_init can record them: by the time
+    the driver submits, `task_decorate` no longer has the decorator list.
+    """
+    out: list = []
+    for d in decorators:
+        if getattr(d, "name", "") != "secrets":
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        for src in attrs.get("sources") or []:
+            if injected and isinstance(src, str) and src == injected:
+                continue
+            out.append(src)
+    return out
+
+
+def _resolve_secret_env(sources: list, role: str | None = None) -> dict[str, str]:
+    """Env vars from a sibling @secrets, for forwarding to the runner pod.
+
+    Metaflow's @secrets fetches into the *driver's* os.environ during
+    task_pre_step. The runner is a separate pod in a separate cluster and
+    inherits nothing, and the forwarding list carries only GITHUB_TOKEN plus
+    METAFLOW_/OBP_/OUTERBOUNDS_ prefixes -- so a value exported under its own
+    name, which is the whole point of @secrets, never crossed. The step body
+    then died on os.environ["..."] with a KeyError naming a variable the user
+    could see was configured, or worse built an unauthenticated client.
+
+    Resolved through Metaflow's own SecretSpec and provider rather than
+    guessed at from os.environ, so the keys are exactly the ones this @secrets
+    defines and nothing else rides along.
+
+    Never fatal: a step whose secret cannot be resolved here would have failed
+    in the pod anyway, and Metaflow's own task_pre_step raises on the same
+    source first, so this only ever reports.
+    """
+    if not sources:
+        return {}
+    try:
+        from metaflow.plugins.secrets.secrets_decorator import get_secrets_backend_provider
+        from metaflow.plugins.secrets.secrets_spec import SecretSpec
+    except ImportError:  # pragma: no cover
+        return {}
+    out: dict[str, str] = {}
+    for src in sources:
+        try:
+            if isinstance(src, dict):
+                spec = SecretSpec.secret_spec_from_dict(src, role=role)
+            else:
+                spec = SecretSpec.secret_spec_from_str(str(src), role=role)
+            provider = get_secrets_backend_provider(spec.secrets_backend_type)
+            resolved = provider.get_secret_as_dict(spec.secret_id, options=spec.options, role=spec.role)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[remote_step] could not resolve @secrets source {src!r} for the runner: {exc}\n")
+            continue
+        for k, v in (resolved or {}).items():
+            out[str(k)] = str(v)
+    return out
 
 
 def _find_card_attributes(decorators) -> set[str]:
