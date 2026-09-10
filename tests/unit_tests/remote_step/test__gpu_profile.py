@@ -134,3 +134,27 @@ def test_summary_survives_unusable_readings(capsys, series):
 def test_the_artifact_keeps_the_name_gpu_profile_uses():
     """User code already reads `gpu_profile_data`, so keep the name."""
     assert _GpuSampler.ARTIFACT_NAME == "gpu_profile_data"
+
+
+def test_the_decorator_is_dropped_from_the_driver():
+    """The driver has no GPU, and its empty reading overwrites the pod's.
+
+    @gpu_profile writes `gpu_profile_data` at task_finished, which runs after
+    the runner's outputs are applied — so leaving it on the driver replaced a
+    real sampling with `nvidia-smi not found`.
+    """
+    from remote_step.plugins.remote_step_decorator import _drop_gpu_profile
+
+    decorators = [Deco("gpu_profile", interval=1), Deco("resources", gpu=1)]
+    removed = _drop_gpu_profile(decorators)
+
+    assert [d.name for d in decorators] == ["resources"]
+    assert removed[0]["interval"] == 1
+
+
+def test_dropping_when_there_is_no_gpu_profile_changes_nothing():
+    from remote_step.plugins.remote_step_decorator import _drop_gpu_profile
+
+    decorators = [Deco("resources", gpu=1)]
+    assert _drop_gpu_profile(decorators) == []
+    assert len(decorators) == 1

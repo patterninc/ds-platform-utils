@@ -312,6 +312,19 @@ Legend for **Status**:
   is the keystone here, not extra GPU work.
 - Degrades quietly by design: no GPU visible, or no profiler in the image, logs
   a line and carries on rather than failing the step.
+- **`@gpu_profile` is dropped from the driver.** It samples wherever it runs,
+  which for a remote step is a pod with no GPU, and then writes its own
+  `gpu_profile_data` at `task_finished` — *after* the runner's outputs are
+  applied. So the driver's empty reading silently replaced the real one. Seen
+  live on `GpuFlow` run 238606, where the step body found the L4 and ran a
+  matmul on it while the artifact said:
+
+  ```
+  {'error': 'nvidia-smi not found', 'devices': [], 'profile': {}}
+  ```
+
+  The give-away was the shape: that is the decorator's own artifact (`profile`
+  key), not the runner's (`info` / `readings`).
 
 ### 15. `compute_pool` argument to `@kubernetes` — ✅
 - **Uses**: 10 sites (`g6e-4xlarge-nlp`, `c8a-8xlarge-content`).
@@ -466,6 +479,25 @@ Legend for **Status**:
 ---
 
 ## Execution modes
+
+> **Every gap fix above was also verified through Argo, not only `run`.** That
+> matters because `step_init` executes at *template-render* time on Argo as
+> well as in the pod — so the decorator drops (`@kubernetes`, `@model`,
+> `@huggingface_hub`, `@gpu_profile`) could in principle change the generated
+> template — and because Argo builds foreach and join inputs by a different
+> route (`--input-paths`, split indexes) than a local run.
+>
+> Neither turned out to be a problem:
+>
+> | flow | Argo run | covers |
+> |---|---|---|
+> | `GapsFlow` | `argo-gapsflow-nrckb` | foreach `self.input` (3 branches) + join + merge_artifacts |
+> | `CardFlow` | `argo-cardflow-d8g46` | `current.card` replay |
+> | `SibsFlow` | `argo-sibsflow-mqpjc` | `@environment`, `@catch` original exception |
+> | `ProjFlow` | `argo-gapcheck.prod.projflow-mrdbj` | `@project` / `is_production`, deployed `--production` |
+>
+> All four finished successfully.
+
 
 ### E1. `run --with kubernetes` — ✅
 

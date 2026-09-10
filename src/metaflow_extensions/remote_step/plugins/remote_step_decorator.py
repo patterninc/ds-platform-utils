@@ -883,6 +883,10 @@ class RemoteStepDecorator(StepDecorator):
         self._env_vars = _find_env_vars(decorators)
         self._user_timeout_minutes = _find_timeout_minutes(decorators)
         self._gpu_profile = _find_gpu_profile(decorators)
+        if self._gpu_profile:
+            # Read before dropping. The driver cannot see a GPU, and its empty
+            # reading would overwrite the runner's.
+            _drop_gpu_profile(decorators)
         self._model_loads = _find_model_loads(decorators)
         if self._model_loads:
             # Read before dropping, since dropping removes the attributes.
@@ -1492,6 +1496,23 @@ def _find_hf_loads(decorators) -> dict | None:
         refs = [load] if isinstance(load, (str, dict)) else list(load)
         return {"load": refs, "temp_dir_root": attrs.get("temp_dir_root")}
     return None
+
+
+def _drop_gpu_profile(decorators) -> list[dict]:
+    """Remove a sibling @gpu_profile so the driver does not also profile.
+
+    It samples wherever it runs, which for a remote step is the driver — a pod
+    with no GPU, so it reports `nvidia-smi not found` — and then writes its
+    `gpu_profile_data` artifact at task_finished, *after* the runner's outputs
+    are applied. So the driver's empty reading silently overwrote the real one
+    sampled next to the GPU.
+    """
+    removed: list[dict] = []
+    for d in list(decorators):
+        if getattr(d, "name", "") == "gpu_profile":
+            removed.append(dict(getattr(d, "attributes", {}) or {}))
+            decorators.remove(d)
+    return removed
 
 
 def _drop_hf_hub(decorators) -> list[dict]:
