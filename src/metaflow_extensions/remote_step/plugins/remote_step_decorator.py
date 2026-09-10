@@ -1509,13 +1509,17 @@ def _find_hf_loads(decorators) -> dict | None:
 
 
 def _drop_gpu_profile(decorators) -> list[dict]:
-    """Remove a sibling @gpu_profile so the driver does not also profile.
+    """Remove a classic @gpu_profile so the driver does not also profile.
 
     It samples wherever it runs, which for a remote step is the driver — a pod
-    with no GPU, so it reports `nvidia-smi not found` — and then writes its
-    `gpu_profile_data` artifact at task_finished, *after* the runner's outputs
-    are applied. So the driver's empty reading silently overwrote the real one
-    sampled next to the GPU.
+    with no GPU, so it reports `nvidia-smi not found`.
+
+    **This only catches a decorator literally named `gpu_profile`.** In current
+    Metaflow @gpu_profile is a StepMutator that rewrites itself into a `card`
+    plus a `user_step_decorator`, and that wrapper is not in this list, so it
+    keeps running on the driver and still writes `gpu_profile_data` at
+    task_finished. That is why the runner writes `remote_gpu_profile` instead
+    of competing for the same name.
     """
     removed: list[dict] = []
     for d in list(decorators):
@@ -1581,18 +1585,28 @@ def _hydrate_for_card(name: str, ref):
     return value
 
 
+# The card id @gpu_profile's mutator injects. Keying off this is the reliable
+# way to notice the decorator: @gpu_profile is a StepMutator, so by the time
+# step_init runs it has rewritten itself into a `card` plus a
+# `user_step_decorator` wrapper, and nothing in the list is named
+# "gpu_profile". The card, though, is an ordinary decorator and is there.
+GPU_PROFILE_CARD_ID = "gpu_profile"
+
+
 def _find_gpu_profile(decorators) -> dict | None:
     """A sibling @gpu_profile's settings, or None if the step has none.
 
-    The decorator itself samples on the driver, which has no GPU, so for a
-    `@remote_step` it measured nothing. The runner samples instead; this just
-    carries the request and its interval across.
+    The decorator samples wherever it runs, which for a remote step is the
+    driver — a pod with no GPU. The runner samples instead; this carries the
+    request across.
     """
     for d in decorators:
-        if getattr(d, "name", "") != "gpu_profile":
-            continue
+        name = getattr(d, "name", "") or ""
         attrs = getattr(d, "attributes", {}) or {}
-        return {"interval": int(attrs.get("interval") or 1)}
+        # Written by hand as a classic decorator (older Metaflow), or found
+        # via the card its mutator injects (current Metaflow).
+        if name == "gpu_profile" or (name == "card" and attrs.get("id") == GPU_PROFILE_CARD_ID):
+            return {"interval": int(attrs.get("interval") or 1)}
     return None
 
 

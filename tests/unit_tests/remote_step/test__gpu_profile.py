@@ -31,6 +31,20 @@ def test_gpu_profile_is_detected_with_its_default_interval():
     assert _find_gpu_profile([Deco("gpu_profile")]) == {"interval": 1}
 
 
+def test_gpu_profile_is_detected_through_the_card_its_mutator_injects():
+    """The realistic case. @gpu_profile is a StepMutator: by step_init it has
+    rewritten itself into a card plus a user_step_decorator, and nothing in the
+    list is named "gpu_profile" any more.
+    """
+    decos = [Deco("card", type="blank", id="gpu_profile", refresh_interval=5)]
+    assert _find_gpu_profile(decos) == {"interval": 1}
+
+
+def test_an_unrelated_card_is_not_mistaken_for_gpu_profile():
+    assert _find_gpu_profile([Deco("card", type="html", id="dqv_report")]) is None
+    assert _find_gpu_profile([Deco("card", type="blank")]) is None
+
+
 def test_an_explicit_interval_is_carried():
     assert _find_gpu_profile([Deco("gpu_profile", interval=5)]) == {"interval": 5}
 
@@ -131,9 +145,12 @@ def test_summary_survives_unusable_readings(capsys, series):
     _GpuSampler._log_summary({"gpu-0": series})
 
 
-def test_the_artifact_keeps_the_name_gpu_profile_uses():
-    """User code already reads `gpu_profile_data`, so keep the name."""
-    assert _GpuSampler.ARTIFACT_NAME == "gpu_profile_data"
+def test_the_artifact_name_cannot_be_clobbered_by_the_driver():
+    """@gpu_profile is a StepMutator, so its wrapper still runs on the driver
+    and writes `gpu_profile_data` at task_finished — after our outputs are
+    applied. A distinct name is the only way ours survives.
+    """
+    assert _GpuSampler.ARTIFACT_NAME == "remote_gpu_profile"
 
 
 def test_the_decorator_is_dropped_from_the_driver():

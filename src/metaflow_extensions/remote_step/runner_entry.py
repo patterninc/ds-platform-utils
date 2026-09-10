@@ -449,7 +449,13 @@ class _GpuSampler:
     artifact and a log summary instead.
     """
 
-    ARTIFACT_NAME = "gpu_profile_data"
+    # Deliberately *not* "gpu_profile_data". @gpu_profile is a StepMutator, so
+    # its wrapper still runs on the driver and writes that name at
+    # task_finished — after the runner's outputs are applied — which silently
+    # replaced our reading with the driver's `nvidia-smi not found`. A distinct
+    # name cannot be clobbered.
+    ARTIFACT_NAME = "remote_gpu_profile"
+    CARD_ID = "gpu_profile"
 
     def __init__(self, interval: int = 1):
         self._interval = interval
@@ -502,7 +508,47 @@ class _GpuSampler:
         if not readings:
             return None
         self._log_summary(readings)
+        self._append_card(readings)
         return {"info": self.info, "readings": readings}
+
+    def _append_card(self, readings: dict) -> None:
+        """Put a summary on the `gpu_profile` card the mutator injected.
+
+        That card is created on the driver and would otherwise render whatever
+        the driver's own profiling found, which is nothing. Appending through
+        the card recorder means the driver replays this into it.
+        """
+        try:
+            from metaflow import current
+            from metaflow.cards import Markdown, Table
+
+            card = current.card[self.CARD_ID]
+            info = self.info or {}
+            card.append(Markdown("# GPU profile (sampled in the runner pod)"))
+            card.append(
+                Markdown(
+                    f"_driver {info.get('driver_version', 'unknown')}, CUDA {info.get('cuda_version', 'unknown')}_"
+                )
+            )
+            rows = []
+            for device, series in (readings or {}).items():
+                try:
+                    utils = [float(x) for x in (series.get("gpu_utilization") or [])]
+                    mem = [float(x) for x in (series.get("memory_used") or [])]
+                except Exception:  # noqa: BLE001
+                    continue
+                rows.append(
+                    [
+                        device,
+                        f"{max(utils or [0]):.0f}%",
+                        f"{max(mem or [0]):.0f} MB",
+                        str(len(utils)),
+                    ]
+                )
+            if rows:
+                card.append(Table(rows, headers=["device", "peak util", "peak memory", "samples"]))
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(f"[remote_step] gpu_profile: could not build card: {exc}\n")
 
     @staticmethod
     def _log_summary(readings: dict) -> None:
