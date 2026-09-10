@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import concurrent.futures
+import contextlib
 import hashlib
 import importlib
 import io
@@ -209,6 +210,119 @@ def _load_models(spec: dict, fake) -> _ModelStandIn | None:
     names = [str(n) for n in artifact_references]
     sys.stdout.write(f"[remote_step] @model loaded {names} in the runner pod\n")
     return _ModelStandIn(loaded=loaded)
+
+
+class _HuggingfaceLoaded:
+    """`current.huggingface_hub.loaded` — repo_id to a local path."""
+
+    def __init__(self, paths: dict[str, str]):
+        self._paths = dict(paths)
+
+    def __getitem__(self, repo_id):
+        # Accept the dict form `{"repo_id": ...}` the decorator also takes.
+        key = repo_id.get("repo_id") if isinstance(repo_id, dict) else repo_id
+        if key not in self._paths:
+            raise KeyError(f"{key!r} was not in @huggingface_hub(load=[...]) for this step")
+        return self._paths[key]
+
+    def __contains__(self, repo_id):
+        key = repo_id.get("repo_id") if isinstance(repo_id, dict) else repo_id
+        return key in self._paths
+
+    def __iter__(self):
+        return iter(self._paths)
+
+    def __len__(self):
+        return len(self._paths)
+
+    @property
+    def info(self):
+        return dict(self._paths)
+
+
+class _HuggingfaceStandIn:
+    """Stands in for `current.huggingface_hub` in the pod.
+
+    The real registry hangs off `@checkpoint`'s task-scoped
+    `CurrentCheckpointer`, which does not exist in the runner — so
+    `current.huggingface_hub` was absent and the decorator's download happened
+    on the driver, leaving the files on the wrong machine.
+
+    The read path is served here by downloading from the Hugging Face Hub
+    directly. **That is a different source from the driver's**, which serves
+    from the datastore cache and falls back to the Hub — so a repo without a
+    pinned `revision` could in principle resolve to different content. Said
+    out loud when it happens rather than left to be discovered.
+    """
+
+    def __init__(self, loaded: _HuggingfaceLoaded):
+        self.loaded = loaded
+
+    def snapshot_download(self, *args, **kwargs):
+        raise RemoteStepError(
+            "current.huggingface_hub.snapshot_download() is not supported "
+            "inside @remote_step — it persists into the Metaflow datastore, "
+            "which the runner cannot write to. Use "
+            "@huggingface_hub(load=[...]) to read a repo, or move the "
+            "persist call to a non-remote step."
+        )
+
+    @contextlib.contextmanager
+    def load(self, repo_id=None, path=None, **kwargs):
+        """Context manager giving a local path, as the real registry does."""
+        key = repo_id.get("repo_id") if isinstance(repo_id, dict) else repo_id
+        if key in self.loaded:
+            yield self.loaded[key]
+            return
+        dest = _hf_snapshot(key, path=path, **kwargs)
+        yield dest
+
+
+def _hf_snapshot(repo_id: str, path=None, **kwargs) -> str:
+    """Download one HF repo to a local directory and return the path."""
+    import tempfile
+
+    # Required here rather than up front: this is the only place it is used,
+    # so a step that never reaches a fetch does not need the package.
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        raise RemoteStepError(
+            "@huggingface_hub needs the `huggingface_hub` package in the "
+            "step's environment — add it to @pypi_base / @uv_pypi_base."
+        ) from exc
+
+    dest = path or tempfile.mkdtemp(prefix="remote_step_hf_")
+    os.makedirs(dest, exist_ok=True)
+    allowed = {k: v for k, v in kwargs.items() if k in ("revision", "allow_patterns", "ignore_patterns", "repo_type")}
+    snapshot_download(repo_id=repo_id, local_dir=dest, **allowed)
+    return dest
+
+
+def _load_hf_repos(spec: dict) -> _HuggingfaceStandIn | None:
+    """Fetch every `@huggingface_hub(load=[...])` repo into the pod."""
+    request = spec.get("hf_loads") or {}
+    refs = request.get("load")
+    if not refs:
+        return None
+
+    sys.stdout.write(
+        "[remote_step] @huggingface_hub: downloading from the Hugging Face Hub "
+        "(the driver would have served these from the datastore cache)\n"
+    )
+    paths: dict[str, str] = {}
+    for ref in refs:
+        kwargs = dict(ref) if isinstance(ref, dict) else {"repo_id": ref}
+        repo_id = kwargs.pop("repo_id", None)
+        if not repo_id:
+            continue
+        try:
+            paths[repo_id] = _hf_snapshot(repo_id, path=kwargs.pop("path", None), **kwargs)
+            sys.stdout.write(f"[remote_step] @huggingface_hub loaded {repo_id}\n")
+        except Exception as exc:  # noqa: BLE001
+            # Loud: the body is about to read a path that is not there.
+            raise RemoteStepError(f"@huggingface_hub could not fetch {repo_id!r}: {exc}") from exc
+    return _HuggingfaceStandIn(loaded=_HuggingfaceLoaded(paths))
 
 
 CARD_COMPONENTS_FILENAME = "card_components.pkl"
@@ -904,6 +1018,19 @@ def main(spec_uri: str | None = None) -> int:
 
             _current._model = model_standin
             type(_current).model = property(fget=lambda _self: model_standin)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Same story for @huggingface_hub: its registry needs @checkpoint's
+    # task-scoped state, which does not exist here, so the repos are fetched
+    # in the pod instead of on the driver.
+    hf_standin = _load_hf_repos(spec)
+    if hf_standin is not None:
+        try:
+            from metaflow import current as _current
+
+            _current._huggingface_hub = hf_standin
+            type(_current).huggingface_hub = property(fget=lambda _self: hf_standin)
         except Exception:  # noqa: BLE001
             pass
 

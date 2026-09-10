@@ -153,11 +153,32 @@ Legend for **Status**:
   plain artifact instead. Saving needs write access to the model store from
   the pod, which is a separate piece of work.
 
-### 8. `current.huggingface_hub` / `@huggingface_hub` — ❌
+### 8. `current.huggingface_hub` / `@huggingface_hub` — ✅ read path; persist refused
 - **Uses**: 17 sites.
-- Same shape as `@model`: decorator runs on driver, Batch container doesn't
-  have the HF snapshots.
-- **Options**: mirror decisions for `@model`.
+- Same shape as `@model` — the decorator downloaded on the driver — but harder
+  underneath: the registry hangs off `@checkpoint`'s task-scoped
+  `CurrentCheckpointer`, which does not exist in the runner, so it cannot
+  simply be rebuilt the way `LoadedModels` can.
+- **Now**: `@huggingface_hub(load=[...])` is dropped from the driver and the
+  repos are fetched in the pod, exposing `current.huggingface_hub.loaded` and
+  the `load(...)` context manager. Entries may be a bare `repo_id` or a dict
+  of `snapshot_download` arguments; `revision` and the pattern filters are
+  carried through.
+- **The source changes, and that is announced.** The driver serves from the
+  datastore cache and falls back to the Hub; the pod goes to the Hub directly.
+  For a repo without a pinned `revision` those are not guaranteed to be the
+  same content, so the switch is logged rather than left to be discovered:
+
+  ```
+  [remote_step] @huggingface_hub: downloading from the Hugging Face Hub
+                (the driver would have served these from the datastore cache)
+  ```
+
+  Pin `revision` if that matters. Reinstating the datastore cache means
+  rebuilding the checkpointer in the pod — the deeper fix, not done.
+- `current.huggingface_hub.snapshot_download()` is refused: it persists into
+  the datastore, which the pod cannot write to. Same boundary as
+  `current.model.save()`.
 
 ### 9. Metaflow client inside step body — ✅ (it already works)
 - **Uses**: 30+ sites of `Flow(...).latest_successful_run`, `Run(pathspec=...)`,
@@ -570,7 +591,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@pypi` / `@pypi_base` | 92 | ✅ |
 | `@environment` | 1 | ✅ gap #11 |
 | `@model` | 19 | ✅ load, gap #7 |
-| `@huggingface_hub` | 17 | ❌ gap #8 |
+| `@huggingface_hub` | 17 | ✅ read, gap #8 |
 | `@gpu_profile` | 14 | ⚠️ gap #14 — data yes, card blocked on #6 |
 | `compute_pool` (kwarg on `@kubernetes`) | 10 | ✅ gap #15 |
 | `@conda` / `@conda_base` | 2 | ✅ refused by design, gap #16 |
@@ -580,7 +601,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `current.card` | 66 | ✅ gap #6 |
 | `current.run_id` | 40 | ✅ |
 | `current.model` | 18 | ✅ load, gap #7 |
-| `current.huggingface_hub` | 17 | ❌ gap #8 |
+| `current.huggingface_hub` | 17 | ✅ read, gap #8 |
 | `current.flow_name` | 14 | ✅ |
 | `current.run.add_tags(...)` | 7 | ✅ gap #10 |
 | `current.branch_name` / `project_name` | 4 | ✅ gap #5 |

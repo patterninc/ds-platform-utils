@@ -887,6 +887,9 @@ class RemoteStepDecorator(StepDecorator):
         if self._model_loads:
             # Read before dropping, since dropping removes the attributes.
             _drop_model(decorators)
+        self._hf_loads = _find_hf_loads(decorators)
+        if self._hf_loads:
+            _drop_hf_hub(decorators)
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._resources = resolve(
@@ -1162,6 +1165,7 @@ class RemoteStepDecorator(StepDecorator):
                     is_join=(node_type == "join"),
                     join_branches=_join_branches(inputs),
                     model_loads=getattr(self, "_model_loads", None),
+                    hf_loads=getattr(self, "_hf_loads", None),
                     gpu_profile=bool(getattr(self, "_gpu_profile", None)),
                     gpu_profile_interval=((getattr(self, "_gpu_profile", None) or {}).get("interval") or 1),
                 )
@@ -1466,6 +1470,35 @@ def _drop_model(decorators) -> list[dict]:
     removed: list[dict] = []
     for d in list(decorators):
         if getattr(d, "name", "") == "model":
+            removed.append(dict(getattr(d, "attributes", {}) or {}))
+            decorators.remove(d)
+    return removed
+
+
+def _find_hf_loads(decorators) -> dict | None:
+    """A sibling @huggingface_hub's `load` request, or None.
+
+    Same reasoning as @model: the download belongs next to the step body, not
+    on the driver. Entries may be a bare repo_id or a dict carrying
+    snapshot_download arguments, and both survive JSON as-is.
+    """
+    for d in decorators:
+        if getattr(d, "name", "") != "huggingface_hub":
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        load = attrs.get("load")
+        if not load:
+            return None
+        refs = [load] if isinstance(load, (str, dict)) else list(load)
+        return {"load": refs, "temp_dir_root": attrs.get("temp_dir_root")}
+    return None
+
+
+def _drop_hf_hub(decorators) -> list[dict]:
+    """Remove a sibling @huggingface_hub so the driver does not download."""
+    removed: list[dict] = []
+    for d in list(decorators):
+        if getattr(d, "name", "") == "huggingface_hub":
             removed.append(dict(getattr(d, "attributes", {}) or {}))
             decorators.remove(d)
     return removed
