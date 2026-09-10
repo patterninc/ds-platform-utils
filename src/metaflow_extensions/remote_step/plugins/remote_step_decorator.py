@@ -565,6 +565,44 @@ DRIVER_PLACEMENT_ATTRS = (
 )
 
 
+# Subcommands that neither run a task nor render a template. They act on a
+# deployment that already exists, so the step's own configuration is not
+# consulted and need not resolve. `argo-workflows create` is deliberately
+# absent: it renders the template and does need everything.
+DISPATCH_ONLY_COMMANDS = frozenset(
+    {
+        "trigger",
+        "delete",
+        "terminate",
+        "suspend",
+        "unsuspend",
+        "status",
+        "list-runs",
+        "logs",
+        "card",
+        "dump",
+        "tag",
+    }
+)
+
+
+def _is_dispatch_only_command() -> bool:
+    """Whether this invocation only acts on an existing deployment."""
+    argv = sys.argv[1:]
+    # Read the first bare word: options and their values are skipped, so
+    # `--with remote_step ... argo-workflows trigger` still resolves.
+    for i, arg in enumerate(argv):
+        if arg.startswith("-"):
+            continue
+        # A value belonging to the preceding option is not a subcommand.
+        if i and argv[i - 1].startswith("--") and "=" not in argv[i - 1]:
+            continue
+        if arg in ("argo-workflows", "step-functions", "argo-workflows-legacy"):
+            continue
+        return arg in DISPATCH_ONLY_COMMANDS
+    return False
+
+
 def _default_kubernetes_image() -> str:
     """The image Metaflow would impute for a @kubernetes without one.
 
@@ -775,6 +813,13 @@ class RemoteStepDecorator(StepDecorator):
         logger,
     ):
         """Runs once at flow init. Fails fast on refusals."""
+        if _is_dispatch_only_command():
+            # Nothing about the step is decided here, so nothing about it needs
+            # to be resolvable. Notably `argo-workflows trigger` takes no
+            # --tag, so a team that comes from one cannot be supplied to it --
+            # and demanding one made a tag-derived team unusable with Argo.
+            self._submit = False
+            return
         if step_name in ("start", "end"):
             if _attached_via_with():
                 # `--with remote_step:team=...` sweeps every step. Skip these
