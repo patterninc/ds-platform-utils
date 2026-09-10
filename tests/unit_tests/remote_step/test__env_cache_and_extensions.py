@@ -157,3 +157,35 @@ def test_the_real_extension_is_resolved_however_it_arrived():
     env = _ensure_metaflow_in_env({"python": "3.11", "packages": {}})
     assert EXT in env["packages"]
     assert env["packages"][EXT] is not None
+
+
+# ------------------------------------------- the seam to the requirements file
+#
+# _ensure_metaflow_in_env may emit an extension with an empty version, and it
+# is requirements.py in the *image* that turns that into an install line. The
+# two modules ship separately -- one via the flow's git pin, one baked into the
+# runner image -- so nothing else catches a disagreement between them, and
+# `name==` would fail the whole step's install rather than one package.
+
+
+def test_an_unpinned_extension_renders_as_a_bare_requirement(monkeypatch):
+    from remote_step.requirements import build_requirements
+
+    monkeypatch.setattr(rsd, "_METAFLOW_EXTENSION_DISTS", (("absent-dist-def", "json"),))
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {"ob-metaflow": "2.19.37.3"}})
+
+    lines = build_requirements(env["packages"])
+
+    assert "absent-dist-def" in lines, "an empty version must render as the bare name"
+    assert "absent-dist-def==" not in lines
+    assert "ob-metaflow==2.19.37.3" in lines
+
+
+def test_the_real_extension_round_trips_to_a_valid_requirement():
+    from remote_step.requirements import build_requirements
+
+    env = _ensure_metaflow_in_env({"python": "3.11", "packages": {}})
+    lines = build_requirements(env["packages"])
+
+    assert any(line == EXT or line.startswith(f"{EXT}==") for line in lines), lines
+    assert not any(line.endswith("==") for line in lines), "a dangling '==' fails the install"
