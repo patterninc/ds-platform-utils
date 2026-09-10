@@ -188,3 +188,46 @@ def test_the_mutator_shape_samples_at_one_second():
     """
     decos = [Deco("card", type="blank", id="gpu_profile", refresh_interval=5)]
     assert _find_gpu_profile(decos) == {"interval": 1}
+
+
+def test_the_reader_is_pumped_before_reading(monkeypatch):
+    """create_new_monitor only spawns `nvidia-smi -l`, which appends to a CSV.
+
+    Nothing parses that file until _update_readings() runs, so without the
+    pump read() returns {} and no artifact is ever produced — which is exactly
+    how the first live GPU run linked only one artifact.
+    """
+    import metaflow_extensions.outerbounds.profilers.gpu as gpu_mod
+
+    calls = []
+
+    class FakeMonitor:
+        def __init__(self, interval=1):
+            pass
+
+        def create_new_monitor(self):
+            pass
+
+        def _update_readings(self):
+            calls.append("update")
+
+        def read(self):
+            calls.append("read")
+            return {"0": {"gpu_utilization": ["50"], "memory_used": ["100"]}}
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(
+        gpu_mod.GPUProfiler,
+        "read_gpu_info",
+        staticmethod(lambda: {"devices": [{"device_id": "0"}]}),
+    )
+    monkeypatch.setattr(gpu_mod, "GPUMonitor", FakeMonitor)
+
+    sampler = _GpuSampler()
+    sampler.start()
+    out = sampler.finish()
+
+    assert calls == ["update", "read"], calls
+    assert out["readings"]

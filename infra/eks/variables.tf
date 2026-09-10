@@ -70,75 +70,116 @@ variable "teams" {
     memory_borrow = string
     gpu_quota     = string
     gpu_borrow    = string
+    # CPU and memory available *on GPU nodes*. Separate from cpu_quota because
+    # cpu, memory and gpu share one Kueue resource group: a GPU pod is assigned
+    # the `gpu` flavor for everything, so it draws its cpu/memory from here.
+    # 0 for a team with no GPU quota, which also stops a CPU-only pod ever
+    # being placed on a GPU node.
+    gpu_cpu_quota     = string
+    gpu_cpu_borrow    = string
+    gpu_memory_quota  = string
+    gpu_memory_borrow = string
   }))
   default = {
     forecasting = {
-      cpu_quota     = "256"
-      cpu_borrow    = "512"
-      memory_quota  = "1024Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "256"
+      cpu_borrow        = "512"
+      memory_quota      = "1024Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     advertising = {
-      cpu_quota     = "128"
-      cpu_borrow    = "512"
-      memory_quota  = "512Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "128"
+      cpu_borrow        = "512"
+      memory_quota      = "512Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     market-intelligence = {
-      cpu_quota     = "256"
-      cpu_borrow    = "512"
-      memory_quota  = "1024Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "256"
+      cpu_borrow        = "512"
+      memory_quota      = "1024Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     operations = {
-      cpu_quota     = "128"
-      cpu_borrow    = "512"
-      memory_quota  = "512Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "128"
+      cpu_borrow        = "512"
+      memory_quota      = "512Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     # NLP is part of content, so this namespace carries that work — hence the
     # cluster's only GPU quota, and a larger CPU/memory allocation than the
     # other domains. Dropping the GPU quota when the nlp namespace went away
     # would leave the NLP flows unschedulable rather than merely cramped.
     content = {
-      cpu_quota     = "256"
-      cpu_borrow    = "512"
-      memory_quota  = "1024Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "8"
-      gpu_borrow    = "16"
+      cpu_quota         = "256"
+      cpu_borrow        = "512"
+      memory_quota      = "1024Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "8"
+      gpu_borrow        = "16"
+      gpu_cpu_quota     = "192"
+      gpu_cpu_borrow    = "384"
+      gpu_memory_quota  = "768Gi"
+      gpu_memory_borrow = "1536Gi"
     }
     revops = {
-      cpu_quota     = "128"
-      cpu_borrow    = "512"
-      memory_quota  = "512Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "128"
+      cpu_borrow        = "512"
+      memory_quota      = "512Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     reference = {
-      cpu_quota     = "128"
-      cpu_borrow    = "512"
-      memory_quota  = "512Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "128"
+      cpu_borrow        = "512"
+      memory_quota      = "512Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     demand-generation = {
-      cpu_quota     = "128"
-      cpu_borrow    = "512"
-      memory_quota  = "512Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "4"
+      cpu_quota         = "128"
+      cpu_borrow        = "512"
+      memory_quota      = "512Gi"
+      memory_borrow     = "2048Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "4"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
     # Where a step lands when neither @remote_step(team=...) nor
     # `--tag ds.domain:<team>` names one. Ad-hoc and exploratory work, so the
@@ -146,12 +187,16 @@ variable "teams" {
     # be able to get a node, but never at the cost of a team's own capacity.
     # No GPU — an untagged run should not silently take a GPU node.
     sandbox = {
-      cpu_quota     = "32"
-      cpu_borrow    = "64"
-      memory_quota  = "128Gi"
-      memory_borrow = "256Gi"
-      gpu_quota     = "0"
-      gpu_borrow    = "0"
+      cpu_quota         = "32"
+      cpu_borrow        = "64"
+      memory_quota      = "128Gi"
+      memory_borrow     = "256Gi"
+      gpu_quota         = "0"
+      gpu_borrow        = "0"
+      gpu_cpu_quota     = "0"
+      gpu_cpu_borrow    = "0"
+      gpu_memory_quota  = "0"
+      gpu_memory_borrow = "0"
     }
   }
 }

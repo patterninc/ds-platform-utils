@@ -145,6 +145,12 @@ data "kubectl_file_documents" "kueue_teams" {
     memory_borrow = each.value.memory_borrow
     gpu_quota     = each.value.gpu_quota
     gpu_borrow    = each.value.gpu_borrow
+    # cpu/memory on GPU nodes. A GPU pod is assigned the `gpu` flavor for
+    # every resource, so it draws these rather than cpu_quota/memory_quota.
+    gpu_cpu_quota     = each.value.gpu_cpu_quota
+    gpu_cpu_borrow    = each.value.gpu_cpu_borrow
+    gpu_memory_quota  = each.value.gpu_memory_quota
+    gpu_memory_borrow = each.value.gpu_memory_borrow
   })
 }
 

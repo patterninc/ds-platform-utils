@@ -497,6 +497,14 @@ class _GpuSampler:
         if self._monitor is None:
             return None
         try:
+            # Pump the reader first. `create_new_monitor()` only spawns the
+            # `nvidia-smi -l` process, which appends to a CSV; nothing parses
+            # that file until `_update_readings()` runs, so `read()` on its own
+            # returns an empty dict and the artifact is never produced.
+            self._monitor._update_readings()
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(f"[remote_step] gpu_profile: update failed: {exc}\n")
+        try:
             readings = self._monitor.read()
         except Exception as exc:  # noqa: BLE001
             sys.stdout.write(f"[remote_step] gpu_profile: read failed: {exc}\n")
