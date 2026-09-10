@@ -25,6 +25,8 @@ import threading
 import time
 from typing import IO
 
+import urllib3
+
 from remote_step.errors import (
     KilledByUser,
     NodeLostError,
@@ -264,10 +266,18 @@ def wait(
                     job_name=job_name,
                     namespace=namespace,
                 ) from exc
-            except (ApiError, OSError) as exc:
+            except (ApiError, OSError, urllib3.exceptions.HTTPError) as exc:
                 # Transient: a 5xx, a dropped connection, a token racing
                 # renewal. The pod is very likely still running, so failing
                 # the step here would abandon live work.
+                #
+                # urllib3.exceptions.HTTPError has to be in here explicitly.
+                # k8s.py talks to the API through a urllib3 PoolManager, and
+                # none of urllib3's errors -- MaxRetryError, ProtocolError,
+                # ReadTimeoutError, NewConnectionError -- derive from
+                # OSError. The pool retries GETs three times with a 0.5s
+                # backoff factor, so roughly 3.5s of trouble was absorbed
+                # there and anything longer escaped this handler entirely.
                 api_errors += 1
                 if api_errors >= MAX_CONSECUTIVE_API_ERRORS:
                     if streamer is not None:
@@ -394,6 +404,23 @@ def wait(
     except KeyboardInterrupt:
         _cleanup("interrupt")
         raise KilledByUser("interrupted by user", job_name=job_name) from None
+    except KilledByUser:
+        # The path that raises this has already cleaned up.
+        raise
+    except BaseException as exc:
+        # Nothing may leave this function with the Job still running. The
+        # `finally` below only restores signal handlers, so before this an
+        # unexpected driver-side failure returned control to Metaflow while
+        # the pod carried on -- billing, unwatched -- until
+        # `activeDeadlineSeconds` expired, up to `job_timeout_minutes` (4
+        # hours by default) later. On a 96-vCPU or GPU step that is the exact
+        # cost blowout the deadline exists to bound.
+        #
+        # A delete attempt is safe on every path: `_cleanup` swallows its own
+        # errors and prints the manual `kubectl delete` if it cannot reach
+        # the API, which is the likely case when contact was already lost.
+        _cleanup(f"driver error: {type(exc).__name__}")
+        raise
     finally:
         for sig, handler in previous.items():
             try:
