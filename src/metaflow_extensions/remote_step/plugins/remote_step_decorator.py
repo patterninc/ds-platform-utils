@@ -62,10 +62,6 @@ DEFAULT_DRIVER_CPU = 2
 DEFAULT_DRIVER_MEMORY_MB = 8192
 DEFAULT_GITHUB_SECRET_SOURCE = "outerbounds.remote-step-github"
 CACHED_ENV_FILENAME = ".remote_step_env.json"
-# `--with local_step` makes this decorator inert. An explicit opt-out, never
-# inferred: @remote_step names where a step runs, the same way @kubernetes and
-# @batch do, and both of those submit on a plain `run`.
-MARKER_LOCAL = "local_step"
 # `--tag ds.domain:<team>` can stand in for team= on the decorator, since
 # flows already label their owning domain this way.
 TEAM_TAG_PREFIX = "ds.domain:"
@@ -254,8 +250,8 @@ def _is_k8s_task_runtime() -> bool:
 
     Used only to decide whether injecting @kubernetes would record useful pod
     metadata — METAFLOW_KUBERNETES_WORKLOAD is the same flag
-    KubernetesDecorator.task_pre_step gates on. It is NOT part of
-    _should_submit(); see the note in _is_argo_context().
+    KubernetesDecorator.task_pre_step gates on. It deliberately says nothing
+    about where a step body runs; see the note in _is_argo_context().
     """
     return bool(os.environ.get("METAFLOW_KUBERNETES_WORKLOAD"))
 
@@ -352,29 +348,6 @@ def _outerbounds_config() -> dict:
         return {}
 
 
-def _should_submit(decorators) -> bool:
-    """Whether this step's body runs on the EKS cluster.
-
-    True unless `--with local_step` says otherwise. @remote_step names where a
-    step runs, the same way @kubernetes and @batch do, and both of those
-    submit on a plain `run` — Metaflow's local runtime schedules the DAG
-    locally and rewrites each such step to run remotely. A decorator that
-    meant "EKS" under Argo and "my laptop" otherwise would have to be re-read
-    every time someone looked at a flow.
-
-        run                                      driver local, body on EKS
-        run --with kubernetes                    driver in an OB pod, body on EKS
-        argo-workflows create/trigger            driver in the Argo pod, body on EKS
-        run --with local_step                    body in-process
-        run --with local_step --with kubernetes  body in an OB pod
-
-    Reads the decorator list rather than the environment on purpose: `--with`
-    is carried in top_level_options and so reaches the command Metaflow builds
-    for a remote step, whereas an env var would not be forwarded into a pod.
-    Both the operator's machine and the pod run step_init, and they have to
-    agree — otherwise a step starts in one place and finishes in another.
-    """
-    return not any(getattr(d, "name", "") == MARKER_LOCAL for d in decorators)
 
 
 
@@ -833,7 +806,8 @@ class RemoteStepDecorator(StepDecorator):
         # The one decision. Everything below branches on it, and it must come
         # out the same here and inside whatever pod the task later lands in —
         # both run step_init.
-        self._submit = _should_submit(decorators)
+        # Only the start/end sweep skip above can clear this.
+        self._submit = True
 
         if self._submit:
             # A sibling @kubernetes would size the *driver* pod to the step's
@@ -877,7 +851,7 @@ class RemoteStepDecorator(StepDecorator):
         #
         #   fatal: could not read Username for 'https://github.com'
         #
-        # `--with local_step` correctly skips this: no submission, no runner,
+        # Skipped for a `start`/`end` sweep skip: no submission, no runner,
         # nothing to authenticate.
         if self._submit:
             gh_src = self.attributes.get("github_secret_source")
@@ -889,21 +863,10 @@ class RemoteStepDecorator(StepDecorator):
         # [remote_step] line — all written from the driver body — does not
         # carry. Using it here made flow-init output look like a different
         # subsystem from the rest.
-        if self._submit:
-            sys.stdout.write(
-                f"[remote_step] {step_name} -> {team} · "
-                f"{format_resources(self._resources)}\n"
-            )
-        else:
-            # Loud on purpose. A step that ran in the driver's own environment
-            # proves nothing about the runner container — different wheels,
-            # host architecture, no GPU — so this must never be mistaken for
-            # a production-equivalent result.
-            sys.stdout.write(
-                f"[remote_step] {step_name} running LOCALLY — not the runner "
-                f"container, so package and architecture differences are not "
-                f"exercised.\n"
-            )
+        sys.stdout.write(
+            f"[remote_step] {step_name} -> {team} · "
+            f"{format_resources(self._resources)}\n"
+        )
         # Flush explicitly. step_init runs in the CLI process, where stdout is
         # block-buffered whenever it is a pipe rather than a tty — so without
         # this the lines sit in the buffer until interpreter exit and surface

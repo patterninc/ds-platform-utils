@@ -81,10 +81,12 @@ The driver never materialises a payload. It holds references, not data — see
 3. Resolve the pypi environment from `@pypi_base`/`@pypi`, caching it to
    `.remote_step_env.json` because Metaflow blanks those attributes at
    task-run time.
-4. Decide whether this step submits at all (§8).
-5. If submitting: drop any sibling `@kubernetes`, inject a driver-sized one
-   inheriting its placement, shrink `@resources` so Metaflow renders a Small
-   pod, and inject `@secrets` for the GitHub token.
+4. Drop any sibling `@kubernetes`, inject a driver-sized one inheriting its
+   placement, shrink `@resources` so Metaflow renders a Small pod, and inject
+   `@secrets` for the GitHub token.
+
+Every decorated step submits. The one exception is `start`/`end` under a
+`--with remote_step` sweep, which go inert — see §8.
 
 `task_decorate` replaces the step body with the driver body. At execution:
 
@@ -277,8 +279,6 @@ our EKS       rs-weeklyforecastflow-…-0    namespace forecasting
 | `run --with remote_step:team=X` | all but `start`/`end` | local process (`start`/`end`) |
 | `run --with remote_step:team=X --with kubernetes` | all but `start`/`end` | Outerbounds pod (`start`/`end`) |
 | `argo-workflows create --with remote_step:team=X` | all but `start`/`end` | Argo pod (`start`/`end`) |
-| `run --with local_step` | none | local process — *all* steps |
-| `run --with local_step --with kubernetes` | none | Outerbounds pod — *all* steps |
 
 "those decorated" means the steps carrying `@remote_step` in the flow source.
 
@@ -287,10 +287,6 @@ Metaflow's `_attach_decorators` has no exclusion for them, so an undecorated
 step runs in an Outerbounds pod rather than locally. It never puts anything on
 our EKS. Only a `--with remote_step` sweep skips those two steps, and only
 because `@remote_step` itself refuses them.
-
-`--with local_step` wins over everything, including a `--with remote_step`
-sweep in the same command: every step goes inert and runs wherever the right
-column says.
 
 ### Applying it to a whole flow
 
@@ -341,19 +337,6 @@ a typo fails at flow init instead of surfacing as a namespace error mid-run.
 **This is not an authorisation check.** A tag is as user-supplied as `team=`;
 see finding 1 in [security_review.md](security_review.md).
 
-### Opting out
-
-`--with local_step` is a no-op marker decorator that makes `@remote_step`
-inert: siblings are left untouched and the step function is returned
-unwrapped, so Metaflow does whatever it would have done anyway. Nothing is
-submitted and no quota is consumed. Every affected step says so loudly at
-flow init, because a body that ran in the driver's environment rather than the
-runner container proves nothing about production.
-
-A marker rather than an attribute because Metaflow *silently ignores* a
-`--with` decorator whose name is already on the step. A marker rather than an
-environment variable because `--with` travels in `top_level_options` and so
-reaches the command built for a remote step, where an env var would not.
 
 ---
 

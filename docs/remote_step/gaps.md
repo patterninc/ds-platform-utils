@@ -333,18 +333,7 @@ Driver in the local Python process, step body still on EKS. Consequences:
    Outerbounds UI only shows it after the task completes.
 3. **`current.is_production` is False**, as in E1.
 
-### E3. `run --with local_step` — ✅
-
-`@remote_step` becomes inert: siblings are left untouched and the step body
-runs wherever Metaflow would have put it — in-process for a plain `run`, or
-an Outerbounds pod if `--with kubernetes` is also given. Nothing is
-submitted to EKS and no Kueue quota is consumed.
-
-The body runs in the driver's environment rather than the runner container,
-so package and architecture differences are not exercised. Every affected
-step says so at flow init.
-
-### E4. `--with remote_step:team=<team>` — ✅
+### E3. `--with remote_step:team=<team>` — ✅
 
 Offloads every step without decorating any of them, the same way
 `--with kubernetes` works. Combines with the modes above: driver local on a
@@ -362,9 +351,7 @@ Each step keeps its own `@resources`, so this is not one blanket size.
 which case the flow stops being self-contained: without the tag it fails at
 flow init. That failure is clear and names both fixes, but it is a failure.
 
-`--with local_step` beats a sweep in the same command — everything goes inert.
-
-### E5. `argo-workflows create + trigger` (production) — ✅
+### E4. `argo-workflows create + trigger` (production) — ✅
 
 `_is_argo_context()` is True, so the driver gets a Small-tier `@kubernetes`
 plus `@secrets` injection and runs on the Argo pod. Credentials come from
