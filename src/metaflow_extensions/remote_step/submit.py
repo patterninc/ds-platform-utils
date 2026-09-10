@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import hashlib
 import re
 
+from remote_step import keys
 from remote_step.config import RemoteStepConfig, check_team
 from remote_step.errors import SizingError, SubmitError
 
@@ -173,6 +174,7 @@ def build_manifest(
     attempt: int,
     user: str,
     team: str,
+    perimeter: str = keys.DEFAULT_PERIMETER,
     priority: str = "normal",
     extra_env: dict[str, str] | None = None,
     timeout_minutes: int = 240,
@@ -197,6 +199,12 @@ def build_manifest(
         "remote-step.pattern.com/step": _dns1123(step_name),
         "remote-step.pattern.com/run-id": _dns1123(str(run_id)),
         "remote-step.pattern.com/attempt": str(attempt),
+        # A team namespace holds every perimeter's pods, so without this a
+        # prod run and an ad-hoc one are indistinguishable to kubectl and to
+        # anything reading labels for cost attribution. It also disambiguates
+        # the run-id label above: run ids are only unique *within* a
+        # perimeter, so a `default` and a `prod` run can share one.
+        "remote-step.pattern.com/perimeter": _dns1123(perimeter),
     }
     annotations = {
         "remote-step.pattern.com/flow-name": flow_name,
@@ -330,6 +338,7 @@ def submit(
     attempt: int,
     user: str,
     team: str,
+    perimeter: str = keys.DEFAULT_PERIMETER,
     priority: str = "normal",
     extra_env: dict[str, str] | None = None,
     timeout_minutes: int = 240,
@@ -349,6 +358,7 @@ def submit(
         attempt=attempt,
         user=user,
         team=team,
+        perimeter=perimeter,
         priority=priority,
         extra_env=extra_env,
         timeout_minutes=timeout_minutes,

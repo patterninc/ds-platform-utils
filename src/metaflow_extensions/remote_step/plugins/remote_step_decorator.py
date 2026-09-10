@@ -1204,6 +1204,7 @@ class RemoteStepDecorator(StepDecorator):
                     attempt=ctx["attempt"],
                     user=user,
                     team=team,
+                    perimeter=perimeter,
                     priority=self.attributes["priority"],
                     extra_env=runner_env,
                     timeout_minutes=self.attributes["job_timeout_minutes"],
