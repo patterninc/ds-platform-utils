@@ -1476,6 +1476,10 @@ class RemoteStepDecorator(StepDecorator):
                 # ended up running even when ``run_dqv=False``.
                 if out_funcs:
                     if node_type == "split-switch" and switch_cases and condition:
+                        # Before next(): Metaflow hashes the condition value
+                        # against the case keys, and a RemoteArtifact is
+                        # unhashable.
+                        _hydrate_condition(self_flow, condition)
                         case_map = {
                             case: getattr(self_flow, fn) for case, fn in switch_cases.items() if hasattr(self_flow, fn)
                         }
@@ -1775,6 +1779,44 @@ def _find_card_attributes(decorators) -> set[str]:
         if attr:
             names.add(str(attr))
     return names
+
+
+# A switch condition is compared against the case keys with `in`, which hashes
+# it. RemoteArtifact sets __hash__ to None, so a condition left as a reference
+# raises `TypeError: unhashable type: 'RemoteArtifact'` from inside Metaflow's
+# own next() -- naming neither the attribute nor @remote_step.
+MAX_CONDITION_ATTR_BYTES = 1 * 1024 * 1024
+
+
+def _hydrate_condition(flow, condition: str) -> None:
+    """Load a switch condition the step produced remotely, in place.
+
+    `self.next({True: self.dqv, False: self.skip}, condition="run_dqv")` sends
+    Metaflow to `condition_value not in switch_cases` (flowspec.py), and a
+    RemoteArtifact is unhashable, so the whole run died on the transition
+    after the step had already succeeded.
+
+    A condition is a scalar by construction -- it has to equal one of the case
+    keys -- so loading it costs nothing. The cap is a guard against a user
+    switching on something enormous, not an expected path.
+    """
+    if not condition:
+        return
+    ref = getattr(flow, condition, None)
+    if not isinstance(ref, RemoteArtifact):
+        return
+    size = getattr(ref, "size_bytes", 0) or 0
+    if size > MAX_CONDITION_ATTR_BYTES:
+        sys.stdout.write(
+            f"[remote_step] switch condition '{condition}' is {size / 1024 / 1024:.0f} MB, "
+            f"which is not a scalar — leaving it as a reference. The transition will "
+            f"fail; switch on a small value instead.\n"
+        )
+        return
+    try:
+        setattr(flow, condition, ref.load())
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] could not load switch condition '{condition}': {exc}\n")
 
 
 def _hydrate_for_card(name: str, ref):
