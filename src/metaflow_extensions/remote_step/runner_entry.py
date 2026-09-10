@@ -133,7 +133,11 @@ def _read_cgroup_int(*relative_paths: str) -> int | None:
 
 
 def _read_cpu_usage_seconds() -> float | None:
-    """CPU seconds this container has consumed, across all cores."""
+    """CPU seconds consumed since the *container* started, across all cores.
+
+    Cumulative for the container's whole lifetime, so it is only meaningful as
+    a difference between two readings — see `_log_resource_usage`.
+    """
     # cgroup v2: cpu.stat has "usage_usec <n>" on its first line.
     try:
         with open(os.path.join(CGROUP_ROOT, "cpu.stat")) as f:
@@ -147,12 +151,19 @@ def _read_cpu_usage_seconds() -> float | None:
     return nanos / 1_000_000_000 if nanos is not None else None
 
 
-def _log_resource_usage(spec: dict, wall_seconds: float) -> None:
+def _log_resource_usage(spec: dict, wall_seconds: float, cpu_seconds_at_start: float | None = None) -> None:
     """One line comparing what the step used against what it asked for.
 
     This is the only place the two meet. Outerbounds shows the *driver's*
     CPU/memory panel — 2 vCPU — so a step asking for 20 and using 3 looks
     perfectly sized there, and nobody ever finds out.
+
+    CPU is a *difference* between two readings of a counter that covers the
+    container's whole lifetime. The absolute reading also contains the
+    entrypoint's `uv pip install`, which burns tens of CPU-seconds across
+    several cores before the body starts; dividing that total by the body's
+    wall time reported 507549.9 of 2 vCPU for a step whose body ran in
+    milliseconds.
 
     Best-effort: a host that does not expose these files logs nothing rather
     than failing a step that has already succeeded.
@@ -170,14 +181,24 @@ def _log_resource_usage(spec: dict, wall_seconds: float) -> None:
     else:
         peak_label = "peak"
     cpu_seconds = _read_cpu_usage_seconds()
+    if cpu_seconds is not None and cpu_seconds_at_start is not None:
+        cpu_seconds = max(0.0, cpu_seconds - cpu_seconds_at_start)
+    elif cpu_seconds is not None:
+        # No baseline to subtract from, so the counter still carries the
+        # install phase. Reporting a number we know to be inflated is worse
+        # than reporting none.
+        cpu_seconds = None
 
     parts = []
     if cpu_seconds is not None and wall_seconds > 0:
         used_cpu = cpu_seconds / wall_seconds
-        if cpu_req:
-            parts.append(f"{used_cpu:.1f} of {cpu_req} vCPU ({used_cpu / cpu_req * 100:.0f}%)")
-        else:
-            parts.append(f"{used_cpu:.1f} vCPU")
+        # A step cannot use more cores than the node has. If it appears to,
+        # the counter was not container-scoped and the figure is garbage.
+        if used_cpu <= (os.cpu_count() or 1) + 1:
+            if cpu_req:
+                parts.append(f"{used_cpu:.1f} of {cpu_req} vCPU ({used_cpu / cpu_req * 100:.0f}%)")
+            else:
+                parts.append(f"{used_cpu:.1f} vCPU")
     if peak_bytes:
         used_gb = peak_bytes / 1024**3
         if mem_req_mb:
@@ -1203,6 +1224,10 @@ def main(spec_uri: str | None = None) -> int:
         gpu_sampler = _GpuSampler(interval=int(spec.get("gpu_profile_interval") or 1))
         gpu_sampler.start()
     t0 = time.time()
+    # Baseline for the CPU counter, which is cumulative for the container and
+    # already holds the entrypoint's `uv pip install`. Only the difference
+    # across the body says anything about how the *step* was sized.
+    cpu0 = _read_cpu_usage_seconds()
     try:
         join_inputs = _build_join_inputs(spec)
         if join_inputs is not None:
@@ -1213,7 +1238,7 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         _save_exception(exc, spec)
-        _log_resource_usage(spec, time.time() - t0)
+        _log_resource_usage(spec, time.time() - t0, cpu0)
         # Sampler first: finish() appends its summary to the gpu_profile card,
         # so saving before it would leave that summary behind.
         if gpu_sampler is not None:
@@ -1221,7 +1246,7 @@ def main(spec_uri: str | None = None) -> int:
         _save_card_components(card_recorder, spec)
         return 1
     _stage("user_step_end", t0=t0)
-    _log_resource_usage(spec, time.time() - t0)
+    _log_resource_usage(spec, time.time() - t0, cpu0)
     _save_run_tags(run_recorder, spec)
     # The GPU sampler has to finish BEFORE the card components are saved:
     # finish() appends its summary to the gpu_profile card, and saving first
