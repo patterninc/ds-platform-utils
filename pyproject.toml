@@ -11,10 +11,23 @@ authors = [
 # The floor is what *consumers* must satisfy, and it is deliberately lower
 # than the interpreter this repo develops on (.python-version).
 #
-# 3.10 because that is still the floor across the org: sales-suite-backend is
-# pinned ">=3.10,<3.11", and sixteen of the projects in data-science-projects
-# ask for >=3.10 or ==3.10.15. Raising this would make the library
-# uninstallable for them.
+# 3.10 because that is still the floor across the org. What actually gates it,
+# as of 2026-09-11:
+#
+#   hard 3.10 pins -- these cannot resolve a >=3.11 library at all:
+#     market-intelligence/ad-spend-predictor    ==3.10.15
+#     market-intelligence/buybox-suppression    ==3.10.15
+#     market-intelligence/monaco                ==3.10.15
+#     market-intelligence/monaco-weekly         ==3.10.15
+#     market-intelligence/pocs/causal-engine    ==3.10.15
+#
+#   soft >=3.10 -- eleven more, which only need their venvs on 3.11+ rather
+#   than any pyproject change (operations/*, content/pocs/*, seller-report,
+#   forecasting/pocs/buybox-forecast)
+#
+# sales-suite-backend is ">=3.10,<3.11" today but is being upgraded, so it is
+# no longer a blocker. The five hard pins above are: raise this to >=3.11 once
+# they move, and the eleven soft ones will follow without edits.
 #
 # It was previously commented out entirely, which is why uv printed
 # "No `requires-python` value found in the workspace. Defaulting to >=3.10"
