@@ -785,6 +785,50 @@ above is developer convenience.
 
 ---
 
+## Known limitations — inherent, with a workaround
+
+### L1. A wide join over *non-remote* branches materialises on the driver — ⚠️
+
+A join step's `inputs` is N clones of the flow, one per branch, and shipping
+them to the runner means reading each branch's attributes. For a branch
+produced by a **`@remote_step`**, those attributes are already
+`RemoteArtifact` refs, so they travel as pointers and nothing transits the
+driver — this is what makes a 100-way foreach join affordable, and it is the
+normal case.
+
+For a branch produced by a **plain** step the attribute lives in Metaflow's
+own datastore, which the runner pod cannot read (it is Outerbounds' bucket and
+our pod identity has no rights there), so the driver has to fetch it and
+re-upload it. That part is unavoidable. What makes it a *limitation* rather
+than a bug we can fix is where the memory goes:
+
+```python
+# metaflow/flowspec.py
+def __getattr__(self, name):
+    x = self._datastore[name]
+    setattr(self, name, x)      # cached onto the flow object itself
+    return x
+```
+
+Metaflow caches each materialised artifact **on the branch clone**, and holds
+every clone alive for the duration of the step. So reading a branch attribute
+pins it for the whole step regardless of what we do with our own reference —
+serialising branch-by-branch and dropping our copy frees nothing. Evicting the
+attributes off Metaflow's clones would work but means deleting state Metaflow
+still owns, which risks the run's own artifact persistence.
+
+Shape of the failure: `start` loads a 200 MB lookup table, a 100-way foreach
+of plain steps inherits it, and a `@remote_step` join sees 100 × 200 MB = 20 GB
+arriving on a 2 vCPU / 8 GB driver.
+
+**Workaround, and the recommended pattern:** make the fanned-out step
+`@remote_step` too. Its outputs then reach the join as refs, the driver never
+touches the bytes, and the join's own pod reads only what its body asks for.
+Failing that, keep broadcast state small, or re-read it from S3 in the join
+rather than carrying it through the graph.
+
+---
+
 ## Coverage-status snapshot
 
 Broken down by transition / decorator, counted across both production repos.
