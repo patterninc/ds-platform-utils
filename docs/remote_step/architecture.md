@@ -253,13 +253,23 @@ not be installed separately (its NVIDIA variant ships one).
 
 The decorator asks *what am I about to do*, not *where am I running*.
 
-| invocation | driver | step body |
-|---|---|---|
-| `run` | local process | EKS |
-| `run --with kubernetes` | Outerbounds pod | EKS |
-| `argo-workflows create` + `trigger` | Argo pod | EKS |
-| `run --with local_step` | — | in-process |
-| `run --with local_step --with kubernetes` | — | Outerbounds pod |
+Two independent dimensions: **which** steps are offloaded, and **where** the
+driver and the step body run.
+
+| invocation | steps offloaded | driver | step body |
+|---|---|---|---|
+| `run` | those decorated | local process | EKS |
+| `run --with kubernetes` | those decorated | Outerbounds pod | EKS |
+| `argo-workflows create` + `trigger` | those decorated | Argo pod | EKS |
+| `run --with remote_step:team=X` | all but `start`/`end` | local process | EKS |
+| `run --with remote_step:team=X --with kubernetes` | all but `start`/`end` | Outerbounds pod | EKS |
+| `argo-workflows create --with remote_step:team=X` | all but `start`/`end` | Argo pod | EKS |
+| `run --with local_step` | none | — | in-process |
+| `run --with local_step --with kubernetes` | none | — | Outerbounds pod |
+
+"those decorated" means the steps carrying `@remote_step` in the flow source.
+`--with local_step` wins over everything, including a `--with remote_step`
+sweep in the same command.
 
 ### Applying it to a whole flow
 
