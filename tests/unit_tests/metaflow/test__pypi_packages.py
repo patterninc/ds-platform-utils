@@ -400,3 +400,83 @@ def test_finds_project_files_by_walking_up_from_cwd(project_root: Path, monkeypa
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     assert _get_packages_from_uv_lock()["pandas"] == "2.3.2"
+
+
+class TestThePythonPinIsAnchoredToItsOwnProject:
+    """`.python-version` must belong to the project supplying the packages.
+
+    The lookup walked up until it found any such file, which need not belong
+    to that project -- so a flow in a nested project took its packages from
+    one pyproject and its interpreter from an unrelated ancestor's pin:
+
+        tests/scenario_flows/remote_step/pyproject.toml  requires-python >=3.11
+        ds-platform-utils/.python-version                3.10
+
+    That resolved to 3.10 and then failed in micromamba, building a 3.10
+    environment for packages locked against 3.11. Monorepos make it the normal
+    case: data-science-projects holds thirty nested projects, and
+    demand-forecast has a root pin above a nested src/.
+    """
+
+    def project(self, tmp_path, requires_python=None, pin=None):
+        d = tmp_path
+        if requires_python:
+            (d / "pyproject.toml").write_text(
+                f'[project]\nname = "p"\nrequires-python = "{requires_python}"\n'
+            )
+        if pin:
+            (d / ".python-version").write_text(pin + "\n")
+        return d
+
+    def test_a_nested_project_ignores_an_ancestors_pin(self, tmp_path):
+        """The exact shape that failed."""
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        (outer / ".python-version").write_text("3.10\n")
+        (outer / "pyproject.toml").write_text('[project]\nname = "o"\nrequires-python = ">=3.10"\n')
+
+        inner = outer / "nested"
+        inner.mkdir()
+        (inner / "pyproject.toml").write_text('[project]\nname = "n"\nrequires-python = ">=3.11,<3.13"\n')
+
+        # The inner project has no pin of its own, so its own requires-python
+        # decides -- not the 3.10 sitting one directory up.
+        assert _find_python_version(project_root=inner) == "3.11"
+        # And the outer project still gets its own pin.
+        assert _find_python_version(project_root=outer) == "3.10"
+
+    def test_a_projects_own_pin_wins_over_its_requires_python(self, tmp_path):
+        """The pin is the more concrete source when it is genuinely this project's."""
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        d = self.project(tmp_path, requires_python=">=3.11", pin="3.12")
+        assert _find_python_version(project_root=d) == "3.12"
+
+    def test_an_implementation_prefix_is_stripped(self, tmp_path):
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        d = self.project(tmp_path, pin="cpython@3.12")
+        assert _find_python_version(project_root=d) == "3.12"
+
+    def test_comments_and_blank_lines_are_skipped(self, tmp_path):
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        d = tmp_path
+        (d / ".python-version").write_text("# a comment\n\n3.13\n")
+        assert _find_python_version(project_root=d) == "3.13"
+
+    def test_the_requires_python_floor_is_used_without_a_pin(self, tmp_path):
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        d = self.project(tmp_path, requires_python=">=3.12,<3.13")
+        assert _find_python_version(project_root=d) == "3.12"
+
+    def test_neither_source_falls_back_to_the_interpreter(self, tmp_path):
+        import sys
+
+        from ds_platform_utils.metaflow.pypi_packages import _find_python_version
+
+        expected = f"{sys.version_info.major}.{sys.version_info.minor}"
+        assert _find_python_version(project_root=tmp_path) == expected

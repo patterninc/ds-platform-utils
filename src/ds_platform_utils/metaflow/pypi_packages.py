@@ -232,15 +232,39 @@ def _find_python_version(project_root: Optional[Union[str, Path]] = None) -> str
         A version string such as `"3.11"`, ready to hand to `@pypi(python=...)`.
 
     """
-    pin_path = _find_project_file(".python-version", project_root)
-    if pin_path is not None:
-        for line in pin_path.read_text().splitlines():
-            line = line.split("#", 1)[0].strip()
-            if line:
-                # uv allows an implementation prefix, e.g. "cpython@3.11" or "pypy@3.10"
-                return line.rpartition("@")[2]
+    # Anchor every source to the *same* project -- the one whose lock file
+    # supplies the packages.
+    #
+    # Searching for `.python-version` on its own walked up until it found any
+    # such file, which need not belong to that project. A flow in a nested
+    # project therefore took its packages from one pyproject and its
+    # interpreter from an unrelated ancestor's pin:
+    #
+    #     tests/scenario_flows/remote_step/pyproject.toml  requires-python >=3.11
+    #     ds-platform-utils/.python-version                3.10
+    #
+    # which resolved to 3.10 and then failed in micromamba building a 3.10 env
+    # for packages locked against 3.11. Monorepos make this the normal case:
+    # data-science-projects holds thirty nested projects, and demand-forecast
+    # has a root pin above a nested src/.
+    anchor = project_root
+    if anchor is None:
+        for marker in ("uv.lock", "pyproject.toml"):
+            found = _find_project_file(marker)
+            if found is not None:
+                anchor = found.parent
+                break
 
-    return _requires_python_floor(project_root) or f"{sys.version_info.major}.{sys.version_info.minor}"
+    if anchor is not None:
+        pin_path = Path(anchor) / ".python-version"
+        if pin_path.is_file():
+            for line in pin_path.read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    # uv allows an implementation prefix, e.g. "cpython@3.11"
+                    return line.rpartition("@")[2]
+
+    return _requires_python_floor(anchor) or f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def _lock_source_to_direct_reference(name: str, source: dict) -> str:
