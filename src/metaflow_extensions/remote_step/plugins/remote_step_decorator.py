@@ -882,6 +882,7 @@ class RemoteStepDecorator(StepDecorator):
         # Read here because task_decorate is not given the decorator list.
         self._env_vars = _find_env_vars(decorators)
         self._user_timeout_minutes = _find_timeout_minutes(decorators)
+        self._card_attributes = _find_card_attributes(decorators)
         self._gpu_profile = _find_gpu_profile(decorators)
         if self._gpu_profile:
             # Read before dropping. The driver cannot see a GPU, and its empty
@@ -1299,7 +1300,16 @@ class RemoteStepDecorator(StepDecorator):
                 # the cross-account read role baked into every ref — to
                 # fetch the real payload from our S3 bucket only when
                 # they actually touch it.
+                card_attrs = getattr(self, "_card_attributes", None) or set()
                 for name, ref in outputs.items():
+                    if name in card_attrs:
+                        # A card reading `options={"attribute": name}` renders
+                        # this on the driver, so a ref would render as
+                        # `RemoteArtifact(...)` instead of the content. Load
+                        # just this one; everything else stays zero-copy.
+                        loaded = _hydrate_for_card(name, ref)
+                        setattr(self_flow, name, loaded)
+                        continue
                     setattr(self_flow, name, ref)
                 sys.stdout.write(f"[remote_step] {step_name} finished, {len(outputs)} artifact(s) linked\n")
                 # Replay the user step's self.next(...) so Metaflow's transition
@@ -1523,6 +1533,52 @@ def _drop_hf_hub(decorators) -> list[dict]:
             removed.append(dict(getattr(d, "attributes", {}) or {}))
             decorators.remove(d)
     return removed
+
+
+# A card attribute is rendered on the driver, so it has to be a value there.
+# Cap what we are willing to pull into a Small-tier driver to do it: a report
+# is kilobytes, and silently loading a 10 GB DataFrame would OOM the driver.
+MAX_CARD_ATTR_BYTES = 64 * 1024 * 1024
+
+
+def _find_card_attributes(decorators) -> set[str]:
+    """Flow attributes that a sibling @card renders itself.
+
+    `@card(type="html", options={"attribute": "html"})` reads `self.html` at
+    render time, on the driver. Left as a RemoteArtifact ref that card shows
+    `RemoteArtifact(kind=..., uri=...)` rather than the report.
+    """
+    names: set[str] = set()
+    for d in decorators:
+        if getattr(d, "name", "") != "card":
+            continue
+        options = (getattr(d, "attributes", {}) or {}).get("options") or {}
+        attr = options.get("attribute")
+        if attr:
+            names.add(str(attr))
+    return names
+
+
+def _hydrate_for_card(name: str, ref):
+    """The value behind a card attribute, or the ref if it is too big."""
+    if not isinstance(ref, RemoteArtifact):
+        return ref
+    size = getattr(ref, "size_bytes", 0) or 0
+    if size > MAX_CARD_ATTR_BYTES:
+        sys.stdout.write(
+            f"[remote_step] '{name}' is rendered by a @card but is "
+            f"{size / 1024 / 1024:.0f} MB — left as a reference rather than "
+            f"loaded into the driver. The card will show the reference; "
+            f"render a smaller summary attribute instead.\n"
+        )
+        return ref
+    try:
+        value = ref.load()
+    except Exception as exc:  # noqa: BLE001
+        sys.stdout.write(f"[remote_step] could not load '{name}' for its @card: {exc}\n")
+        return ref
+    sys.stdout.write(f"[remote_step] loaded '{name}' for its @card\n")
+    return value
 
 
 def _find_gpu_profile(decorators) -> dict | None:

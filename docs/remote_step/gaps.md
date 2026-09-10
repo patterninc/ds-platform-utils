@@ -130,6 +130,25 @@ Legend for **Status**:
 - Card content is saved even when the body raises, so a failed step's
   diagnostics survive.
 
+### 6b. A card that renders a flow attribute — ✅
+- `@card(type="html", options={"attribute": "html"})` does not use
+  `current.card` at all: the card reads `self.html` itself, at render time, on
+  the driver. A remote step's outputs are `RemoteArtifact` refs by design, so
+  the card rendered `RemoteArtifact(kind=..., uri=...)` instead of the report.
+  Seen on `dqv_step_input` in the forecast flow.
+- **Now**: the attribute names a card declares are read off the sibling
+  `@card` decorators, and just those outputs are loaded into values on the
+  driver. Everything else stays a ref, so zero-copy is unaffected.
+- Capped at 64 MB. A report is kilobytes; silently pulling a 10 GB DataFrame
+  into a Small-tier driver to render a card would OOM it. Over the cap the ref
+  is left in place with a line saying so and suggesting a summary attribute.
+- A failed load falls back to the ref rather than failing the step — a card is
+  a report.
+- **Not covered**: a card on a *downstream, non-remote* step that renders an
+  upstream remote step's artifact. That step is not ours to rewrite, so the
+  attribute is still a ref there; call `.load()` in that step, or point the
+  card at an attribute produced locally.
+
 ### 7. `current.model` / `@model(load=[...])` — ✅ load; save still refused
 - **Uses**: 19 sites (embedding models, sklearn, spaCy, `distilbart_mnli_12_3`, etc.).
 - **Bug**: `@model` downloads model artifacts on the driver argo pod, populates

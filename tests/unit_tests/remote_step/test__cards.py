@@ -152,3 +152,97 @@ def test_a_spec_without_an_output_location_writes_nothing(spec):
     s3 = FakeS3()
     _save_card_components(rec, spec, s3_client=s3)
     assert s3.puts == []
+
+
+# ----------------------------------------- attribute-rendering cards (type=html)
+
+
+class Deco:
+    def __init__(self, name, **attributes):
+        self.name = name
+        self.attributes = attributes
+
+
+def test_a_card_that_renders_an_attribute_is_detected():
+    """`@card(type="html", options={"attribute": "html"})` reads self.html."""
+    from remote_step.plugins.remote_step_decorator import _find_card_attributes
+
+    decos = [Deco("card", type="html", id="dqv_report", options={"attribute": "html"})]
+    assert _find_card_attributes(decos) == {"html"}
+
+
+def test_a_plain_card_names_no_attribute():
+    from remote_step.plugins.remote_step_decorator import _find_card_attributes
+
+    assert _find_card_attributes([Deco("card", type="blank")]) == set()
+    assert _find_card_attributes([Deco("resources", cpu=2)]) == set()
+
+
+def test_several_cards_contribute_their_attributes():
+    from remote_step.plugins.remote_step_decorator import _find_card_attributes
+
+    decos = [
+        Deco("card", type="html", options={"attribute": "html"}),
+        Deco("card", type="json", options={"attribute": "summary"}),
+    ]
+    assert _find_card_attributes(decos) == {"html", "summary"}
+
+
+class FakeRef:
+    """Stands in for a RemoteArtifact ref."""
+
+    def __init__(self, value, size_bytes):
+        self._value = value
+        self.size_bytes = size_bytes
+        self.loads = 0
+
+    def load(self):
+        self.loads += 1
+        return self._value
+
+
+def test_a_small_card_attribute_is_loaded(monkeypatch, capsys):
+    """Otherwise the card renders `RemoteArtifact(...)` instead of the report."""
+    import remote_step.plugins.remote_step_decorator as deco_mod
+
+    monkeypatch.setattr(deco_mod, "RemoteArtifact", FakeRef)
+    ref = FakeRef("<h1>report</h1>", 2048)
+
+    assert deco_mod._hydrate_for_card("html", ref) == "<h1>report</h1>"
+    assert ref.loads == 1
+    assert "loaded 'html' for its @card" in capsys.readouterr().out
+
+
+def test_a_huge_card_attribute_is_left_as_a_reference(monkeypatch, capsys):
+    """The driver is Small tier — loading a 10 GB artifact would OOM it."""
+    import remote_step.plugins.remote_step_decorator as deco_mod
+
+    monkeypatch.setattr(deco_mod, "RemoteArtifact", FakeRef)
+    ref = FakeRef("huge", deco_mod.MAX_CARD_ATTR_BYTES + 1)
+
+    assert deco_mod._hydrate_for_card("df", ref) is ref
+    assert ref.loads == 0
+    out = capsys.readouterr().out
+    assert "left as a reference" in out
+
+
+def test_a_failed_load_falls_back_to_the_reference(monkeypatch, capsys):
+    """A card is a report; failing to render one must not fail the step."""
+    import remote_step.plugins.remote_step_decorator as deco_mod
+
+    class Exploding(FakeRef):
+        def load(self):
+            raise RuntimeError("s3 down")
+
+    monkeypatch.setattr(deco_mod, "RemoteArtifact", Exploding)
+    ref = Exploding("x", 10)
+
+    assert deco_mod._hydrate_for_card("html", ref) is ref
+    assert "could not load 'html'" in capsys.readouterr().out
+
+
+def test_a_non_reference_value_passes_through(monkeypatch):
+    import remote_step.plugins.remote_step_decorator as deco_mod
+
+    monkeypatch.setattr(deco_mod, "RemoteArtifact", FakeRef)
+    assert deco_mod._hydrate_for_card("html", "already a value") == "already a value"
