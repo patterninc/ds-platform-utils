@@ -95,14 +95,12 @@ Legend for **Status**:
 
 ### 6. `current.card` + `@card(type="html")` — ✅ (replayed on the driver)
 - **Uses**: 220 `@card`-decorated steps, 66 `current.card.append(...)` sites.
-- **Bug**: `@card` runs in Metaflow's `task_finished` on the driver task, which
-  sees a stripped-down `self` populated with `RemoteArtifact` refs. User's
-  `current.card.append(Markdown(...))` inside the Batch step body writes into
-  a Metaflow card sidecar that isn't connected to the driver's card rendering.
-  Result: cards render empty for `@remote_step` steps.
-- **Now (option a, half working)**: the pod gets a recorder in place of
-  `current.card` that captures what the body appends, and the driver replays it
-  into the real card. `card[id]` is kept, so `@gpu_profile`'s own
+- **Was**: `@card` renders on the driver task, so `current.card` did not exist
+  in the runner at all — `current.card.append(...)` raised there, and a step
+  that guarded the call rendered an empty card either way.
+- **Now (option a)**: the pod gets a recorder in place of `current.card` that
+  captures what the body appends, and the driver replays it into the real card
+  before `@card` renders. `card[id]` is kept, so `@gpu_profile`'s own
   `gpu_profile` card id is carried too.
 - Verified live on `CardFlow` run 238599:
 
