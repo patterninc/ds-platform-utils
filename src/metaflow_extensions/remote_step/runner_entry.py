@@ -964,6 +964,10 @@ class _FakeSelf:
         # Set through object.__setattr__ so it exists before the first
         # __setattr__ call below goes looking for it.
         object.__setattr__(self, "_assigned", set())
+        # Inputs not yet downloaded: {name: spec entry}. Filled by
+        # `defer_inputs`, drained by __getattr__ on first read.
+        object.__setattr__(self, "_pending", {})
+        object.__setattr__(self, "_pending_loader", None)
         # Underscored so the outputs snapshot skips it: this is context handed
         # in, not something the step produced.
         self._foreach_input = foreach_input
@@ -998,6 +1002,26 @@ class _FakeSelf:
         if not name.startswith("_"):
             self._assigned.add(name)
         object.__setattr__(self, name, value)
+
+    def defer_inputs(self, entries: dict, loader) -> None:
+        """Register inputs to be downloaded on first access, not up front.
+
+        Every input used to be materialised before the body ran, in parallel.
+        That is simple and gives the body real objects, but it means a step
+        reading only `self.row_count` still downloads and unpickles the 6 GB
+        artifact a sibling step happens to have left on the flow -- which can
+        OOM a pod sized for the work it actually does.
+
+        Deferring rather than handing the body a RemoteArtifact ref, because
+        the ref only proxies attribute access, indexing, iteration and
+        truthiness. It does not forward arithmetic, and `isinstance` and
+        `type()` see the wrapper -- so `self.total + 1` or
+        `isinstance(self.df, pd.DataFrame)` would break in ways that are
+        hard to trace back to here. Loading on first touch keeps the body
+        looking at the genuine object.
+        """
+        object.__setattr__(self, "_pending", dict(entries))
+        object.__setattr__(self, "_pending_loader", loader)
 
     def _begin_recording(self) -> None:
         """Start counting assignments as outputs.
@@ -1070,7 +1094,9 @@ class _FakeSelf:
         # `vars(self)`, not `hasattr(self, ...)`: __getattr__ below answers
         # every non-dunder name with a placeholder, so hasattr is always True
         # and would make this skip every attribute and merge nothing.
-        already_set = vars(self)
+        # Includes inputs not yet downloaded. Without them a deferred input
+        # would look absent and get overwritten by a branch's value.
+        already_set = set(vars(self)) | set(self.__dict__.get("_pending") or {})
 
         to_merge: dict[str, tuple[_FakeBranch, str]] = {}
         unresolved: list[str] = []
@@ -1118,9 +1144,25 @@ class _FakeSelf:
         Only triggered when normal attribute lookup fails (i.e. never set on
         the instance). Prevents `self.next(self.scale)` and similar from
         crashing when the user's step body references sibling steps.
+
+        A deferred input is resolved here first: the download happens on the
+        first read and the value is written onto the instance, so every later
+        read is an ordinary attribute lookup and this never runs again for
+        that name.
         """
         if name.startswith("__"):
             raise AttributeError(name)
+
+        pending = self.__dict__.get("_pending") or {}
+        if name in pending:
+            loader = self.__dict__.get("_pending_loader")
+            entry = pending.pop(name)
+            value = loader(name, entry)
+            # object.__setattr__, not setattr: reading an input is not the
+            # step producing it, and __setattr__ would record it as an output
+            # and upload it straight back.
+            object.__setattr__(self, name, value)
+            return value
 
         def _placeholder(*args, **kwargs):
             return None
@@ -1213,14 +1255,25 @@ def main(spec_uri: str | None = None) -> int:
         name, ref = item
         return name, _hydrate_input(name, ref, _hydrate_worker_s3())
 
+    # Inline entries are already in the spec we just downloaded, so
+    # unpickling them costs no network and they are under 4 MB by
+    # construction. Those are materialised now; anything that would mean an
+    # S3 download waits until the body actually reads it.
+    #
+    # Downloading everything up front is simpler and was what this did, but a
+    # step reading only `self.row_count` still pulled the 6 GB artifact a
+    # sibling step left on the flow, and a pod sized for the work it actually
+    # does was OOM-killed by an artifact it never looked at.
+    eager = {n: r for n, r in inputs_dict.items() if (r or {}).get("kind") != "RemoteArtifact"}
+    deferred = {n: r for n, r in inputs_dict.items() if (r or {}).get("kind") == "RemoteArtifact"}
     try:
-        if inputs_dict:
-            workers = min(_OUTPUTS_PARALLELISM, len(inputs_dict))
+        if eager:
+            workers = min(_OUTPUTS_PARALLELISM, len(eager))
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=workers, thread_name_prefix="remote-step-hydrate"
             ) as pool:
                 for fut in concurrent.futures.as_completed(
-                    [pool.submit(_hydrate_one, item) for item in inputs_dict.items()]
+                    [pool.submit(_hydrate_one, item) for item in eager.items()]
                 ):
                     name, val = fut.result()
                     setattr(fake, name, val)
@@ -1228,6 +1281,17 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=hydrate_inputs ERR {exc}\n")
         traceback.print_exc()
         return 3
+    if deferred:
+        def _load_deferred(name: str, ref: dict):
+            size = (ref or {}).get("size_bytes") or 0
+            sys.stdout.write(f"[remote_step] loading input '{name}' ({size / 1024 / 1024:.0f} MB) on first use\n")
+            return _hydrate_input(name, ref, _hydrate_worker_s3())
+
+        fake.defer_inputs(deferred, _load_deferred)
+        sys.stdout.write(
+            f"[remote_step] {len(eager)} input(s) inline, "
+            f"{len(deferred)} deferred until read: {', '.join(sorted(deferred))}\n"
+        )
     _stage("hydrate_inputs", t0=t0)
     # From here on, an assignment on `fake` means the step produced it. Has
     # to be armed after the inputs are seeded and before the body runs:
