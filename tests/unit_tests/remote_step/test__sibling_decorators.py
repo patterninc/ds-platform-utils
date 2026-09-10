@@ -7,7 +7,6 @@ be read here and carried across, or the body silently runs without it.
 
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
-
 from remote_step.plugins.remote_step_decorator import (
     DRIVER_TIMEOUT_SLACK_MINUTES,
     _declares_conda_packages,
@@ -82,8 +81,10 @@ def test_no_timeout_decorator():
 
 
 def test_a_user_timeout_sets_the_job_deadline_with_slack():
-    """The driver must outlive the pod, or a timeout kills both in a race and
-    nothing reports why."""
+    """The driver must outlive the pod.
+
+    Otherwise a timeout kills both in a race and nothing reports why.
+    """
     assert _job_timeout_minutes(30, 240) == 30 + DRIVER_TIMEOUT_SLACK_MINUTES
 
 

@@ -49,7 +49,7 @@ def test_unrelated_tags_are_ignored(argv):
 
 
 def test_no_tags_at_all(argv):
-    """This is what makes the step fall back to sandbox."""
+    """What makes the step fall back to sandbox."""
     argv("run")
     assert _team_from_tags() is None
 

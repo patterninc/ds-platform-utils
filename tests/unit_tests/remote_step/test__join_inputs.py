@@ -150,8 +150,10 @@ def test_branches_disagreeing_is_an_unresolved_conflict():
 
 
 def test_include_does_not_resolve_a_conflict():
-    """Matching Metaflow: include narrows what is considered, it does not
-    pick a winner. A named attribute that still disagrees is an error."""
+    """Include narrows what is considered; it does not pick a winner.
+
+    Matching Metaflow: a named attribute that still disagrees is an error.
+    """
     fake = _FakeSelf()
     inputs = _build_join_inputs(spec(("a", {"x": 1}), ("b", {"x": 999})))
     with pytest.raises(RemoteStepError, match="unresolved conflicts"):

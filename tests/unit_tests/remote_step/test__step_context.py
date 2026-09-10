@@ -95,8 +95,10 @@ def clean_current():
 
 
 def test_is_production_reaches_the_step_body(clean_current):
-    """The whole point: an absent attribute reads falsy, so a production run
-    would write to staging with no error anywhere."""
+    """An absent attribute reads falsy.
+
+    So before this, a production run wrote to staging with no error anywhere.
+    """
     _patch_project_context({"project": {"is_production": True}})
     assert clean_current.is_production is True
 

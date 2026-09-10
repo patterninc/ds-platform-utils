@@ -882,6 +882,7 @@ class RemoteStepDecorator(StepDecorator):
         # Read here because task_decorate is not given the decorator list.
         self._env_vars = _find_env_vars(decorators)
         self._user_timeout_minutes = _find_timeout_minutes(decorators)
+        self._gpu_profile = _find_gpu_profile(decorators)
         cpu, memory_mb, gpu = _find_resources(decorators)
         try:
             self._resources = resolve(
@@ -1156,6 +1157,8 @@ class RemoteStepDecorator(StepDecorator):
                     has_foreach_input=_has_foreach_input,
                     is_join=(node_type == "join"),
                     join_branches=_join_branches(inputs),
+                    gpu_profile=bool(getattr(self, "_gpu_profile", None)),
+                    gpu_profile_interval=((getattr(self, "_gpu_profile", None) or {}).get("interval") or 1),
                 )
                 spec_uri, spec = build_and_upload(
                     driver_ctx,
@@ -1414,6 +1417,21 @@ def _declares_conda_packages(decorator) -> bool:
         return False
     attrs = getattr(decorator, "attributes", {}) or {}
     return bool(attrs.get("packages")) or bool(attrs.get("libraries"))
+
+
+def _find_gpu_profile(decorators) -> dict | None:
+    """A sibling @gpu_profile's settings, or None if the step has none.
+
+    The decorator itself samples on the driver, which has no GPU, so for a
+    `@remote_step` it measured nothing. The runner samples instead; this just
+    carries the request and its interval across.
+    """
+    for d in decorators:
+        if getattr(d, "name", "") != "gpu_profile":
+            continue
+        attrs = getattr(d, "attributes", {}) or {}
+        return {"interval": int(attrs.get("interval") or 1)}
+    return None
 
 
 def _find_env_vars(decorators) -> dict[str, str]:

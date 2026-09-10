@@ -116,6 +116,95 @@ EXCEPTION_FILENAME = "exception.pkl"
 RUN_TAGS_FILENAME = "run_tags.json"
 
 
+class _GpuSampler:
+    """Samples GPU utilisation in the runner pod for the duration of the body.
+
+    `@gpu_profile` runs on the driver, which has no GPU, so it sampled nothing
+    for a `@remote_step`. The GPU is here, so the sampling has to be here too.
+
+    Reuses Outerbounds' own `GPUMonitor` — an `nvidia-smi -l` subprocess plus a
+    reader thread — so the readings have the same shape their card expects.
+
+    This is the data half only. `@gpu_profile` renders through
+    `current.card["gpu_profile"]`, and a card written in this pod does not
+    reach the driver's card (gap 6), so the readings are exposed as an
+    artifact and a log summary instead.
+    """
+
+    ARTIFACT_NAME = "gpu_profile_data"
+
+    def __init__(self, interval: int = 1):
+        self._interval = interval
+        self._monitor = None
+        self.info: dict = {}
+
+    def start(self) -> None:
+        try:
+            from metaflow_extensions.outerbounds.profilers.gpu import (
+                GPUMonitor,
+                GPUProfiler,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(f"[remote_step] gpu_profile: profiler unavailable ({exc}); not sampling\n")
+            return
+        try:
+            self.info = GPUProfiler.read_gpu_info() or {}
+        except Exception:  # noqa: BLE001
+            self.info = {}
+        devices = self.info.get("devices") or []
+        if not devices:
+            sys.stdout.write("[remote_step] gpu_profile: no GPU devices visible; not sampling\n")
+            return
+        try:
+            self._monitor = GPUMonitor(interval=self._interval)
+            self._monitor.create_new_monitor()
+            sys.stdout.write(
+                f"[remote_step] gpu_profile: sampling {len(devices)} device(s) "
+                f"every {self._interval}s — driver "
+                f"{self.info.get('driver_version', 'unknown')}, CUDA "
+                f"{self.info.get('cuda_version', 'unknown')}\n"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._monitor = None
+            sys.stdout.write(f"[remote_step] gpu_profile: could not start: {exc}\n")
+
+    def finish(self) -> dict | None:
+        """Stop sampling and return the readings, or None if none were taken."""
+        if self._monitor is None:
+            return None
+        try:
+            readings = self._monitor.read()
+        except Exception as exc:  # noqa: BLE001
+            sys.stdout.write(f"[remote_step] gpu_profile: read failed: {exc}\n")
+            readings = None
+        try:
+            self._monitor.cleanup()
+        except Exception:  # noqa: BLE001
+            pass
+        if not readings:
+            return None
+        self._log_summary(readings)
+        return {"info": self.info, "readings": readings}
+
+    @staticmethod
+    def _log_summary(readings: dict) -> None:
+        """Peak utilisation per device, so the log alone answers 'was the GPU used'."""
+        for device, series in (readings or {}).items():
+            try:
+                utils = [float(s) for s in (series.get("gpu_utilization") or [])]
+                mem = [float(s) for s in (series.get("memory_used") or [])]
+            except Exception:  # noqa: BLE001
+                continue
+            if not utils and not mem:
+                continue
+            sys.stdout.write(
+                f"[remote_step] gpu_profile {device}: "
+                f"peak {max(utils or [0]):.0f}% util, "
+                f"peak {max(mem or [0]):.0f} MB memory, "
+                f"{len(utils)} samples\n"
+            )
+
+
 class _RunRecorder:
     """Stands in for `current.run` so tag edits survive out of the pod.
 
@@ -628,6 +717,12 @@ def main(spec_uri: str | None = None) -> int:
     # A join step's body is `def join(self, inputs)`, so it needs the second
     # positional argument — calling it with one raised TypeError before this.
     _stage("user_step_start")
+    # Sampling has to bracket the body: the driver's @gpu_profile has no GPU
+    # to look at, so nothing was ever measured for a remote step.
+    gpu_sampler = None
+    if spec.get("gpu_profile"):
+        gpu_sampler = _GpuSampler(interval=int(spec.get("gpu_profile_interval") or 1))
+        gpu_sampler.start()
     t0 = time.time()
     try:
         join_inputs = _build_join_inputs(spec)
@@ -639,9 +734,17 @@ def main(spec_uri: str | None = None) -> int:
         sys.stdout.write(f"[remote_step] STAGE=user_step_end ERR {exc}\n")
         traceback.print_exc()
         _save_exception(exc, spec)
+        if gpu_sampler is not None:
+            gpu_sampler.finish()
         return 1
     _stage("user_step_end", t0=t0)
     _save_run_tags(run_recorder, spec)
+    if gpu_sampler is not None:
+        gpu_readings = gpu_sampler.finish()
+        if gpu_readings is not None:
+            # Named the way @gpu_profile names its own artifact, so user code
+            # that already reads it keeps working.
+            setattr(fake, _GpuSampler.ARTIFACT_NAME, gpu_readings)
 
     # 5. Snapshot new/modified attrs.
     new_attrs = {

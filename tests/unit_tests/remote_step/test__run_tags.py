@@ -7,7 +7,6 @@ authenticated, performs the write.
 """
 
 import metaflow  # noqa: F401  -- resolves plugins before the direct import below
-
 from remote_step.runner_entry import _RunRecorder, _save_run_tags
 
 
@@ -71,7 +70,7 @@ class FakeS3:
     def __init__(self):
         self.puts = []
 
-    def put_object(self, **kwargs):
+    def put_object(self, **kwargs):  # noqa: D102
         self.puts.append(kwargs)
 
 

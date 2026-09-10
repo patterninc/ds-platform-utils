@@ -91,6 +91,10 @@ class DriverContext:
     # non-join step.
     join_branches: list[dict[str, Any]] = None  # type: ignore[assignment]
     is_join: bool = False
+    # Whether a sibling @gpu_profile asked for sampling, and how often. The
+    # decorator samples on the driver, which has no GPU, so the runner does it.
+    gpu_profile: bool = False
+    gpu_profile_interval: int = 1
 
 
 def build_spec(
@@ -221,6 +225,8 @@ def build_spec(
         "has_foreach_input": bool(ctx.has_foreach_input),
         "is_join": bool(ctx.is_join),
         "join_branches": join_branches,
+        "gpu_profile": bool(ctx.gpu_profile),
+        "gpu_profile_interval": int(ctx.gpu_profile_interval or 1),
     }
 
 

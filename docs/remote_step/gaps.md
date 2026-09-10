@@ -174,9 +174,33 @@ Legend for **Status**:
   held `torch.__version__`, which is a `TorchVersion`, not a `str`. The fix in
   user code is `str(...)` — return plain types, or declare the package in every
   step that reads the artifact.
+- **Importability is necessary but not sufficient.** Pickle records no version
+  and checks nothing, so a step that *has* the module can still be wrong:
+
+  | | outcome |
+  |---|---|
+  | module missing | `ModuleNotFoundError` — loud, names the module |
+  | class moved or renamed, or its `__reduce__`/signature changed | raises |
+  | attributes added or dropped with no `__setstate__` to reconcile | **loads a subtly wrong object, silently** |
+
+  The third is the one to fear. Known instances: numpy 2.0 renamed
+  `numpy.core` to `numpy._core` and broke pickles across that boundary; pandas
+  2.x pickles do not load on 1.x; scikit-learn documents cross-version model
+  unpickling as unsupported.
+- **`@uv_pypi_base` makes this a non-issue for most flows.** Every step derives
+  from the same `uv.lock`, so versions match by construction. The exposure is
+  step-scoped `@pypi(packages=...)`: that step's set differs from the rest, so
+  either the module is absent downstream, or — worse — the same package is
+  pinned differently in two steps and you are in the silent row above.
+- Practical rule: return plain data across step boundaries, or declare the
+  package *at the same version* in every step that touches the artifact.
 - Not fixable in the decorator: it is how pickle works. Worth knowing because
-  the failure surfaces in the *downstream* step, far from the cause. The error
-  does at least name the missing module.
+  the failure surfaces in the *downstream* step, far from the cause.
+- **Could be made detectable.** The ref already carries `type_kind`
+  (`module.QualName`) and the spec carries the producing step's packages, so
+  recording the producer's version of the defining distribution and comparing
+  it on load would turn the silent row into a warning. Not built — worth doing
+  if anyone gets bitten.
 - Same shape as the model-object cases in gaps 7 and 8.
 
 
@@ -216,12 +240,22 @@ Legend for **Status**:
 - Unit-tested across seconds/minutes/hours; not yet watched fire on a real
   long-running step.
 
-### 14. `@gpu_profile()` — ❌
+### 14. `@gpu_profile()` — ⚠️ data half shipped, card half blocked on gap 6
 - **Uses**: 8 sites (advertising CR flows).
-- **Bug**: `@gpu_profile` decorator runs on driver (argo pod), samples the
-  driver's GPU (there is none). No sampling happens on Batch.
-- **Fix**: shift `@gpu_profile` onto the Batch step. Requires the profiler to
-  work inside our runner_entry.
+- **Was**: the decorator samples on the driver, which has no GPU, so a remote
+  GPU step was profiled as an idle machine.
+- **Now**: when a sibling `@gpu_profile` is present, the runner samples for the
+  duration of the body using Outerbounds' own `GPUMonitor` (an `nvidia-smi -l`
+  subprocess), and exposes the result as the `gpu_profile_data` artifact — the
+  same name the decorator uses — plus a peak-utilisation line per device so the
+  log alone answers "was the GPU actually used". Sampling also stops and
+  reports when the body raises.
+- **Blocked on gap 6 for the rest.** `_gpu_profile_wrapper` renders everything
+  through `current.card["gpu_profile"]`, and a card written in the pod does not
+  reach the driver's card. So the readings exist but the chart does not. Gap 6
+  is the keystone here, not extra GPU work.
+- Degrades quietly by design: no GPU visible, or no profiler in the image, logs
+  a line and carries on rather than failing the step.
 
 ### 15. `compute_pool` argument to `@kubernetes` — ✅
 - **Uses**: 10 sites (`g6e-4xlarge-nlp`, `c8a-8xlarge-content`).
@@ -502,7 +536,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `@environment` | 1 | ✅ gap #11 |
 | `@model` | 19 | ❌ gap #7 |
 | `@huggingface_hub` | 17 | ❌ gap #8 |
-| `@gpu_profile` | 14 | ❌ gap #14 |
+| `@gpu_profile` | 14 | ⚠️ gap #14 — data yes, card blocked on #6 |
 | `compute_pool` (kwarg on `@kubernetes`) | 10 | ✅ gap #15 |
 | `@conda` / `@conda_base` | 2 | ✅ refused by design, gap #16 |
 | `@batch` | 0 | 🚫 refused |
