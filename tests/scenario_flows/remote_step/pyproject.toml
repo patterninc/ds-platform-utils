@@ -1,0 +1,18 @@
+[project]
+name = "eksflow"
+version = "0.1.0"
+description = "Scenario flows exercising @remote_step end to end"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "ds-platform-utils",
+    "outerbounds~=0.12.42",
+    "pandas>=2.2",
+    "pydantic>=2",
+]
+
+[tool.uv.sources]
+ds-platform-utils = { git = "https://github.com/patterninc/ds-platform-utils.git", rev = "ae2f933ee13bb0c359b43f03dd90e4e6bf1d3042" }
+
+[dependency-groups]
+# Exercised by fx20: a group must only appear when the step names it.
+extra = ["orjson>=3.10"]

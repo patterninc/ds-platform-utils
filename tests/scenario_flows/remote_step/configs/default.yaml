@@ -1,0 +1,6 @@
+n_rows: 250
+table_name: FX27_PROBE
+horizons: [7, 14, 28]
+nested:
+  alpha: 0.5
+  label: from-config
