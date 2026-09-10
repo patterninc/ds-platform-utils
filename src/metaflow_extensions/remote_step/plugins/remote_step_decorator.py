@@ -1517,6 +1517,36 @@ def _pickleable(v) -> bool:
     return True
 
 
+class _NullSink:
+    """A write-only sink that keeps nothing.
+
+    `pickle.dumps(val)` to prove a value is picklable materialised the entire
+    pickle as a bytes object and then dropped it. On the Small-tier driver --
+    2 vCPU, 8 GB -- a 3 GB DataFrame therefore peaked at ~3 GB before
+    build_spec pickled it a second time to actually ship it, which is a spike
+    big enough to OOM the driver on an artifact it was only inspecting.
+
+    Pickling into this instead answers the same question in constant memory.
+    The CPU is still spent twice; only the allocation is avoided.
+    """
+
+    __slots__ = ()
+
+    def write(self, _chunk) -> None:  # noqa: D105
+        return None
+
+
+def _is_picklable_streaming(val) -> bool:
+    """Whether `val` pickles, without keeping the result."""
+    import pickle as _pickle
+
+    try:
+        _pickle.dump(val, _NullSink(), protocol=5)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 _SKIP_ATTRS = frozenset(
     {
         "next",
@@ -2138,9 +2168,7 @@ def _collect_flow_attrs(flow) -> dict:
             return
         if not _pickleable(val):
             return
-        try:
-            pickle.dumps(val, protocol=5)
-        except Exception:  # noqa: BLE001
+        if not _is_picklable_streaming(val):
             return
         out[name] = val
 
