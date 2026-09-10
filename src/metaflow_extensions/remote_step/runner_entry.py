@@ -27,11 +27,13 @@ import contextlib
 import hashlib
 import importlib
 import io
+import inspect
 import json
 import os
 import pickle
 import sys
 import tempfile
+import types
 import threading
 import time
 import traceback
@@ -1010,6 +1012,9 @@ class _FakeSelf:
         # {name: RemoteArtifact}. They go into the output manifest as
         # pointers, so a join republishes them without moving the bytes.
         object.__setattr__(self, "_merged_refs", {})
+        # The user's real flow class, so helper methods defined on it still
+        # work in the pod. Set by main() once the module is imported.
+        object.__setattr__(self, "_flow_cls", None)
         # Underscored so the outputs snapshot skips it: this is context handed
         # in, not something the step produced.
         self._foreach_input = foreach_input
@@ -1044,6 +1049,22 @@ class _FakeSelf:
         if not name.startswith("_"):
             self._assigned.add(name)
         object.__setattr__(self, name, value)
+
+    def bind_flow_class(self, flow_cls) -> None:
+        """Let unresolved attribute lookups fall back to the real flow class.
+
+        A flow class routinely defines plain helper methods that its steps
+        call -- `self._build_backtest_frames()`,
+        `self._get_snowflake_connection()`. Nine of the ninety-eight flow
+        classes in this org do.
+
+        Without this they hit `__getattr__` and got the no-op placeholder that
+        exists for `self.next(self.other_step)`: the call returned None and
+        the step carried on, so a step whose real work lived in a helper
+        "succeeded" having done nothing and written empty results. Silent, and
+        indistinguishable from a data problem upstream.
+        """
+        object.__setattr__(self, "_flow_cls", flow_cls)
 
     def defer_inputs(self, entries: dict, loader) -> None:
         """Register inputs to be downloaded on first access, not up front.
@@ -1219,6 +1240,29 @@ class _FakeSelf:
             # and upload it straight back.
             object.__setattr__(self, name, value)
             return value
+
+        # A real attribute of the user's flow class -- almost always a
+        # helper method a step body calls. Bound to this object so `self`
+        # inside it is the same thing the step body sees.
+        flow_cls = self.__dict__.get("_flow_cls")
+        if flow_cls is not None:
+            # getattr_static, not getattr: plain getattr already applies the
+            # descriptor protocol, so a staticmethod comes back as a bare
+            # function and binding it passes `self` as its first argument.
+            raw = inspect.getattr_static(flow_cls, name, None)
+            if raw is not None:
+                if isinstance(raw, staticmethod):
+                    return raw.__get__(None, flow_cls)
+                if isinstance(raw, classmethod):
+                    return raw.__get__(None, flow_cls)
+                if isinstance(raw, property):
+                    return raw.fget(self)
+                if inspect.isfunction(raw):
+                    return types.MethodType(raw, self)
+                if not callable(raw):
+                    # A plain class attribute: a constant, a list of horizons,
+                    # a default. Metaflow leaves these on the class.
+                    return raw
 
         def _placeholder(*args, **kwargs):
             return None
@@ -1453,6 +1497,9 @@ def main(spec_uri: str | None = None) -> int:
         if flow_module is None:
             raise ImportError(f"could not locate module {flow_module_name} in /workspace")
         flow_cls = getattr(flow_module, spec["flow_class"])
+        # Helper methods and class attributes the step body reaches through
+        # `self` resolve against the real class from here on.
+        fake.bind_flow_class(flow_cls)
         step_fn = getattr(flow_cls, spec["step_name"])
         original = getattr(step_fn, "__wrapped__", step_fn)
     except Exception as exc:  # noqa: BLE001
