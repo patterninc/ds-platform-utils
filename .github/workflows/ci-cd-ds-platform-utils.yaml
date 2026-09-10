@@ -15,26 +15,26 @@ on:
       - "docs/**"
 
 jobs:
-  check-version:
-    name: Check Version
+  guard-manual-version-bump:
+    name: Disallow manual version bumps
+    if: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history for version tagging
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
-
-      - name: Check version
-        # https://github.com/gnprice/toml-cli
+      - name: Fail if this PR changes pyproject.toml version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          VERSION=$(uvx --from=toml-cli toml get --toml-path pyproject.toml project.version)
-          git tag "v$VERSION"
+          if git diff "${BASE_SHA}...${HEAD_SHA}" -- pyproject.toml | grep -qE '^[+-]version = '; then
+            echo "::error::Do not bump project.version in feature PRs. Release Please updates the version in a dedicated release PR based on Conventional Commits and SemVer."
+            exit 1
+          fi
 
   code-quality-checks:
     name: Lint, Format, and Static Code Quality Checks
@@ -117,31 +117,3 @@ jobs:
           COVERAGE_DIR="$(python -c 'import ds_platform_utils; print(ds_platform_utils.__path__[0])')"
           poe clean
           poe test --cov="$COVERAGE_DIR" --no-cov -n auto
-
-  tag-version:
-    needs: [check-version, code-quality-checks, build-wheel, execute-tests]
-    # if - this is a merge to main or push directly to the main branch
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    name: Tag Version
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "${{ github.workspace }}/uv.lock"
-
-      - name: Configure Git user
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-
-      - name: Push Version Tag
-        # https://github.com/gnprice/toml-cli
-        run: |
-          VERSION=$(uvx --from=toml-cli toml get --toml-path pyproject.toml project.version)
-          git tag "v${VERSION}" -m "Release version v$VERSION"
-          git push origin "v$VERSION"
