@@ -80,6 +80,12 @@ FALLBACK_TEAM = "sandbox"
 # every ``MFLOG_FORCE_UPLOAD_INTERVAL_SEC`` seconds so the UI is never
 # behind by more than that regardless of the sidecar's own cadence.
 MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
+# Below this much captured output the tight cadence is free enough to keep.
+# Above it the cadence stretches in proportion, because save_logs re-reads and
+# re-uploads the entire file every time.
+MFLOG_TIGHT_CADENCE_BYTES = 4 * 1024 * 1024
+# Metaflow's own sidecar tops out around here, so there is no reason to go slower.
+MFLOG_MAX_INTERVAL_SEC = 30.0
 
 
 class _MflogPusher:
@@ -114,12 +120,67 @@ class _MflogPusher:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
+    @staticmethod
+    def _log_size() -> int:
+        """Bytes currently in the task's stdout + stderr capture files."""
+        total = 0
+        for var in ("MFLOG_STDOUT", "MFLOG_STDERR"):
+            path = os.environ.get(var)
+            if not path:
+                continue
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                continue
+        return total
+
+    def _interval_for(self, size_bytes: int) -> float:
+        """Cadence for a log of this size.
+
+        `metaflow.mflog.save_logs` reads the whole file and uploads it, so the
+        bytes shipped over a step grow with the square of its output. Backing
+        off as the log grows bounds that, which is the same reason Metaflow's
+        own sidecar has a sigmoid -- this just starts far tighter, since being
+        seconds behind is the thing users notice.
+        """
+        if size_bytes <= MFLOG_TIGHT_CADENCE_BYTES:
+            return self._interval
+        scaled = self._interval * (size_bytes / MFLOG_TIGHT_CADENCE_BYTES)
+        return min(scaled, MFLOG_MAX_INTERVAL_SEC)
+
     def _run(self) -> None:
         # Small initial delay so the very first stdout writes are buffered
         # into the mflog file before we ask for an upload.
         if self._stop.wait(1.0):
             return
+        last_size = -1
         while not self._stop.is_set():
+            size = self._log_size()
+            # Only spawn when there is something new. Each upload costs a
+            # fresh interpreter plus a metaflow import, and re-sends the whole
+            # file -- so on a step that logs once and then computes for four
+            # hours this used to burn a large fraction of one of the driver's
+            # two cores, and re-upload identical bytes, ~4,800 times over.
+            if size != last_size:
+                try:
+                    subprocess.run(
+                        ["python", "-m", "metaflow.mflog.save_logs"],
+                        check=False,
+                        capture_output=True,
+                        timeout=15,
+                    )
+                    last_size = size
+                except (subprocess.SubprocessError, OSError):
+                    pass
+            # break, not return: stop() sets the event while this thread is
+            # usually parked right here, and returning would skip the final
+            # flush below -- losing every line written since the last cycle,
+            # which on a failing step is the part that explains the failure.
+            if self._stop.wait(self._interval_for(size)):
+                break
+        # A final upload so whatever landed since the last cycle is not lost.
+        # stop() is called in a finally, so this runs on the failure path too.
+        if self._log_size() != last_size:
             try:
                 subprocess.run(
                     ["python", "-m", "metaflow.mflog.save_logs"],
@@ -129,8 +190,6 @@ class _MflogPusher:
                 )
             except (subprocess.SubprocessError, OSError):
                 pass
-            if self._stop.wait(self._interval):
-                return
 
 
 def _cached_env_path() -> str | None:
