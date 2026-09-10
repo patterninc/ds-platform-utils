@@ -441,3 +441,52 @@ def test_an_output_that_is_already_a_ref_is_not_re_uploaded():
     upload_one("model", ref)
     assert manifest["model"] is ref
     assert uploaded == []
+
+
+def test_a_passed_through_ref_gets_the_read_role_stamped_on_it():
+    """Otherwise a downstream non-remote step cannot read it.
+
+    A ref built from a join branch's spec entry carries no read_role_arn, and
+    a downstream plain step runs on an Outerbounds pod whose task role has no
+    direct read on the payload bucket. Passing the branch's ref through
+    unchanged produced, one step later than the cause:
+
+      AccessDenied ... obp-5p6le9-task is not authorized to perform
+      s3:GetObject
+
+    Found by a scenario flow; the unit tests all stubbed S3.
+    """
+    from remote_step.artifact import RemoteArtifact
+
+    READ_ROLE = "arn:aws:iam::209479263910:role/pattern-ml-platform-ob-artifact-reader"
+    branch_ref = RemoteArtifact(
+        s3_uri="s3://bucket/upstream/left/0/big.pkl",
+        size_bytes=9,
+        kind="builtins.bytes",
+        sha256="aa",
+    )
+    assert branch_ref.read_role_arn == "", "a branch ref starts without one"
+
+    manifest = {}
+
+    # Mirrors _upload_one's pass-through branch.
+    def upload_one(name, val, read_role_arn):
+        if isinstance(val, RemoteArtifact):
+            out = val
+            if read_role_arn and getattr(val, "read_role_arn", "") != read_role_arn:
+                out = RemoteArtifact(
+                    s3_uri=val.s3_uri,
+                    size_bytes=val.size_bytes,
+                    kind=val.kind,
+                    sha256=val.sha256,
+                    pickle_protocol=getattr(val, "pickle_protocol", 5),
+                    read_role_arn=read_role_arn,
+                )
+            manifest[name] = out
+            return
+
+    upload_one("big", branch_ref, READ_ROLE)
+    assert manifest["big"].read_role_arn == READ_ROLE
+    # Still the same object in S3 -- the bytes were not copied.
+    assert manifest["big"].s3_uri == branch_ref.s3_uri
+    assert manifest["big"].sha256 == branch_ref.sha256

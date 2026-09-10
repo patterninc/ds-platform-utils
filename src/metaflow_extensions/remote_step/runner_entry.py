@@ -1547,8 +1547,28 @@ def main(spec_uri: str | None = None) -> int:
         if isinstance(val, RemoteArtifact):
             # Already in S3 and unchanged, so the manifest points at it rather
             # than pickling a ref-wrapping-a-ref to a new key.
+            #
+            # The read role has to be stamped on regardless of where the ref
+            # came from. A ref built from a join branch's spec entry does not
+            # carry one, and a downstream *non-remote* step runs on an
+            # Outerbounds pod whose task role has no direct read on our
+            # payload bucket -- so passing the branch's ref through unchanged
+            # produced, at the point the value was finally read:
+            #   AccessDenied ... obp-5p6le9-task is not authorized to perform
+            #   s3:GetObject
+            # which surfaces one step later than the cause.
+            out_ref = val
+            if read_role_arn and getattr(val, "read_role_arn", "") != read_role_arn:
+                out_ref = RemoteArtifact(
+                    s3_uri=val.s3_uri,
+                    size_bytes=val.size_bytes,
+                    kind=val.kind,
+                    sha256=val.sha256,
+                    pickle_protocol=getattr(val, "pickle_protocol", 5),
+                    read_role_arn=read_role_arn,
+                )
             with manifest_lock:
-                manifest_outputs[name] = val
+                manifest_outputs[name] = out_ref
             return
         key = f"{prefix}/{name}.pkl"
         size, sha = _put_pickle(val, bucket, key, _worker_s3())
