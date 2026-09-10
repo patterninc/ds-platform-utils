@@ -207,6 +207,14 @@ of every attribute *before* the body runs. In-place rebinding —
 
 ## 7. Queueing and placement
 
+`cpu_arch` defaults to **arm64**. Graviton is roughly 20% cheaper and often
+faster on ML CPU kernels, so the cheap path is the one you get without asking.
+Two things override it: `cpu_arch="x86_64"` for a dependency with no arm64
+wheel, and any `gpu` request — the GPU NodePool is amd64 only, so a GPU step
+moves to x86_64 on its own. An explicit `cpu_arch="arm64"` together with a GPU
+is refused rather than quietly rewritten.
+
+
 **Kueue** gates admission. The Job is created `suspend: true` with
 `kueue.x-k8s.io/queue-name` set; Kueue's webhook unsuspends it once the team's
 ClusterQueue has quota. Omitting that label is a correctness bug, not a

@@ -717,7 +717,10 @@ class RemoteStepDecorator(StepDecorator):
             supplies it for every step, and with neither the step lands in the
             `sandbox` namespace on its small shared quota. Name the team for
             anything scheduled — sandbox quota is not sized for production.
-        cpu_arch: 'x86_64' (default) | 'arm64'
+        cpu_arch: 'arm64' (default) | 'x86_64'. arm64 is Graviton — cheaper
+            and usually faster for ML CPU kernels. A step asking for a GPU
+            falls back to x86_64 on its own, since the GPU NodePool is amd64
+            only; set 'x86_64' explicitly for a dependency with no arm64 wheel.
         priority: 'low' | 'normal' (default) | 'high' — WorkloadPriorityClass
             used for preemption within the team's own queue.
         ephemeral_gb: pod scratch space; raise it if the step unpacks large
@@ -763,6 +766,27 @@ class RemoteStepDecorator(StepDecorator):
                 break
             cur = parent
 
+    def _effective_cpu_arch(self, gpu: int, step_name: str) -> str:
+        """The architecture to run on, after a GPU ask overrides the default.
+
+        arm64 is the default because it is cheaper and usually faster, but the
+        gpu NodePool is amd64 only. A step that asks for a GPU therefore falls
+        back to x86_64 rather than failing on a default it never chose.
+
+        An *explicit* `cpu_arch="arm64"` with a GPU is left to fail: that is a
+        request for something that cannot exist, and silently ignoring it would
+        hide the mistake.
+        """
+        arch = self.attributes["cpu_arch"]
+        if not gpu or arch != "arm64":
+            return arch
+        if "cpu_arch" in (getattr(self, "_user_defined_attributes", None) or set()):
+            return arch  # resolve() raises, with the message it already has
+        sys.stderr.write(
+            f"[remote_step] {step_name}: gpu={gpu} requested, so running on x86_64 — the GPU NodePool is amd64 only.\n"
+        )
+        return "x86_64"
+
     def _flow_file_path(self) -> str | None:
         """Best-effort location of the flow's file for add_to_package."""
         import __main__
@@ -788,12 +812,19 @@ class RemoteStepDecorator(StepDecorator):
         "priority": "normal",
         # Pod scratch space (ephemeral-storage request and limit).
         "ephemeral_gb": 40,
-        # CPU architecture. "x86_64" (default) or "arm64" — arm64 lands on
-        # the Graviton NodePool (c9g/m9g/r9g/x8g) and picks the arm64 variant
-        # of the multi-arch runner image. Cheaper (~20%) and often faster for
-        # ML CPU kernels. Cannot be combined with a GPU ask: the gpu NodePool
-        # is x86 only.
-        "cpu_arch": "x86_64",
+        # CPU architecture. "arm64" (default) or "x86_64".
+        #
+        # arm64 lands on the Graviton NodePool (c9g/m9g/r9g/x8g) and picks the
+        # arm64 variant of the multi-arch runner image — ~20% cheaper and often
+        # faster for ML CPU kernels, which is why it is the default.
+        #
+        # A GPU ask overrides it: the gpu NodePool is amd64 only, so a step
+        # requesting a GPU falls back to x86_64 automatically. Setting
+        # cpu_arch="arm64" *explicitly* alongside a GPU is still an error, since
+        # that asks for something impossible rather than leaving it to us.
+        #
+        # Set "x86_64" for a dependency with no arm64 wheel.
+        "cpu_arch": "arm64",
     }
 
     _resources: StepResources
@@ -896,12 +927,13 @@ class RemoteStepDecorator(StepDecorator):
         if self._hf_loads:
             _drop_hf_hub(decorators)
         cpu, memory_mb, gpu = _find_resources(decorators)
+        cpu_arch = self._effective_cpu_arch(gpu, step_name)
         try:
             self._resources = resolve(
                 cpu,
                 memory_mb,
                 gpu,
-                cpu_arch=self.attributes["cpu_arch"],
+                cpu_arch=cpu_arch,
                 ephemeral_gb=self.attributes["ephemeral_gb"],
             )
         except SizingError:

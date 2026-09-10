@@ -763,7 +763,13 @@ above is developer convenience.
   So a GPU step needs nothing but `@resources(gpu=N)` and its framework in
   `@pypi`.
 - Karpenter provisioned the node in ~45 s from a cold start.
-- Constraints that do apply: `cpu_arch="arm64"` with `gpu>0` is refused (the
+- `cpu_arch` defaults to `arm64`, and a GPU ask overrides it automatically —
+  the GPU NodePool is amd64 only, so a step requesting a GPU is moved to
+  x86_64 rather than failing on a default it never chose. Writing
+  `cpu_arch="arm64"` *explicitly* alongside a GPU is still an error, since that
+  asks for something that cannot exist.
+- Constraints that do apply: an explicit `cpu_arch="arm64"` with `gpu>0` is
+  refused (the
   gpu NodePool is amd64 only), and `content` is currently the only team with
   GPU quota, so a GPU step elsewhere stays Pending until one is granted.
 - A dedicated image would only be worth building for a framework that expects
