@@ -37,6 +37,16 @@ _ARCH_TO_K8S = {"x86_64": "amd64", "arm64": "arm64"}
 VALID_PRIORITIES = ("low", "normal", "high")
 
 
+# What a node's data volume can actually give one pod, from
+# infra/eks/karpenter-nodeclasses.yaml.tpl. The headroom covers the runner
+# image plus the kubelet's eviction thresholds; a request above this is
+# admitted by Kueue and then never schedules.
+NODE_DATA_VOLUME_GB_CPU = 200
+NODE_DATA_VOLUME_GB_GPU = 500
+MAX_EPHEMERAL_GB_CPU = 170
+MAX_EPHEMERAL_GB_GPU = 460
+
+
 @dataclass(frozen=True)
 class StepResources:
     """The validated resource ask for one step.
@@ -54,6 +64,10 @@ class StepResources:
     # artifacts through memory, but pip/uv unpacking wheels and any
     # tempfile use land here.
     ephemeral_gb: int = 40
+    # /dev/shm, from a sibling @kubernetes(shared_memory=...). 0 leaves the
+    # container default of 64 MB, which is what makes a torch DataLoader with
+    # workers die on a bus error.
+    shm_mb: int = 0
 
     @property
     def k8s_arch(self) -> str:
@@ -66,6 +80,7 @@ def resolve(
     gpu: int = 0,
     cpu_arch: str = "x86_64",
     ephemeral_gb: int = 40,
+    shm_mb: int = 0,
 ) -> StepResources:
     """Validate a resource ask and return it normalised.
 
@@ -98,12 +113,46 @@ def resolve(
             cpu_arch=cpu_arch,
             gpu=gpu,
         )
+    if ephemeral_gb < 1:
+        raise SizingError(
+            f"ephemeral_gb={ephemeral_gb} — must be >= 1",
+            ephemeral_gb=ephemeral_gb,
+        )
+    # A pod asking for more scratch space than a node's data volume holds is
+    # admitted by Kueue and then never schedules, so it sits Pending until
+    # waitForPodsReady evicts it, with nothing anywhere saying why. Refuse it
+    # here instead, where the number can be named.
+    max_ephemeral = MAX_EPHEMERAL_GB_GPU if gpu > 0 else MAX_EPHEMERAL_GB_CPU
+    volume = NODE_DATA_VOLUME_GB_GPU if gpu > 0 else NODE_DATA_VOLUME_GB_CPU
+    if ephemeral_gb > max_ephemeral:
+        pool = "gpu" if gpu > 0 else "CPU"
+        raise SizingError(
+            f"ephemeral_gb={ephemeral_gb} exceeds what a {pool} node can offer "
+            f"({max_ephemeral} GB usable of a {volume} GB data volume, the rest "
+            f"going to the runner image and the kubelet's eviction thresholds). "
+            f"Split the work, stream through S3, or raise the volume in "
+            f"infra/eks/karpenter-nodeclasses.yaml.tpl.",
+            ephemeral_gb=ephemeral_gb,
+            max_ephemeral_gb=max_ephemeral,
+        )
+    if shm_mb and shm_mb > memory_mb:
+        # /dev/shm is tmpfs and is charged to the pod's memory limit, so a
+        # shared_memory larger than the memory request can only end in an OOM
+        # kill the moment it is filled.
+        raise SizingError(
+            f"shared_memory={shm_mb} MB exceeds memory={memory_mb} MB. /dev/shm is "
+            f"tmpfs and counts against the pod's memory limit, so filling it would "
+            f"OOM-kill the step.",
+            shm_mb=shm_mb,
+            memory_mb=memory_mb,
+        )
     return StepResources(
         cpu=cpu,
         memory_mb=memory_mb,
         gpus=gpu,
         cpu_arch=cpu_arch,
         ephemeral_gb=ephemeral_gb,
+        shm_mb=shm_mb,
     )
 
 
@@ -239,6 +288,22 @@ def build_manifest(
     for k, v in (extra_env or {}).items():
         env.append({"name": k, "value": v})
 
+    # /dev/shm. The container default is 64 MB, which a torch DataLoader with
+    # workers exhausts immediately and reports as a bus error rather than
+    # anything mentioning shared memory. `medium: Memory` makes it tmpfs, so
+    # the size is charged to the pod's memory limit -- resolve() already
+    # refuses a shared_memory larger than the memory request.
+    volumes: list[dict] = []
+    volume_mounts: list[dict] = []
+    if resources.shm_mb:
+        volumes.append(
+            {
+                "name": "dev-shm",
+                "emptyDir": {"medium": "Memory", "sizeLimit": f"{resources.shm_mb}Mi"},
+            }
+        )
+        volume_mounts.append({"name": "dev-shm", "mountPath": "/dev/shm"})
+
     requests = {
         "cpu": str(resources.cpu),
         "memory": f"{resources.memory_mb}Mi",
@@ -294,6 +359,7 @@ def build_manifest(
                 "spec": {
                     "restartPolicy": "Never",
                     "serviceAccountName": cfg.service_account,
+                    "volumes": volumes,
                     "nodeSelector": node_selector,
                     # Steps are single-pod and stateless; on node loss
                     # Metaflow retries. Give the kubelet a little time to
@@ -314,6 +380,7 @@ def build_manifest(
                             # terminationGracePeriodSeconds, so the grace
                             # period below would buy nothing.
                             "env": env,
+                            "volumeMounts": volume_mounts,
                             "resources": {
                                 "requests": requests,
                                 "limits": limits,

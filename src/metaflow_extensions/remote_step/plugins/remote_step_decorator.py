@@ -351,22 +351,38 @@ def _outerbounds_config() -> dict:
         return {}
 
 
-def _find_resources(decorators) -> tuple[int, int, int]:
-    """Read cpu, memory (MB), gpu from sibling @resources AND @kubernetes.
+# Metaflow's own @kubernetes(disk=...) default, in MB. A bare @kubernetes
+# carries it whether the user thought about disk or not, so it must not be
+# read as a deliberate ask — otherwise adding @kubernetes(cpu=8) would shrink
+# the pod's scratch space from our 40 GB default to 10.
+_K8S_DEFAULT_DISK_MB = 10240
 
-    Both are read and the max of each dimension wins, which is how Metaflow
-    reconciles them itself. Reading only @resources silently under-provisions
-    a step that stated its ask on @kubernetes — the fallback below would hand
-    a step declaring `@kubernetes(cpu=3, memory=29000)` a 1 vCPU / 4 GB pod,
-    and the resulting OOM is indistinguishable from one in the step's own
-    code.
+
+def _find_resources(decorators) -> tuple[int, int, int, int, int]:
+    """cpu, memory (MB), gpu, disk (MB), shared_memory (MB) from siblings.
+
+    Both @resources and @kubernetes are read and the max of each dimension
+    wins, which is how Metaflow reconciles them itself. Reading only
+    @resources silently under-provisions a step that stated its ask on
+    @kubernetes — the fallback below would hand a step declaring
+    `@kubernetes(cpu=3, memory=29000)` a 1 vCPU / 4 GB pod, and the resulting
+    OOM is indistinguishable from one in the step's own code.
+
+    `disk` and `shared_memory` used to be dropped here, which was the same
+    bug one layer down. `@kubernetes(disk=200000)` on a step unpacking a
+    120 GB dataset produced a pod with a 40 GiB ephemeral-storage *limit*, so
+    the kubelet evicted it partway through — and an eviction reads as node
+    loss, so it looked like an infrastructure blip rather than a sizing
+    mistake. `shared_memory` was silently unsupported, leaving /dev/shm at
+    the container default of 64 MB, which is what makes a torch DataLoader
+    with workers die on a bus error.
     """
     found: dict[str, int] = {}
     for d in decorators:
         if getattr(d, "name", "") not in ("resources", "kubernetes"):
             continue
         attrs = getattr(d, "attributes", {}) or {}
-        for key in ("cpu", "memory", "gpu"):
+        for key in ("cpu", "memory", "gpu", "disk", "shared_memory"):
             raw = attrs.get(key)
             if raw in (None, ""):
                 continue
@@ -376,7 +392,13 @@ def _find_resources(decorators) -> tuple[int, int, int]:
             except (TypeError, ValueError):
                 continue
             found[key] = max(found.get(key, 0), val)
-    return found.get("cpu", 1), found.get("memory", 4000), found.get("gpu", 0)
+    return (
+        found.get("cpu", 1),
+        found.get("memory", 4000),
+        found.get("gpu", 0),
+        found.get("disk", 0),
+        found.get("shared_memory", 0),
+    )
 
 
 def _find_pypi_env(flow, decorators) -> dict:
@@ -966,15 +988,25 @@ class RemoteStepDecorator(StepDecorator):
         self._hf_loads = _find_hf_loads(decorators)
         if self._hf_loads:
             _drop_hf_hub(decorators)
-        cpu, memory_mb, gpu = _find_resources(decorators)
+        cpu, memory_mb, gpu, disk_mb, shm_mb = _find_resources(decorators)
         cpu_arch = self._effective_cpu_arch(gpu, step_name)
+        # An explicit ephemeral_gb on @remote_step is the most specific
+        # statement and wins outright. Otherwise a deliberate
+        # @kubernetes(disk=...) raises it -- never lowers it, since a bare
+        # @kubernetes carries Metaflow's 10 GB default whether the user
+        # thought about disk or not.
+        ephemeral_gb = int(self.attributes["ephemeral_gb"])
+        if "ephemeral_gb" not in getattr(self, "_user_defined_attributes", set()):
+            if disk_mb and disk_mb != _K8S_DEFAULT_DISK_MB:
+                ephemeral_gb = max(ephemeral_gb, -(-disk_mb // 1024))
         try:
             self._resources = resolve(
                 cpu,
                 memory_mb,
                 gpu,
                 cpu_arch=cpu_arch,
-                ephemeral_gb=self.attributes["ephemeral_gb"],
+                ephemeral_gb=ephemeral_gb,
+                shm_mb=shm_mb,
             )
         except SizingError:
             raise
