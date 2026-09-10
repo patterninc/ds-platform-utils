@@ -80,14 +80,6 @@ variable "teams" {
       gpu_quota     = "0"
       gpu_borrow    = "4"
     }
-    nlp = {
-      cpu_quota     = "256"
-      cpu_borrow    = "512"
-      memory_quota  = "1024Gi"
-      memory_borrow = "2048Gi"
-      gpu_quota     = "8"
-      gpu_borrow    = "16"
-    }
     advertising = {
       cpu_quota     = "128"
       cpu_borrow    = "512"
@@ -112,13 +104,54 @@ variable "teams" {
       gpu_quota     = "0"
       gpu_borrow    = "4"
     }
+    # NLP is part of content, so this namespace carries that work — hence the
+    # cluster's only GPU quota, and a larger CPU/memory allocation than the
+    # other domains. Dropping the GPU quota when the nlp namespace went away
+    # would leave the NLP flows unschedulable rather than merely cramped.
     content = {
+      cpu_quota     = "256"
+      cpu_borrow    = "512"
+      memory_quota  = "1024Gi"
+      memory_borrow = "2048Gi"
+      gpu_quota     = "8"
+      gpu_borrow    = "16"
+    }
+    revops = {
       cpu_quota     = "128"
       cpu_borrow    = "512"
       memory_quota  = "512Gi"
       memory_borrow = "2048Gi"
       gpu_quota     = "0"
       gpu_borrow    = "4"
+    }
+    reference = {
+      cpu_quota     = "128"
+      cpu_borrow    = "512"
+      memory_quota  = "512Gi"
+      memory_borrow = "2048Gi"
+      gpu_quota     = "0"
+      gpu_borrow    = "4"
+    }
+    demand-generation = {
+      cpu_quota     = "128"
+      cpu_borrow    = "512"
+      memory_quota  = "512Gi"
+      memory_borrow = "2048Gi"
+      gpu_quota     = "0"
+      gpu_borrow    = "4"
+    }
+    # Where a step lands when neither @remote_step(team=...) nor
+    # `--tag ds.domain:<team>` names one. Ad-hoc and exploratory work, so the
+    # quota is deliberately small and borrows little: an untagged run should
+    # be able to get a node, but never at the cost of a team's own capacity.
+    # No GPU — an untagged run should not silently take a GPU node.
+    sandbox = {
+      cpu_quota     = "32"
+      cpu_borrow    = "64"
+      memory_quota  = "128Gi"
+      memory_borrow = "256Gi"
+      gpu_quota     = "0"
+      gpu_borrow    = "0"
     }
   }
 }

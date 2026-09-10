@@ -65,6 +65,12 @@ CACHED_ENV_FILENAME = ".remote_step_env.json"
 # `--tag ds.domain:<team>` can stand in for team= on the decorator, since
 # flows already label their owning domain this way.
 TEAM_TAG_PREFIX = "ds.domain:"
+# Namespace used when neither the decorator nor a tag names a team. Every
+# scheduled flow tags its domain, so an untagged run is ad-hoc by definition
+# and belongs on a small shared quota rather than being refused. Named
+# `sandbox` rather than `default` so a pod that lands here by accident reads
+# as obviously misplaced.
+FALLBACK_TEAM = "sandbox"
 # The Metaflow mflog sidecar uploads task stdout to the datastore on a
 # sigmoid schedule that slows to a ~30 s cadence for long-running steps.
 # The Outerbounds UI reads the task's stdout from that upload, so users
@@ -717,8 +723,10 @@ class RemoteStepDecorator(StepDecorator):
 
     Kwargs:
         team: namespace to run in. Selects the team's Kueue ClusterQueue and
-            therefore its quota. Required — there is no safe default, since
-            picking the wrong one spends another team's capacity.
+            therefore its quota. Optional: `--tag ds.domain:<team>` on the run
+            supplies it for every step, and with neither the step lands in the
+            `sandbox` namespace on its small shared quota. Name the team for
+            anything scheduled — sandbox quota is not sized for production.
         cpu_arch: 'x86_64' (default) | 'arm64'
         priority: 'low' | 'normal' (default) | 'high' — WorkloadPriorityClass
             used for preemption within the team's own queue.
@@ -773,8 +781,8 @@ class RemoteStepDecorator(StepDecorator):
 
     name = "remote_step"
     defaults = {
-        # Kubernetes namespace == team. No default: the namespace decides
-        # whose Kueue quota is consumed, so guessing is worse than failing.
+        # Kubernetes namespace == team. Resolved at step_init from this, then
+        # `--tag ds.domain:<team>`, then FALLBACK_TEAM.
         "team": None,
         "ttl_hours": 24,
         # Outerbounds custom-secret carrying GITHUB_TOKEN for cloning
@@ -851,13 +859,21 @@ class RemoteStepDecorator(StepDecorator):
         # team= wins when given, so a single step can override the run's tag.
         team = self.attributes.get("team") or _team_from_tags()
         if not team:
-            raise SizingError(
-                f"@remote_step on '{step_name}' needs a team. It names the "
-                f"Kubernetes namespace and therefore whose Kueue quota the "
-                f"step spends, so there is no safe default.\n"
-                f'  on the decorator:  @remote_step(team="forecasting")\n'
-                f"  or for a whole run: --tag {TEAM_TAG_PREFIX}forecasting",
-                step_name=step_name,
+            # Nothing named a team, so this is not a production run: every
+            # scheduled flow carries `--tag ds.domain:<team>`. Fall back to the
+            # sandbox namespace and its small quota rather than refusing to
+            # run, which is what ad-hoc and exploratory work wants.
+            #
+            # Said out loud, on stderr, because the consequence is real: the
+            # step spends sandbox quota and its pod lands in the sandbox
+            # namespace, so a *production* flow that lost its tag runs in the
+            # wrong place instead of failing.
+            team = FALLBACK_TEAM
+            sys.stderr.write(
+                f"[remote_step] {step_name}: no team given, using "
+                f"'{FALLBACK_TEAM}'. For a team's own quota, add "
+                f"--tag {TEAM_TAG_PREFIX}<team> to the run or "
+                f'team="<team>" to the decorator.\n'
             )
         self._team = team
         cpu, memory_mb, gpu = _find_resources(decorators)
