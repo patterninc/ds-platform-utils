@@ -15,6 +15,14 @@ TAG="--tag ds.domain:forecasting"
 
 # fx10 deliberately carries no team tag: it proves the sandbox fallback.
 NO_TAG_FLOWS="fx10_sandbox.py"
+# `content` is the only ClusterQueue with GPU quota -- every other queue,
+# sandbox and forecasting included, has nvidia.com/gpu nominalQuota 0 AND
+# borrowingLimit 0, so a GPU Workload sent there is never admitted. It does
+# not fail either: it sits pending forever behind
+#   queued -- Kueue has not admitted this Workload yet (team ClusterQueue at quota)
+# Any GPU flow therefore has to name a queue that actually has GPUs.
+GPU_FLOWS="fx13_gpu.py"
+GPU_TAG="--tag ds.domain:content"
 
 if [ "$#" -gt 0 ]; then FLOWS=("$@"); else FLOWS=(fx*.py); fi
 
@@ -22,6 +30,7 @@ pass=(); fail=()
 for flow in "${FLOWS[@]}"; do
   tag="$TAG"
   case " $NO_TAG_FLOWS " in *" $flow "*) tag="";; esac
+  case " $GPU_FLOWS " in *" $flow "*) tag="$GPU_TAG";; esac
   echo ""
   echo "======================================================================"
   echo "  $MODE  $flow  ${tag:-(no team tag)}"
