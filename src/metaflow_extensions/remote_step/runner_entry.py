@@ -151,6 +151,26 @@ def _read_cpu_usage_seconds() -> float | None:
     return nanos / 1_000_000_000 if nanos is not None else None
 
 
+def _detect_outputs(current_attrs: dict, assigned: set) -> dict:
+    """Which attributes the step body produced or changed.
+
+    An attribute is an output if the body assigned it -- see
+    `_FakeSelf.__setattr__`, which records the names. An input the step only
+    read is not re-uploaded, which is what keeps a wide foreach join
+    affordable. Underscore-prefixed names are internal and never travel.
+
+    KNOWN LIMITATION: assignment, not content. An in-place mutation
+    (`self.df.dropna(inplace=True)`, `self.d["k"] = 1`) never assigns the
+    attribute and is therefore NOT persisted, which differs from a normal
+    Metaflow step where everything on `self` is pickled at task end. Rebind
+    instead: `self.df = self.df.dropna()`. Catching mutation would mean
+    re-pickling every input at the end of every step to compare content
+    hashes, since inputs are hydrated eagerly and "untouched" is not
+    knowable.
+    """
+    return {k: v for k, v in current_attrs.items() if not k.startswith("_") and k in assigned}
+
+
 def _log_resource_usage(spec: dict, wall_seconds: float, cpu_seconds_at_start: float | None = None) -> None:
     """One line comparing what the step used against what it asked for.
 
@@ -909,9 +929,49 @@ class _FakeSelf:
     """
 
     def __init__(self, foreach_input=None):
+        # Set through object.__setattr__ so it exists before the first
+        # __setattr__ call below goes looking for it.
+        object.__setattr__(self, "_assigned", set())
         # Underscored so the outputs snapshot skips it: this is context handed
         # in, not something the step produced.
         self._foreach_input = foreach_input
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Record the assignment. Assignment is what makes an attr an output.
+
+        This replaced comparing object identity against the inputs, which was
+        wrong in two directions:
+
+        - `self.df = None` was excluded by a `v is not None` guard before the
+          identity check ever ran, so the driver kept the stale upstream value
+          and downstream steps read data the step had explicitly cleared.
+        - identity is an address, and an address can be reused. The common
+          `self.df = self.df.dropna()` is safe, because the replacement is
+          allocated while the original is still referenced. But freeing the
+          input first to halve peak memory --
+
+              big = self.df
+              self.df = None
+              self.df = transform(big)
+
+          -- lets the replacement land on the freed object's address, whereupon
+          the attribute compared equal to its own input and was never
+          uploaded.
+
+        Recording the name sidesteps both, costs nothing, and does not pin the
+        input in memory the way holding a reference would.
+        """
+        if not name.startswith("_"):
+            self._assigned.add(name)
+        object.__setattr__(self, name, value)
+
+    def _begin_recording(self) -> None:
+        """Start counting assignments as outputs.
+
+        Called once the inputs are seeded and before the body runs, so
+        hydrating an input does not mark it as something the step produced.
+        """
+        object.__setattr__(self, "_assigned", set())
 
     def next(self, *args, **kwargs):
         """No-op stand-in for Metaflow's `self.next(...)` — routing runs on driver."""
@@ -1109,18 +1169,11 @@ def main(spec_uri: str | None = None) -> int:
         traceback.print_exc()
         return 3
     _stage("hydrate_inputs", t0=t0)
-    inputs_snapshot = set(vars(fake).keys())
-    # Identity of every input BEFORE the step body runs.
-    #
-    # This has to be captured here, not after. The rule for "is this an
-    # output" is "the attribute is new, or it points at a different object
-    # than the input did". Reading the ids after the body has run makes that
-    # comparison vacuous: for `self.df = transform(self.df)` the recorded id
-    # is already the id of the NEW object, so the attribute compares equal to
-    # itself, is classified as an unmodified input, and is never uploaded.
-    # The driver then leaves self.df on the stale upstream ref and every
-    # downstream step silently consumes un-transformed data.
-    input_ids_before: dict[str, int] = {k: id(v) for k, v in vars(fake).items()}
+    # From here on, an assignment on `fake` means the step produced it. Has
+    # to be armed after the inputs are seeded and before the body runs:
+    # earlier and hydrating an input would count as producing it, later and
+    # the body's own assignments would be missed.
+    fake._begin_recording()
 
     # Patch metaflow.current with the flow's context so user code that
     # reads `current.tags`, `current.run_id`, etc. works inside the pod.
@@ -1259,12 +1312,7 @@ def main(spec_uri: str | None = None) -> int:
     _save_card_components(card_recorder, spec)
 
     # 5. Snapshot new/modified attrs.
-    new_attrs = {
-        k: v for k, v in vars(fake).items() if not k.startswith("_") and (k not in inputs_snapshot or v is not None)
-    }
-    # Drop attrs that started as inputs and were not reassigned, comparing
-    # against the pre-execution identities captured above.
-    outputs = {k: v for k, v in new_attrs.items() if k not in input_ids_before or id(v) != input_ids_before[k]}
+    outputs = _detect_outputs(vars(fake), fake._assigned)
 
     # 6. Persist outputs. Parallelise across attrs so a step with many
     # multi-GB DataFrames doesn't pay the per-upload wall-clock N times
