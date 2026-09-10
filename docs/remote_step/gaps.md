@@ -124,25 +124,61 @@ Legend for **Status**:
   have the HF snapshots.
 - **Options**: mirror decisions for `@model`.
 
-### 9. Metaflow client inside step body — ❌
+### 9. Metaflow client inside step body — ✅ (it already works)
 - **Uses**: 30+ sites of `Flow(...).latest_successful_run`, `Run(pathspec=...)`,
   `Task(...)`, `namespace(...)`, `default_namespace()`.
-- **Bug**: Batch container has mfconfig env vars but likely lacks IAM permission
-  on Outerbounds' Metaflow datastore S3 bucket. Cross-account read via our
-  bucket policy doesn't help — OB's datastore is in a different account.
-- **Fix**: add `sts:AssumeRole` on a cross-account read role Outerbounds
-  provides, OR verify that mfconfig-based auth uses our submit-user credentials
-  (which have S3 access to some but maybe not all Metaflow datastores).
+- **The concern was wrong.** This entry assumed the pod would lack IAM
+  permission on Outerbounds' Metaflow datastore. Probed directly from a runner
+  pod (`ClientFlow` run 238592) and both halves answer:
 
-### 10. `current.run.add_tags(...)` — ❌
+  ```
+  probe: metadata_service -> ok, latest_run=238592
+  probe: datastore_read   -> ok
+  ```
+
+  The metadata service is reached over HTTP with the forwarded
+  `METAFLOW_SERVICE_*` config, and the datastore read succeeds too — so no
+  cross-account role is needed. No work required; keep the probe flow around
+  to catch a regression if Outerbounds changes how the datastore is served.
+
+### 10. `current.run.add_tags(...)` — ✅
 - **Uses**: 7 sites.
-- **Bug**: `current.run` needs a live Metaflow `Run` client on Batch; not wired.
-- **Fix**: build a `Run` client in runner_entry using forwarded mfconfig, patch
-  `current._run`.
+- **Was**: `current.run` resolved to the no-op placeholder `__getattr__` hands
+  out, so the call did nothing at all — silently.
+- **Now**: the pod gets a recorder in place of `current.run` that captures
+  add / remove / replace calls and writes them beside the outputs; the driver
+  replays them after the step succeeds. Failing to apply a tag never fails the
+  step — the body has already run and a tag is metadata.
+- Reads (`run.data`, `run.tags`) are deliberately *not* faked. They would need
+  a real client, and gap 9 shows one can be built in the pod if a use case
+  turns up — better than returning a lie.
+- Verified live: `ClientFlow` run 238594 —
+  `applied run tags from the step: +['gap10-from-pod']`, and the tag is on the
+  run in `end`.
 
 ---
 
 ## Major functional gaps — degrade UX / semantics
+
+### 10b. An artifact's *type* must exist wherever it is loaded — ⚠️ by design
+- Outputs travel as pickles, so loading one needs the module that defines its
+  type. A step-scoped `@pypi` package is installed only in that step's pod, so
+  an artifact carrying one of its types cannot be read anywhere else:
+
+  ```
+  ArtifactLoadError: unpickle failed for s3://.../report.pkl:
+    No module named 'torch'
+  ```
+
+  Hit while writing the GPU probe: the report dict looked like plain data but
+  held `torch.__version__`, which is a `TorchVersion`, not a `str`. The fix in
+  user code is `str(...)` — return plain types, or declare the package in every
+  step that reads the artifact.
+- Not fixable in the decorator: it is how pickle works. Worth knowing because
+  the failure surfaces in the *downstream* step, far from the cause. The error
+  does at least name the missing module.
+- Same shape as the model-object cases in gaps 7 and 8.
+
 
 ### 11. `@environment(vars={...})` — ✅
 - **Uses**: 1 site (rare but real).
@@ -415,9 +451,29 @@ above is developer convenience.
   touching them, so those two are skipped silently rather than failing the
   whole flow. Every other step is offloaded.
 
-### R4. GPU workloads — 🚫 (for now)
-- CUDA / cuDNN / NVIDIA drivers deferred to a separate `remote-step-runner-gpu`
-  image, not the default runner. Non-goal for the CPU decorator MVP.
+### R4. GPU workloads — ✅ (no separate image needed)
+- **A `remote-step-runner-gpu` image turned out to be unnecessary.** The plan
+  was to build one carrying CUDA / cuDNN. Tested on the existing
+  `python:3.12-slim` runner instead (`GpuFlow`, run 238593, `g6` / L4):
+
+  ```
+  gpucheck: nvidia_smi    -> NVIDIA L4, 580.159.03, 23034 MiB
+  gpucheck: torch_version -> 2.9.1+cu128
+  gpucheck: cuda_available -> True
+  gpucheck: matmul_on_gpu -> ok
+  ```
+
+  Two things make that work: Bottlerocket's NVIDIA variant injects the driver
+  and `nvidia-smi` into any container that requests `nvidia.com/gpu`, and
+  framework wheels (torch's `cu128` build here) bundle their own CUDA runtime.
+  So a GPU step needs nothing but `@resources(gpu=N)` and its framework in
+  `@pypi`.
+- Karpenter provisioned the node in ~45 s from a cold start.
+- Constraints that do apply: `cpu_arch="arm64"` with `gpu>0` is refused (the
+  gpu NodePool is amd64 only), and `content` is currently the only team with
+  GPU quota, so a GPU step elsewhere stays Pending until one is granted.
+- A dedicated image would only be worth building for a framework that expects
+  system CUDA rather than bundling it — TensorFlow being the likely case.
 
 ---
 
@@ -457,7 +513,7 @@ Broken down by transition / decorator, counted across both production repos.
 | `current.model` | 18 | ❌ gap #7 |
 | `current.huggingface_hub` | 17 | ❌ gap #8 |
 | `current.flow_name` | 14 | ✅ |
-| `current.run.add_tags(...)` | 7 | ❌ gap #10 |
+| `current.run.add_tags(...)` | 7 | ✅ gap #10 |
 | `current.branch_name` / `project_name` | 4 | ✅ gap #5 |
 | `current.step_name` | 1 | ✅ |
 | `current.pathspec` | 1 | ❌ (derive from run_id/step_name/task_id) |
@@ -467,6 +523,6 @@ Broken down by transition / decorator, counted across both production repos.
 | `IncludeFile` | 2 | ⚠️ untested |
 | `self.merge_artifacts` | 26 | ✅ gap #2 |
 | `self.input` (foreach) | 100+ | ✅ gap #3 |
-| `Flow(...)`, `Run(...)`, `Task(...)` inside step body | 30+ | ❌ gap #9 |
+| `Flow(...)`, `Run(...)`, `Task(...)` inside step body | 30+ | ✅ gap #9, verified |
 | `parallel_map` inside step body | 17 | ✅ (works if metaflow installed) |
 | `config_expr(...)` at decorator-arg time | 1 | ✅ (evaluated at flow init) |
