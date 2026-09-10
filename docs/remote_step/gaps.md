@@ -233,6 +233,116 @@ Legend for **Status**:
 
 ## Major functional gaps — degrade UX / semantics
 
+### 10b. Unpickling an artifact needs the same library, same version — ✅ documented
+- Outputs travel as pickles, which store a *reference* to the type, not its
+  code. So the step reading an artifact needs the defining library installed,
+  at the same version that wrote it. Standard pickle behaviour, not a defect.
+- **Rule: across step boundaries return plain types** (`str`, `int`, `dict`,
+  `list`, DataFrame), or declare the library at the same version in every step
+  that reads the artifact.
+- `@uv_pypi_base` satisfies this by construction — every step derives from one
+  `uv.lock`. The exposure is step-scoped `@pypi(packages=...)`, where one step
+  has a library the others do not:
+
+  ```
+  ArtifactLoadError: unpickle failed for s3://.../report.pkl:
+    No module named 'torch'
+  ```
+
+  Hit while writing the GPU probe: the report dict looked like plain data but
+  held `torch.__version__`, which is a `TorchVersion`, not a `str`. `str(...)`
+  fixed it.
+- Version *mismatch* is the quieter case, since pickle records no version and
+  checks nothing: usually fine, sometimes raises, occasionally rebuilds a
+  subtly wrong object. numpy 2.0's `numpy.core` → `numpy._core` rename and
+  pandas 2.x → 1.x are the known instances.
+
+### 7. `current.model` / `@model(load=[...])` — ✅ load; save still refused
+- **Uses**: 19 sites (embedding models, sklearn, spaCy, `distilbart_mnli_12_3`, etc.).
+- **Bug**: `@model` downloads model artifacts on the driver argo pod, populates
+  `current.model.loaded[...]`. Batch container has neither the files nor the
+  populated dict.
+- **Now**: the download happens in the pod, not on the driver, and only the
+  *names* travel in the spec. That works because the model reference is an
+  ordinary flow artifact — `@model` resolves it with `getattr(flow, name)` —
+  which the spec already ships as an input, so the pod has everything it needs
+  to fetch the model itself.
+- `@model` is **dropped from the driver**, the same way `@kubernetes` is.
+  Otherwise its `task_pre_step` downloads a multi-GB model onto a Small-tier
+  pod with 10 GB of disk that never reads it. Now the file lands next to the
+  GPU and never crosses the driver.
+- The store is reached with `datastore_context.get()`, which builds itself from
+  the forwarded `METAFLOW_*` config — viable because gap 9 established that the
+  pod can read Outerbounds' datastore.
+- A failed load raises rather than warning: the body is about to read a path
+  that would not be there.
+- **`current.model.save()` is still refused**, with a message pointing at a
+  plain artifact instead. Saving needs write access to the model store from
+  the pod, which is a separate piece of work.
+
+### 8. `current.huggingface_hub` / `@huggingface_hub` — ✅ read path; persist refused
+- **Uses**: 17 sites.
+- Same shape as `@model` — the decorator downloaded on the driver — but harder
+  underneath: the registry hangs off `@checkpoint`'s task-scoped
+  `CurrentCheckpointer`, which does not exist in the runner, so it cannot
+  simply be rebuilt the way `LoadedModels` can.
+- **Now**: `@huggingface_hub(load=[...])` is dropped from the driver and the
+  repos are fetched in the pod, exposing `current.huggingface_hub.loaded` and
+  the `load(...)` context manager. Entries may be a bare `repo_id` or a dict
+  of `snapshot_download` arguments; `revision` and the pattern filters are
+  carried through.
+- **The source changes, and that is announced.** The driver serves from the
+  datastore cache and falls back to the Hub; the pod goes to the Hub directly.
+  For a repo without a pinned `revision` those are not guaranteed to be the
+  same content, so the switch is logged rather than left to be discovered:
+
+  ```
+  [remote_step] @huggingface_hub: downloading from the Hugging Face Hub
+                (the driver would have served these from the datastore cache)
+  ```
+
+  Pin `revision` if that matters. Reinstating the datastore cache means
+  rebuilding the checkpointer in the pod — the deeper fix, not done.
+- `current.huggingface_hub.snapshot_download()` is refused: it persists into
+  the datastore, which the pod cannot write to. Same boundary as
+  `current.model.save()`.
+
+### 9. Metaflow client inside step body — ✅ (it already works)
+- **Uses**: 30+ sites of `Flow(...).latest_successful_run`, `Run(pathspec=...)`,
+  `Task(...)`, `namespace(...)`, `default_namespace()`.
+- **The concern was wrong.** This entry assumed the pod would lack IAM
+  permission on Outerbounds' Metaflow datastore. Probed directly from a runner
+  pod (`ClientFlow` run 238592) and both halves answer:
+
+  ```
+  probe: metadata_service -> ok, latest_run=238592
+  probe: datastore_read   -> ok
+  ```
+
+  The metadata service is reached over HTTP with the forwarded
+  `METAFLOW_SERVICE_*` config, and the datastore read succeeds too — so no
+  cross-account role is needed. No work required; keep the probe flow around
+  to catch a regression if Outerbounds changes how the datastore is served.
+
+### 10. `current.run.add_tags(...)` — ✅
+- **Uses**: 7 sites.
+- **Was**: `current.run` resolved to the no-op placeholder `__getattr__` hands
+  out, so the call did nothing at all — silently.
+- **Now**: the pod gets a recorder in place of `current.run` that captures
+  add / remove / replace calls and writes them beside the outputs; the driver
+  replays them after the step succeeds. Failing to apply a tag never fails the
+  step — the body has already run and a tag is metadata.
+- Reads (`run.data`, `run.tags`) are deliberately *not* faked. They would need
+  a real client, and gap 9 shows one can be built in the pod if a use case
+  turns up — better than returning a lie.
+- Verified live: `ClientFlow` run 238594 —
+  `applied run tags from the step: +['gap10-from-pod']`, and the tag is on the
+  run in `end`.
+
+---
+
+## Major functional gaps — degrade UX / semantics
+
 ### 10b. An artifact's *type* must exist wherever it is loaded — ⚠️ by design
 - Outputs travel as pickles, so loading one needs the module that defines its
   type. A step-scoped `@pypi` package is installed only in that step's pod, so
