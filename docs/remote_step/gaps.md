@@ -32,40 +32,66 @@ Legend for **Status**:
 
 ## Blockers — real flows fail today
 
-### 1. `def join(self, inputs)` — join step signature — 🚧
+### 1. `def join(self, inputs)` — join step signature — ✅
 - **Uses**: 58 join steps across the two repos.
-- **Bug**: driver body calls `original(fake)` but a join step's user body is
-  `def join(self, inputs)`. Missing positional argument → `TypeError`.
-- **Fix**: detect `node.type == "join"` at step_init and pass a synthetic
-  `inputs` object (Metaflow's `Inputs` shape) to `original(fake, inputs)`.
-- **Files**: `metaflow_extensions/remote_step/runner_entry.py`.
+- **Was**: the runner called `original(fake)`, so every join died on a missing
+  positional argument.
+- **Now**: the driver collects each incoming branch's attributes into the spec
+  and the runner rebuilds Metaflow's `Inputs` shape, so all three documented
+  access patterns work — `inputs.step_a.x`, `inputs[0].x`, and
+  `(inp.x for inp in inputs)`.
+- Branches are **lazy**: an attribute is fetched on first read and cached, so a
+  join over a wide foreach does not pull every branch's data to answer one
+  attribute. Branch artifacts that are already `RemoteArtifact` refs stay refs.
+- Verified live: `GapsFlow` run 238584 — `gather: 3 branches -> {'us': 100,
+  'uk': 50, 'de': 75}`, `inputs[0].region=us`.
 
-### 2. `self.merge_artifacts(inputs, include=[...])` — 🚧
+### 2. `self.merge_artifacts(inputs, include=[...])` — ✅
 - **Uses**: 26 join sites.
-- **Bug**: on Batch, `_FakeSelf.__getattr__` returns a no-op placeholder for
-  `.merge_artifacts`, so upstream artifacts are silently dropped.
-- **Fix**: implement `merge_artifacts` on `_FakeSelf` — copy each attribute
-  from every `inputs` entry onto `self`, honouring `include=` / `exclude=`.
+- **Was**: `_FakeSelf.__getattr__` answered `.merge_artifacts` with a no-op
+  placeholder, so every artifact a join meant to carry forward was dropped in
+  silence.
+- **Now**: implemented against Metaflow's contract — an attribute already set
+  on `self` wins and is skipped; `include` and `exclude` are mutually
+  exclusive; an attribute arriving with different content from two branches is
+  an unresolved conflict and raises rather than picking one. `include` narrows
+  what is considered, it does **not** resolve a conflict (same as Metaflow) —
+  assign the attribute yourself, or `exclude` it.
+- Conflicts are decided on the content hashes already in the spec, so nothing
+  is downloaded to compare.
+- Watch out: `hasattr` is useless on the stand-in `self` — `__getattr__`
+  answers every non-dunder name — so the "already set" test reads the instance
+  dict. Getting that wrong merges nothing at all.
+- Verified live: `GapsFlow` run 238584 — `merged run_label='gaps-check'`.
 
-### 3. `self.input` inside foreach child steps — 🚧
+### 3. `self.input` inside foreach child steps — ✅
 - **Uses**: ~100 sites in foreach branches (`self.worker = self.input`,
   `Run(pathspec=self.input)`, tuple-unpack `self.month, self.country = self.input`).
-- **Bug**: `_FakeSelf.input` is hardcoded to `None`.
-- **Fix**: driver passes the foreach split value into spec; runner_entry sets
-  `fake.input = spec.get("foreach_input")`; `_collect_flow_attrs` reads it
-  from the current flow's `self.input` property before shipping.
+- **Was**: `_FakeSelf.input` was hardcoded to `None`, so every foreach child
+  saw None — storing nothing, or raising on a tuple unpack.
+- **Now**: read from the driver's own `self.input` and shipped in the spec,
+  through the same serialisation as any other value (so a foreach splitting on
+  something large travels as a ref). `has_foreach_input` distinguishes "not a
+  foreach" from "a foreach whose value is legitimately None".
+- Verified live: `GapsFlow` run 238584 — `work: region=de rows=75` and one
+  branch per region. Before the fix the same flow died on `KeyError: None`.
 
-### 4. `current.is_production` — 🚧
+### 4. `current.is_production` — ✅
 - **Uses**: 209 sites — dominant `current.*` attribute across both repos.
-- **Bug**: not patched on Batch → evaluates falsy → user code writes to STAGE
-  tables from a PROD run. Silent, causes wrong-schema production writes.
-- **Fix**: forward `is_production` bool from driver's `metaflow.current` into
-  spec, patch `_current._is_production` in runner_entry.
+- **Was**: unset in the pod, so it read falsy and a PROD run wrote to STAGE
+  tables. Silent, no error anywhere.
+- **Now**: forwarded from the driver's `current` and replayed in the pod.
+  `is_production` is not a built-in property of `current` — @project installs
+  it with `_update_env`, which never runs in the runner because the runner is
+  not executing a Metaflow task — so the same call is made from the spec.
+- Verified live: `ProjFlow` run 238586 with `--production` — driver and pod
+  both report `is_production: True`, and the pod logs `would write to PROD`.
 
-### 5. `current.branch_name` / `current.project_name` — 🚧
+### 5. `current.branch_name` / `current.project_name` — ✅
 - **Uses**: 4 sites (branch_name) + implicit uses via `Flow(...).runs('project_branch:prod')`.
-- **Bug**: not patched.
-- **Fix**: forward from `metaflow.current` on driver, set in runner_entry.
+- **Now**: forwarded with `is_production` — the whole @project set travels:
+  `project_name`, `branch_name`, `is_user_branch`, `project_flow_name`.
+- Verified live alongside gap 4 (`ProjFlow` run 238586).
 
 ### 6. `current.card` + `@card(type="html")` — ❌
 - **Uses**: 220 `@card`-decorated steps, 66 `current.card.append(...)` sites.
@@ -118,28 +144,41 @@ Legend for **Status**:
 
 ## Major functional gaps — degrade UX / semantics
 
-### 11. `@environment(vars={...})` — 🚧
+### 11. `@environment(vars={...})` — ✅
 - **Uses**: 1 site (rare but real).
-- **Bug**: env vars set on argo pod, not forwarded to Batch. Only allow-listed
-  prefixes (`METAFLOW_*, OBP_*, OUTERBOUNDS_*, GITHUB_TOKEN`) reach Batch.
-- **Fix**: read sibling `@environment` decorator's attrs, merge into
-  `containerOverrides.environment` in `submit.py`.
+- **Was**: Metaflow set those vars on the driver pod, which the runner does not
+  inherit from — only the `METAFLOW_* / OBP_* / OUTERBOUNDS_* / GITHUB_TOKEN`
+  allow-list reached it.
+- **Now**: a sibling `@environment`'s `vars` are read at step_init and applied
+  to the runner's environment last, so an explicit `@environment` wins over
+  the forwarded Outerbounds context. Values are stringified; None is dropped
+  rather than becoming the string "None".
+- Verified live: `SibsFlow` run 238585 — the step asserts on its own env vars
+  and passed.
 
-### 12. `@catch(var="e")` preserving original exception — 🚧
+### 12. `@catch(var="e")` preserving original exception — ✅
 - **Uses**: 6 sites.
-- **Bug**: user's step body exception on Batch bubbles as `RunnerError` on the
-  driver. `@catch` captures `RunnerError`, not the user's original exception.
-- **Fix**: pickle the original exception into a spec output field on Batch,
-  driver re-raises exactly that.
+- **Was**: `@catch` sits on the driver task, so it only ever caught the
+  poller's `RunnerError`; the user's exception was reduced to log text.
+- **Now**: the runner pickles the exception (with its formatted traceback) to
+  `<output_prefix>/exception.pkl` and the driver re-raises it before falling
+  through to `RunnerError`. An exception that will not pickle — one holding a
+  socket or a thread — degrades to type-and-message rather than failing the
+  failure handler.
+- Verified live: `SibsFlow` run 238585 — `caught` holds the flow's own
+  `KnownFailure`, message intact.
 
-### 13. `@timeout` sync driver ↔ Batch — 🚧
+### 13. `@timeout` sync driver ↔ runner — ⚠️ shipped, not yet observed live
 - **Uses**: 126 sites.
-- **Bug**: user's `@timeout(minutes=N)` applies to the driver argo pod. Batch
-  job has its own `job_timeout_minutes` attr on `@remote_step`. If argo pod
-  timeout fires while Batch is still running, driver is killed but Batch keeps
-  billing.
-- **Fix**: use user's `@timeout` value as the Batch job timeout AND the driver
-  pod timeout (with a small pad so driver outlives Batch on the timeout race).
+- **Was**: `@timeout` bounded only the driver. When it fired, the driver was
+  killed while the runner pod carried on running — and billing — against
+  `job_timeout_minutes`, which knew nothing about the user's intent.
+- **Now**: a sibling `@timeout` sets the Job's `activeDeadlineSeconds` too,
+  plus 5 minutes of slack so the driver outlives the pod and is the one that
+  reports the timeout rather than both dying in a race. With no `@timeout`,
+  the decorator's own `job_timeout_minutes` still applies.
+- Unit-tested across seconds/minutes/hours; not yet watched fire on a real
+  long-running step.
 
 ### 14. `@gpu_profile()` — ❌
 - **Uses**: 8 sites (advertising CR flows).
@@ -163,12 +202,18 @@ Legend for **Status**:
 - The step body always runs on our EKS cluster, where Karpenter selects the
   instance — Outerbounds pool names have no meaning there.
 
-### 16. `@conda` / `@conda_base` — ❌
+### 16. `@conda` / `@conda_base` — ✅ (refused, by design)
 - **Uses**: 2 sites (promo-lift flows).
-- **Bug**: our env resolver reads `@pypi`/`@pypi_base` only. Conda envs won't
-  be respected.
-- **Fix option**: reject `@conda` on `@remote_step` with a clear message, or
-  translate to `@pypi` where possible.
+- The runner builds its venv from `@pypi` / `@pypi_base` / `@uv_pypi_base`
+  only, so a `@conda` step would run in an environment quietly missing its
+  dependencies. It is refused at flow init with a message naming the
+  alternative.
+- **The name alone is not the signal.** `CondaEnvironment.decospecs()` returns
+  `("conda",)`, so `--environment=pypi|conda|fast-bakery` attaches a bare
+  `conda` decorator to *every* step to run the task lifecycle. Matching on the
+  name refuses every flow that uses fast-bakery — which is all of them, as the
+  first live run showed. The refusal keys on the decorator carrying non-empty
+  `packages` or `libraries`, which the lifecycle one never does.
 
 ---
 
@@ -385,43 +430,43 @@ Broken down by transition / decorator, counted across both production repos.
 | Linear `self.next(a)` | ~925 | ✅ |
 | Split `self.next(a, b)` | 5 | ✅ |
 | Split-switch `self.next({..}, condition=...)` | 16 | ✅ (F23) |
-| Foreach `self.next(a, foreach="x")` | 43 | ⚠️ replay logic added, `self.input` still `None` |
+| Foreach `self.next(a, foreach="x")` | 43 | ✅ incl. `self.input` (gap #3) |
 | Foreach parallel `num_parallel=` | 0 | not needed |
-| Join `def join(self, inputs)` | 58 | 🚧 gap #1 |
-| `self.merge_artifacts(inputs)` | 26 | 🚧 gap #2 |
+| Join `def join(self, inputs)` | 58 | ✅ gap #1 |
+| `self.merge_artifacts(inputs)` | 26 | ✅ gap #2 |
 | `@step` | 1131 | ✅ |
 | `@resources` | 112 | ✅ |
 | `@kubernetes` | 372 | ✅ (dropped + our small kube injected) |
-| `@retry` | 404 | ⚠️ retries entire driver |
+| `@retry` | 404 | ✅ retries the driver, which re-submits — intended |
 | `@card` | 220 | ❌ gap #6 |
 | `@secrets` | 97 | ✅ |
-| `@timeout` | 126 | 🚧 gap #13 |
-| `@catch` | 6 | 🚧 gap #12 |
+| `@timeout` | 126 | ⚠️ gap #13 — shipped, not observed live |
+| `@catch` | 6 | ✅ gap #12 |
 | `@pypi` / `@pypi_base` | 92 | ✅ |
-| `@environment` | 1 | 🚧 gap #11 |
+| `@environment` | 1 | ✅ gap #11 |
 | `@model` | 19 | ❌ gap #7 |
 | `@huggingface_hub` | 17 | ❌ gap #8 |
-| `@gpu_profile` | 14 | ❌ gap #15 |
-| `@compute_pool` (kwarg on `@kubernetes`) | 10 | ❌ gap #16 |
-| `@conda` / `@conda_base` | 2 | ❌ gap #17 |
+| `@gpu_profile` | 14 | ❌ gap #14 |
+| `compute_pool` (kwarg on `@kubernetes`) | 10 | ✅ gap #15 |
+| `@conda` / `@conda_base` | 2 | ✅ refused by design, gap #16 |
 | `@batch` | 0 | 🚫 refused |
 | `@parallel` | 0 | 🚫 refused |
-| `current.is_production` | 209 | 🚧 gap #4 |
+| `current.is_production` | 209 | ✅ gap #4 |
 | `current.card` | 66 | ❌ gap #6 |
 | `current.run_id` | 40 | ✅ |
 | `current.model` | 18 | ❌ gap #7 |
 | `current.huggingface_hub` | 17 | ❌ gap #8 |
 | `current.flow_name` | 14 | ✅ |
 | `current.run.add_tags(...)` | 7 | ❌ gap #10 |
-| `current.branch_name` | 4 | 🚧 gap #5 |
+| `current.branch_name` / `project_name` | 4 | ✅ gap #5 |
 | `current.step_name` | 1 | ✅ |
 | `current.pathspec` | 1 | ❌ (derive from run_id/step_name/task_id) |
 | `current.namespace` (custom) | 1 | ❌ ProjectFlow-provided |
 | `Config` | 152 | ✅ |
 | `Parameter` | 105 | ✅ |
 | `IncludeFile` | 2 | ⚠️ untested |
-| `self.merge_artifacts` | 26 | 🚧 gap #2 |
-| `self.input` (foreach) | 100+ | 🚧 gap #3 |
+| `self.merge_artifacts` | 26 | ✅ gap #2 |
+| `self.input` (foreach) | 100+ | ✅ gap #3 |
 | `Flow(...)`, `Run(...)`, `Task(...)` inside step body | 30+ | ❌ gap #9 |
 | `parallel_map` inside step body | 17 | ✅ (works if metaflow installed) |
 | `config_expr(...)` at decorator-arg time | 1 | ✅ (evaluated at flow init) |
