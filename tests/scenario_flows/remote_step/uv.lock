@@ -227,7 +227,7 @@ wheels = [
 [[package]]
 name = "ds-platform-utils"
 version = "0.6.0"
-source = { git = "https://github.com/patterninc/ds-platform-utils.git?rev=33c269634f6e4c02160b22bf85334e0a61be04fc#33c269634f6e4c02160b22bf85334e0a61be04fc" }
+source = { git = "https://github.com/patterninc/ds-platform-utils.git?rev=5c8ec65499cdac8e75e43a09e360c39f83dae05f#5c8ec65499cdac8e75e43a09e360c39f83dae05f" }
 dependencies = [
     { name = "boto3" },
     { name = "jinja2" },
@@ -270,7 +270,7 @@ extra = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ds-platform-utils", git = "https://github.com/patterninc/ds-platform-utils.git?rev=33c269634f6e4c02160b22bf85334e0a61be04fc" },
+    { name = "ds-platform-utils", git = "https://github.com/patterninc/ds-platform-utils.git?rev=5c8ec65499cdac8e75e43a09e360c39f83dae05f" },
     { name = "outerbounds", specifier = "~=0.12.42" },
     { name = "pandas", specifier = ">=2.2,<3" },
     { name = "pydantic", specifier = ">=2" },

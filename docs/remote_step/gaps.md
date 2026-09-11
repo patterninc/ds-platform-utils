@@ -900,6 +900,39 @@ the module — including plain `start` / `end` steps that need nothing themselve
 — has to carry a bare `@uv_pypi`. `tests/scenario_flows/remote_step/fx20` is
 the worked example of the second form; `fx19` of the first.
 
+### L3. A large driver log cannot refresh at the tight cadence — ⚠️
+
+`_MflogPusher` forces `metaflow.mflog.save_logs` every 3s so the UI stays
+close to the driver. That works while the log is small and stops working as it
+grows, because `save_logs` has no incremental mode: every call re-reads and
+re-uploads the **entire** capture file.
+
+Measured on Argo, a plain step emitting ~192 KB/s to 28 MB:
+
+| log size | staleness |
+|---|---|
+| < 4 MB | ~3-4s |
+| > 4 MB | median 19.6s, p90 34.6s, max 42.6s |
+
+The interval is not the binding constraint there. `subprocess.run` blocks, so
+once one upload takes longer than the sleep, cycles serialise and the
+effective cadence becomes the upload duration — at 28 MB that is ~15-17s, and
+it grows with the file. Asking more often cannot help; the bytes still have to
+go.
+
+A previous attempt to manage this by backing the *interval* off with size
+(4 MB threshold, 30s cap) made it strictly worse: it added delay on top of an
+upload cost that was already the real limit, and it bit from 4 MB upward,
+which a chatty step reaches inside its first minute. That is reverted --
+the threshold is 64 MB and the cap 10s, so the interval is never the reason a
+realistic log looks stale.
+
+**What actually moves it** is volume, not cadence. The driver's stdout carries
+a full mirror of the runner pod's log, and that mirror is what gets re-shipped
+on every cycle, so the cost grows with the square of what a step prints.
+Trimming what a step logs — or what we mirror — cuts it proportionally.
+Nothing inside @remote_step can make a 28 MB file upload in 3s.
+
 ---
 
 ## Coverage-status snapshot
