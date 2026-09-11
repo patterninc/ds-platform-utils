@@ -23,6 +23,7 @@ class _Completed:
 from remote_step.plugins import remote_step_decorator as rsd
 from remote_step.plugins.remote_step_decorator import (
     MFLOG_FORCE_UPLOAD_INTERVAL_SEC,
+    MFLOG_IDLE_HEARTBEAT_SEC,
     MFLOG_MAX_INTERVAL_SEC,
     MFLOG_TIGHT_CADENCE_BYTES,
     _MflogPusher,
@@ -50,10 +51,24 @@ def test_a_small_log_keeps_the_tight_cadence():
     assert p._interval_for(MFLOG_TIGHT_CADENCE_BYTES) == MFLOG_FORCE_UPLOAD_INTERVAL_SEC
 
 
-def test_the_cadence_stretches_as_the_log_grows():
-    """save_logs re-sends the whole file, so bytes shipped grow quadratically."""
+@pytest.mark.parametrize("mb", [1, 4, 8, 16, 40, 64])
+def test_a_realistically_chatty_log_still_refreshes_every_three_seconds(mb):
+    """The regression this guards.
+
+    The threshold used to be 4 MB, so the curve bit almost at once: 8 MB gave
+    a 6s refresh, 16 MB gave 12s, 40 MB gave the full 30s. The driver's stdout
+    carries the entire streamed runner-pod log, so a chatty step crossed that
+    inside the first minute and the log stopped looking live -- reported as
+    "the previous approach was better, the logs were realtime".
+    """
     p = _MflogPusher()
-    assert p._interval_for(8 * 1024 * 1024) > MFLOG_FORCE_UPLOAD_INTERVAL_SEC
+    assert p._interval_for(mb * 1024 * 1024) == MFLOG_FORCE_UPLOAD_INTERVAL_SEC
+
+
+def test_the_cadence_only_stretches_for_a_pathological_log():
+    """Still bounded -- save_logs re-sends the whole file every time."""
+    p = _MflogPusher()
+    assert p._interval_for(MFLOG_TIGHT_CADENCE_BYTES * 4) > MFLOG_FORCE_UPLOAD_INTERVAL_SEC
 
 
 def test_the_cadence_is_capped():
@@ -61,8 +76,24 @@ def test_the_cadence_is_capped():
     assert p._interval_for(10 * 1024**3) == MFLOG_MAX_INTERVAL_SEC
 
 
-def test_the_cap_matches_metaflows_own_slow_end():
-    assert MFLOG_MAX_INTERVAL_SEC == 30.0
+def test_the_cap_stays_well_under_metaflows_own_slow_end():
+    """A guard for pathological logs, not a cadence anyone should meet.
+
+    Metaflow's own sidecar tops out near 30s; ours has to stay clearly better
+    than that or there is no reason for it to exist.
+    """
+    assert MFLOG_MAX_INTERVAL_SEC <= 10.0
+    assert MFLOG_TIGHT_CADENCE_BYTES >= 64 * 1024 * 1024
+
+
+def test_an_unchanged_log_still_uploads_on_the_heartbeat(monkeypatch):
+    """skip-if-unchanged must not be able to stall the UI indefinitely.
+
+    A buffered writer or a step that pauses mid-line leaves the size flat
+    while output is still pending, and without a heartbeat nothing breaks it
+    out. An idle step still drops from 1200 uploads an hour to 120.
+    """
+    assert 0 < MFLOG_IDLE_HEARTBEAT_SEC <= 30.0
 
 
 # --------------------------------------------------------------- size probing

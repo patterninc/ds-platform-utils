@@ -82,12 +82,28 @@ FALLBACK_TEAM = "sandbox"
 # every ``MFLOG_FORCE_UPLOAD_INTERVAL_SEC`` seconds so the UI is never
 # behind by more than that regardless of the sidecar's own cadence.
 MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
-# Below this much captured output the tight cadence is free enough to keep.
-# Above it the cadence stretches in proportion, because save_logs re-reads and
-# re-uploads the entire file every time.
-MFLOG_TIGHT_CADENCE_BYTES = 4 * 1024 * 1024
-# Metaflow's own sidecar tops out around here, so there is no reason to go slower.
-MFLOG_MAX_INTERVAL_SEC = 30.0
+# Below this much captured output the tight cadence is kept unconditionally.
+#
+# This was 4 MB, which was far too low and was a regression in everything but
+# name. save_logs re-uploads the whole file, so backing off as it grows bounds
+# the bytes shipped -- but at 4 MB the curve bit almost immediately: 8 MB gave
+# a 6s refresh, 16 MB gave 12s, and 40 MB gave the full 30s. The driver's
+# stdout carries the entire streamed runner-pod log, so a chatty step crosses
+# that in the first minute and the log stops looking live.
+#
+# The trade was wrong on its own terms. The waste actually worth fixing was an
+# *idle* step re-uploading identical bytes thousands of times, and
+# skip-if-unchanged below removes all of it without costing a single second of
+# freshness. Backing off on size instead penalises the chatty step, which is
+# the one case where somebody is definitely watching.
+MFLOG_TIGHT_CADENCE_BYTES = 64 * 1024 * 1024
+# A guard for pathological logs, not a cadence anyone should normally meet.
+MFLOG_MAX_INTERVAL_SEC = 10.0
+# Upload this often even when the file has not grown. Without it,
+# skip-if-unchanged means any stall in the size -- a buffered writer, a step
+# that pauses mid-line -- also stalls the UI, with nothing to break it out.
+# An idle step still drops from 1200 uploads an hour to 120.
+MFLOG_IDLE_HEARTBEAT_SEC = 30.0
 
 
 class _MflogPusher:
@@ -210,6 +226,7 @@ class _MflogPusher:
         if self._stop.wait(1.0):
             return
         last_size = -1
+        last_upload_at = 0.0
         while not self._stop.is_set():
             size = self._log_size()
             # Only spawn when there is something new. Each upload costs a
@@ -217,8 +234,10 @@ class _MflogPusher:
             # file -- so on a step that logs once and then computes for four
             # hours this used to burn a large fraction of one of the driver's
             # two cores, and re-upload identical bytes, ~4,800 times over.
-            if size != last_size and self._save_logs():
+            stale_for = time.time() - last_upload_at
+            if (size != last_size or stale_for >= MFLOG_IDLE_HEARTBEAT_SEC) and self._save_logs():
                 last_size = size
+                last_upload_at = time.time()
             # break, not return: stop() sets the event while this thread is
             # usually parked right here, and returning would skip the final
             # flush below -- losing every line written since the last cycle,
