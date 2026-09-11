@@ -9,10 +9,18 @@ and 4,800 uploads of identical bytes, on a driver with two cores.
 """
 
 import os
+import sys
 
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
 
+
+class _Completed:
+    """Stand-in for subprocess.CompletedProcess."""
+
+    returncode = 0
+
+from remote_step.plugins import remote_step_decorator as rsd
 from remote_step.plugins.remote_step_decorator import (
     MFLOG_FORCE_UPLOAD_INTERVAL_SEC,
     MFLOG_MAX_INTERVAL_SEC,
@@ -152,3 +160,88 @@ def test_stop_flushes_whatever_arrived_last(logs, monkeypatch):
     out.write_text("a line written just before the step ended\n")
     p.stop()
     assert len(calls) > before, "the last output must not be lost"
+
+
+# ------------------------------------------------- which interpreter to spawn
+#
+# The pusher exists to keep the UI within ~3s of the driver, and it spawns
+# `metaflow.mflog.save_logs` to do it. It used to spawn a bare "python", which
+# is not guaranteed to exist anywhere -- a modern macOS ships only `python3`,
+# and so do plenty of slim Linux images. The resulting FileNotFoundError is an
+# OSError, so the handler swallowed it, every forced upload silently never
+# happened, and the UI fell back to Metaflow's own sidecar. Its sigmoid tops
+# out near 30s, so the symptom was "logs refresh every 30 seconds" with
+# nothing in any log to say why.
+
+
+def test_the_pusher_spawns_the_running_interpreter(monkeypatch):
+    """Not a bare "python" -- that need not exist on PATH at all."""
+    seen = []
+    monkeypatch.setattr(
+        rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed()
+    )
+
+    assert rsd._MflogPusher()._save_logs() is True
+
+    assert len(seen) == 1
+    assert seen[0][0] == sys.executable, "must spawn the interpreter actually running"
+    assert seen[0][1:] == ["-m", "metaflow.mflog.save_logs"]
+
+
+def test_a_missing_interpreter_is_reported_once(monkeypatch, capsys):
+    """Silence here is what let a 10x UI lag survive unnoticed."""
+    def boom(cmd, **kw):
+        raise FileNotFoundError(2, "No such file or directory", cmd[0])
+
+    monkeypatch.setattr(rsd.subprocess, "run", boom)
+    pusher = rsd._MflogPusher()
+
+    assert pusher._save_logs() is False
+    first = capsys.readouterr().err
+    assert "live log push unavailable" in first
+    assert "FileNotFoundError" in first
+
+    # ...and not again on every cycle for the life of the step.
+    assert pusher._save_logs() is False
+    assert capsys.readouterr().err == ""
+
+
+def test_a_failed_push_does_not_advance_the_size_watermark(monkeypatch):
+    """Otherwise a recovered interpreter would skip the bytes it missed.
+
+    `last_size` is only updated when the upload actually ran, so output
+    written while pushing was broken is still sent once it works again.
+    """
+    monkeypatch.setattr(
+        rsd.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("nope"))
+    )
+    assert rsd._MflogPusher()._save_logs() is False
+
+
+def test_an_empty_sys_executable_still_spawns_something(monkeypatch):
+    """Embedded interpreters can leave sys.executable blank."""
+    seen = []
+    monkeypatch.setattr(rsd.sys, "executable", "")
+    monkeypatch.setattr(
+        rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed()
+    )
+
+    assert rsd._MflogPusher()._save_logs() is True
+    assert seen[0][0] == "python", "fall back rather than spawn an empty string"
+
+
+def test_a_disabled_pusher_says_so(monkeypatch, capsys):
+    """Which of the two cadences is in effect must be visible somewhere.
+
+    Without MFLOG_STDOUT there is no file to upload, so the forced push
+    cannot run and the UI falls back to Metaflow's own sidecar -- roughly a
+    10x difference in staleness, previously with nothing anywhere to say
+    which one you were getting.
+    """
+    monkeypatch.delenv("MFLOG_STDOUT", raising=False)
+    pusher = rsd._MflogPusher()
+
+    pusher.start()
+
+    assert pusher._thread is None, "no thread when there is nothing to upload"
+    assert "live log push disabled" in capsys.readouterr().err

@@ -110,9 +110,25 @@ class _MflogPusher:
         self._interval = interval
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # One report per step, not one per cycle.
+        self._warned = False
 
     def start(self) -> None:
         if not os.environ.get("MFLOG_STDOUT"):
+            # Say so. Without MFLOG_STDOUT there is no file to upload, so the
+            # forced push cannot run and the UI falls back to Metaflow's own
+            # sidecar -- whose sigmoid tops out near 30s. That is a 10x
+            # difference in how stale the log looks, and previously nothing
+            # anywhere said which of the two was in effect.
+            try:
+                print(
+                    "[remote_step] live log push disabled (MFLOG_STDOUT unset); "
+                    "log freshness follows Metaflow's own upload cadence",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception:  # noqa: BLE001
+                pass
             return
         self._thread = threading.Thread(target=self._run, name="remote-step-mflog-pusher", daemon=True)
         self._thread.start()
@@ -135,6 +151,44 @@ class _MflogPusher:
             except OSError:
                 continue
         return total
+
+    def _save_logs(self) -> bool:
+        """Spawn one `metaflow.mflog.save_logs`. True if it ran.
+
+        `sys.executable`, not "python". A bare "python" is not guaranteed to
+        exist anywhere: a modern macOS has only `python3`, and so do plenty of
+        slim Linux images. When it is missing, `subprocess.run` raises
+        FileNotFoundError -- which is an OSError, so the handler below caught
+        it and the forced upload silently never happened. The UI then fell
+        back to Metaflow's own sidecar, whose sigmoid tops out near 30s, and
+        the symptom was "logs refresh every 30 seconds" with nothing in any
+        log to say why.
+
+        The first failure is reported, once. A push that cannot work should
+        not degrade the UI in silence for the life of the step.
+        """
+        exe = sys.executable or "python"
+        try:
+            subprocess.run(
+                [exe, "-m", "metaflow.mflog.save_logs"],
+                check=False,
+                capture_output=True,
+                timeout=15,
+            )
+            return True
+        except (subprocess.SubprocessError, OSError) as exc:
+            if not self._warned:
+                self._warned = True
+                try:
+                    print(
+                        f"[remote_step] live log push unavailable ({type(exc).__name__}: "
+                        f"{exc}); the UI will lag by Metaflow's own upload cadence",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            return False
 
     def _interval_for(self, size_bytes: int) -> float:
         """Cadence for a log of this size.
@@ -163,17 +217,8 @@ class _MflogPusher:
             # file -- so on a step that logs once and then computes for four
             # hours this used to burn a large fraction of one of the driver's
             # two cores, and re-upload identical bytes, ~4,800 times over.
-            if size != last_size:
-                try:
-                    subprocess.run(
-                        ["python", "-m", "metaflow.mflog.save_logs"],
-                        check=False,
-                        capture_output=True,
-                        timeout=15,
-                    )
-                    last_size = size
-                except (subprocess.SubprocessError, OSError):
-                    pass
+            if size != last_size and self._save_logs():
+                last_size = size
             # break, not return: stop() sets the event while this thread is
             # usually parked right here, and returning would skip the final
             # flush below -- losing every line written since the last cycle,
@@ -183,15 +228,7 @@ class _MflogPusher:
         # A final upload so whatever landed since the last cycle is not lost.
         # stop() is called in a finally, so this runs on the failure path too.
         if self._log_size() != last_size:
-            try:
-                subprocess.run(
-                    ["python", "-m", "metaflow.mflog.save_logs"],
-                    check=False,
-                    capture_output=True,
-                    timeout=15,
-                )
-            except (subprocess.SubprocessError, OSError):
-                pass
+            self._save_logs()
 
 
 def _cached_env_filename(flow_name: str | None, step_name: str | None = None) -> str | None:
