@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "python3 .cursor/hooks/ai-sdlc/enforce-blocked-actions.py",
+        "timeout": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python3 .cursor/hooks/ai-sdlc/enforce-blocked-actions.py",
+        "matcher": "Shell|Write|Edit|Delete",
+        "timeout": 10
+      }
+    ]
+  }
+}

@@ -137,6 +137,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# AI-SDLC local artifacts
+.ai-sdlc/transcripts/
+.ai-sdlc/verdicts/
+
 # Environments
 .env
 .venv

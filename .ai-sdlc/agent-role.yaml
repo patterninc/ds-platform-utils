@@ -1,0 +1,35 @@
+apiVersion: ai-sdlc.io/v1alpha1
+kind: AgentRole
+metadata:
+  name: default-agent
+spec:
+  role: developer
+  goal: Implement issue requirements with tests in this published Python library
+  tools:
+    - Edit
+    - Write
+    - Read
+    - Glob
+    - Grep
+    - Bash
+    - NotebookEdit
+  constraints:
+    maxFilesPerChange: 15
+    requireTests: true
+    blockedPaths:
+      - .github/workflows/**
+      - .ai-sdlc/**
+    blockedActions:
+      - 'gh pr merge*'
+      - 'git merge*'
+      - 'git push --force*'
+      - 'git push -f*'
+      - 'gh pr close*'
+      - 'gh issue close*'
+      - 'git branch -D*'
+      - 'git branch -d*'
+      - 'git reset --hard*'
+      - 'git checkout -- .'
+      - 'git restore .'
+  governance:
+    preset: strict

@@ -1,0 +1,38 @@
+apiVersion: ai-sdlc.io/v1alpha1
+kind: QualityGate
+metadata:
+  name: default-gates
+spec:
+  scope:
+    authorTypes:
+      - ai-agent
+  gates:
+    - name: has-description
+      enforcement: hard-mandatory
+      rule:
+        metric: description-length
+        operator: '>='
+        threshold: 1
+    - name: has-acceptance-criteria
+      enforcement: soft-mandatory
+      rule:
+        metric: has-acceptance-criteria
+        operator: '>='
+        threshold: 1
+      override:
+        requiredRole: tech-lead
+        requiresJustification: true
+    - name: tests-required
+      enforcement: hard-mandatory
+      rule:
+        metric: has-tests
+        operator: '>='
+        threshold: 1
+    - name: lint-clean
+      enforcement: hard-mandatory
+      rule:
+        tool: ruff
+        maxSeverity: error
+  evaluation:
+    pipeline: pre-merge
+    timeout: 30s

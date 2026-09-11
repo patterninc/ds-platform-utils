@@ -1,0 +1,45 @@
+---
+description: AI-SDLC governance — never merge, never force-push, never close issues/PRs, run Python quality checks before commit
+alwaysApply: true
+---
+
+# AI-SDLC governance (ds-platform-utils)
+
+This repo uses the [AI-SDLC](https://ai-sdlc.io) plugin at project scope.
+
+## Hard rules — never violate
+
+1. **Never merge a pull request.** Do not run `gh pr merge`, `git merge` into `main`, or any merge operation. Create or update PRs only. A human merges.
+2. **Never force-push** with `git push --force` or `git push -f`. After a rebase, `git push --force-with-lease` is allowed.
+3. **Never close issues or PRs** (`gh pr close`, `gh issue close`).
+4. **Never delete branches** (`git branch -D` / `git branch -d`).
+5. **Never run destructive git operations:** `git reset --hard`, `git checkout -- .`, `git restore .`.
+6. **Never edit `.ai-sdlc/**`.** Governance config is out of scope for task work.
+7. **Never put GitHub Actions skip tokens** (`[skip ci]`, `[ci skip]`, `[no ci]`) in commit messages.
+
+These rules are also enforced by `.cursor/hooks/ai-sdlc/enforce-blocked-actions.py` against `.ai-sdlc/agent-role.yaml`.
+
+## Pre-commit checklist (this Python library)
+
+Before every commit:
+
+```bash
+uv run poe lint          # pre-commit + ruff
+uv run pytest -m "not slow"
+```
+
+New public functions under `src/` need tests under `tests/`. Do not rely on CI to catch missing tests.
+
+## Git flow
+
+- Rebase feature branches onto `main`. Do not merge `main` into a feature branch.
+- Conventional commits: `feat:`, `fix:`, `test:`, `docs:`, `chore:`.
+- After pushing, tell the user the PR is ready. Never merge it.
+
+## Review commands
+
+- `/ai-sdlc-review-pr` — code + test + security review
+- `/ai-sdlc-triage` — score a GitHub issue
+- `/ai-sdlc-pipeline-status` — PR / issue status
+- `/ai-sdlc-fix-pr` — fix CI and review findings
+- `/ai-sdlc-doctor` — audit AI-SDLC config health
