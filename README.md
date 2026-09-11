@@ -15,3 +15,7 @@
 - [Private repo access in Fast Bakery](docs/metaflow/private_repo_access.md)
 - [Table-ownership registry](docs/metaflow/table_ownership_registry.md)
 
+## Repo Health
+
+- [Engineering best-practices audit](docs/engineering-best-practices-audit.md)
+
