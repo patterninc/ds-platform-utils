@@ -1,0 +1,9 @@
+{
+  "_aiSdlcComment": "Pinned by the AI-SDLC Cursor plugin install. To always pull the latest published mcp-advisor, change args to [\"-y\", \"@ai-sdlc/mcp-advisor\"].",
+  "mcpServers": {
+    "ai-sdlc": {
+      "command": "npx",
+      "args": ["-y", "@ai-sdlc/mcp-advisor"]
+    }
+  }
+}

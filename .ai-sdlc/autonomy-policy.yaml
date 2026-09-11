@@ -1,0 +1,49 @@
+apiVersion: ai-sdlc.io/v1alpha1
+kind: AutonomyPolicy
+metadata:
+  name: default-autonomy
+spec:
+  levels:
+    - level: 0
+      name: Supervised
+      description: All actions require human approval
+      permissions:
+        read: ['**']
+        write: ['src/**', 'tests/**', 'docs/**']
+        execute: ['test-suite']
+      guardrails:
+        requireApproval: all
+        maxLinesPerPR: 300
+        blockedPaths:
+          - .github/workflows/**
+          - .ai-sdlc/**
+      monitoring: continuous
+      minimumDuration: null
+    - level: 1
+      name: Assisted
+      description: Routine changes are autonomous, complex changes need review
+      permissions:
+        read: ['**']
+        write: ['src/**', 'tests/**', 'docs/**']
+        execute: ['test-suite', 'lint']
+      guardrails:
+        requireApproval: security-critical-only
+        maxLinesPerPR: 500
+      monitoring: real-time-notification
+      minimumDuration: 4w
+  promotionCriteria:
+    '0-to-1':
+      minimumTasks: 10
+      conditions:
+        - metric: pr-approval-rate
+          operator: '>='
+          threshold: 0.90
+      requiredApprovals:
+        - tech-lead
+  demotionTriggers:
+    - trigger: critical-security-incident
+      action: demote-to-0
+      cooldown: 4w
+    - trigger: test-failure-rate-exceeds-threshold
+      action: demote-one-level
+      cooldown: 2w

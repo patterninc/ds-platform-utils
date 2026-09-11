@@ -1,0 +1,42 @@
+apiVersion: ai-sdlc.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: default
+spec:
+  triggers:
+    - event: issue.labeled
+      filter:
+        labels:
+          - ai-eligible
+  providers:
+    sourceControl:
+      type: github
+      config:
+        org: patterninc
+        repo: ds-platform-utils
+  stages:
+    - name: validate
+      qualityGates:
+        - default-gates
+    - name: code
+      agent: default-agent
+      timeout: PT30M
+      onFailure:
+        strategy: retry
+        maxRetries: 2
+    - name: review
+      qualityGates:
+        - default-gates
+  backlog:
+    branching:
+      pattern: 'ai-sdlc/{issueIdLower}-{slug}'
+      targetBranch: main
+      cleanup: on-merge
+    pullRequest:
+      titleTemplate: 'feat: {issueTitle} ({issueId})'
+      descriptionSections:
+        - summary
+        - changes
+        - closes
+      includeProvenance: true
+      closeKeyword: References
