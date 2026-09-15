@@ -33,6 +33,46 @@ Format: `type(optional-scope): short description`
 
 Examples: `fix: use the new Snowflake warehouse in publish tests`, `feat(tags): stamp LAST_UPDATED on published tables`, `feat!: drop support for unquoted identifiers`.
 
+The word before `:` decides the bump. Scope does not (`feat(tags):` is still MINOR). Highest type among unreleased commits wins (`fix:` + `feat:` → MINOR).
+
+##### MINOR
+
+| Prefix | Notes |
+| ------ | ----- |
+| `feat:` | New compatible capability |
+
+On `0.y.z`, breaking titles are **also MINOR** (not `1.0.0`):
+
+| Prefix | Notes |
+| ------ | ----- |
+| `feat!:` / `fix!:` / any `type!:` | Breaking |
+| Any type + `BREAKING CHANGE:` footer | Breaking |
+
+After `1.0.0`, those breaking forms become **MAJOR**.
+
+##### PATCH
+
+| Prefix | Notes |
+| ------ | ----- |
+| `fix:` | Bug fix, same API |
+| `docs:` | Docs (Python treats this as a release) |
+| `perf:` | Performance |
+| `deps:` | Dependency bump |
+| `revert:` | Revert |
+
+##### No version bump (no release PR)
+
+| Prefix | Notes |
+| ------ | ----- |
+| `chore:` | Housekeeping |
+| `ci:` | CI only |
+| `test:` | Tests only |
+| `refactor:` | Same behavior, internal change |
+| `style:` | Formatting |
+| `build:` | Build / packaging |
+
+Put `!` on any of those (`refactor!:`) for a breaking change.
+
 #### PATCH (`fix:`) — bug fix, same API
 
 Bump PATCH (`0.6.1` → `0.6.2`). Callers do not change their code. You corrected wrong behavior or accepted more valid inputs without changing meaning.
@@ -97,11 +137,7 @@ git commit --allow-empty -m "chore: release 1.0.0" -m "Release-As: 1.0.0"
 
 #### Titles that should not bump the library version
 
-| Prefix | Use for |
-| ------ | ------- |
-| `chore:` | lockfile, formatting, or other work with no user-facing change |
-
-`docs:`, `perf:`, `deps:`, and `revert:` are PATCH (they appear in the changelog, so they open a release PR). Hidden types above do not. If a refactor or chore **does** break callers, put `!` on it (`refactor!: ...`) or add a `BREAKING CHANGE:` footer.
+Use `chore:`, `ci:`, `test:`, `refactor:`, `style:`, or `build:` from the table above. `docs:`, `perf:`, `deps:`, and `revert:` **do** PATCH (they appear in the changelog). If a refactor or chore **does** break callers, put `!` on it (`refactor!: ...`) or add a `BREAKING CHANGE:` footer.
 
 ### Quick chooser
 
