@@ -600,8 +600,3 @@ to surprise:
 - `team=` is an unauthenticated claim — any flow author can name any team's
   namespace and quota.
 - Credentials reach the runner as plaintext env in the Job spec.
-- `current.is_production`, `current.card`, `current.model`, join-step
-  signatures and `self.input` in foreach children are not yet forwarded to the
-  runner.
-- `@timeout` applies to the driver; the Job's deadline is a separate
-  `@remote_step` attribute, so the two can disagree.
