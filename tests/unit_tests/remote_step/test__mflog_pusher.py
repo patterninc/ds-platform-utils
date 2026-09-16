@@ -1,18 +1,40 @@
-"""Forcing driver log uploads without burning the driver to do it.
+"""Forcing driver log uploads on a flat, unconditional cadence.
 
-Metaflow's own sidecar backs off to ~30s for long tasks, so the Outerbounds UI
-lagged the stream badly; this pushes uploads on a tight cadence instead. But
-`metaflow.mflog.save_logs` spawns a fresh interpreter, imports metaflow, and
-reads and re-uploads the *entire* capture file -- so on a step that logs once
-and then computes for four hours, a 3s cadence meant ~4,800 interpreter starts
-and 4,800 uploads of identical bytes, on a driver with two cores.
+Metaflow's own sidecar backs off as a task ages (~0.3s early, ~30s past about
+20 minutes), and a @remote_step driver is long-lived by construction -- it
+stays alive for the whole offloaded step. So on exactly the runs people watch,
+the sidecar has given up and this class is what keeps the Outerbounds UI close
+to the stream.
+
+Two cleverer schemes were tried here and both cost freshness:
+
+  - backing the interval off with log size (4 MB threshold, 30s cap). The
+    driver's stdout carries the entire streamed runner-pod log, so a chatty
+    step crossed 4 MB in its first minute and degraded to 6s, then 12s, then
+    the full 30s -- the sidecar cadence this class exists to beat.
+  - skipping the upload when the capture file had not grown. That makes
+    freshness depend on os.path.getsize() reflecting every append within a 3s
+    sample, and the reported symptom was a UI refreshing about every 20s where
+    the old unconditional loop had been instant.
+
+Uploading unconditionally is not free -- save_logs re-reads and re-uploads the
+whole file, and each call spawns an interpreter (~1.4s measured). It is
+self-limiting where it counts, though: subprocess.run blocks, so a large file
+cannot be shipped more often than it takes to ship, and a 28 MB log settles at
+its own ~16s cadence regardless of the interval.
 """
 
-import os
 import sys
+import time
 
 import metaflow  # noqa: F401  -- resolves plugins before the direct imports below
 import pytest
+
+from remote_step.plugins import remote_step_decorator as rsd
+from remote_step.plugins.remote_step_decorator import (
+    MFLOG_FORCE_UPLOAD_INTERVAL_SEC,
+    _MflogPusher,
+)
 
 
 class _Completed:
@@ -20,19 +42,10 @@ class _Completed:
 
     returncode = 0
 
-from remote_step.plugins import remote_step_decorator as rsd
-from remote_step.plugins.remote_step_decorator import (
-    MFLOG_FORCE_UPLOAD_INTERVAL_SEC,
-    MFLOG_IDLE_HEARTBEAT_SEC,
-    MFLOG_MAX_INTERVAL_SEC,
-    MFLOG_TIGHT_CADENCE_BYTES,
-    _MflogPusher,
-)
-
 
 @pytest.fixture
 def logs(tmp_path, monkeypatch):
-    """Point the pusher at real files it can stat."""
+    """Point the pusher at real files, as a Metaflow task pod would."""
     out = tmp_path / "stdout"
     err = tmp_path / "stderr"
     out.write_text("")
@@ -42,132 +55,67 @@ def logs(tmp_path, monkeypatch):
     return out, err
 
 
+def spawn_recording_pusher(monkeypatch, interval=0.05):
+    """A pusher whose uploads are counted instead of run."""
+    calls = []
+    monkeypatch.setattr(
+        rsd.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or _Completed()
+    )
+    return _MflogPusher(interval=interval), calls
+
+
 # ------------------------------------------------------------------- cadence
 
 
-def test_a_small_log_keeps_the_tight_cadence():
-    p = _MflogPusher()
-    assert p._interval_for(0) == MFLOG_FORCE_UPLOAD_INTERVAL_SEC
-    assert p._interval_for(MFLOG_TIGHT_CADENCE_BYTES) == MFLOG_FORCE_UPLOAD_INTERVAL_SEC
+def test_the_cadence_is_flat():
+    """No size-dependent interval at all -- that is the whole point.
 
-
-@pytest.mark.parametrize("mb", [1, 4, 8, 16, 40, 64])
-def test_a_realistically_chatty_log_still_refreshes_every_three_seconds(mb):
-    """The regression this guards.
-
-    The threshold used to be 4 MB, so the curve bit almost at once: 8 MB gave
-    a 6s refresh, 16 MB gave 12s, 40 MB gave the full 30s. The driver's stdout
-    carries the entire streamed runner-pod log, so a chatty step crossed that
-    inside the first minute and the log stopped looking live -- reported as
-    "the previous approach was better, the logs were realtime".
+    A size-scaled interval is what produced 6s at 8 MB, 12s at 16 MB and 30s
+    at 40 MB, on logs a chatty step reaches in its first minute.
     """
-    p = _MflogPusher()
-    assert p._interval_for(mb * 1024 * 1024) == MFLOG_FORCE_UPLOAD_INTERVAL_SEC
+    assert MFLOG_FORCE_UPLOAD_INTERVAL_SEC == 3.0
+    assert not hasattr(_MflogPusher, "_interval_for"), "no size-scaled interval"
 
 
-def test_the_cadence_only_stretches_for_a_pathological_log():
-    """Still bounded -- save_logs re-sends the whole file every time."""
-    p = _MflogPusher()
-    assert p._interval_for(MFLOG_TIGHT_CADENCE_BYTES * 4) > MFLOG_FORCE_UPLOAD_INTERVAL_SEC
+def test_the_cadence_beats_metaflows_own_slow_end():
+    """Below the sidecar's ~30s floor, or this class buys nothing."""
+    from metaflow.mflog import update_delay
 
-
-def test_the_cadence_is_capped():
-    p = _MflogPusher()
-    assert p._interval_for(10 * 1024**3) == MFLOG_MAX_INTERVAL_SEC
-
-
-def test_the_cap_stays_well_under_metaflows_own_slow_end():
-    """A guard for pathological logs, not a cadence anyone should meet.
-
-    Metaflow's own sidecar tops out near 30s; ours has to stay clearly better
-    than that or there is no reason for it to exist.
-    """
-    assert MFLOG_MAX_INTERVAL_SEC <= 10.0
-    assert MFLOG_TIGHT_CADENCE_BYTES >= 64 * 1024 * 1024
-
-
-def test_an_unchanged_log_still_uploads_on_the_heartbeat(monkeypatch):
-    """skip-if-unchanged must not be able to stall the UI indefinitely.
-
-    A buffered writer or a step that pauses mid-line leaves the size flat
-    while output is still pending, and without a heartbeat nothing breaks it
-    out. An idle step still drops from 1200 uploads an hour to 120.
-    """
-    assert 0 < MFLOG_IDLE_HEARTBEAT_SEC <= 30.0
-
-
-# --------------------------------------------------------------- size probing
-
-
-def test_the_size_is_the_sum_of_both_streams(logs):
-    out, err = logs
-    out.write_text("a" * 100)
-    err.write_text("b" * 50)
-    assert _MflogPusher._log_size() == 150
-
-
-def test_a_missing_file_does_not_raise(logs, monkeypatch):
-    monkeypatch.setenv("MFLOG_STDOUT", "/nonexistent/path")
-    assert _MflogPusher._log_size() >= 0
-
-
-def test_no_env_means_zero(monkeypatch):
-    monkeypatch.delenv("MFLOG_STDOUT", raising=False)
-    monkeypatch.delenv("MFLOG_STDERR", raising=False)
-    assert _MflogPusher._log_size() == 0
+    assert MFLOG_FORCE_UPLOAD_INTERVAL_SEC < update_delay(3600)
 
 
 # ----------------------------------------------------------------- the loop
 
 
-def spawn_recording_pusher(monkeypatch, interval=0.01):
-    """A pusher whose uploads are counted instead of run."""
-    calls = []
+def test_an_unchanging_log_is_still_uploaded(logs, monkeypatch):
+    """The deliberate trade.
 
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-
-        class R:
-            returncode = 0
-
-        return R()
-
-    import remote_step.plugins.remote_step_decorator as mod
-
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    p = _MflogPusher(interval=interval)
-    return p, calls
-
-
-def test_an_idle_step_stops_uploading(logs, monkeypatch):
-    """The case that cost the most: one log line, then hours of compute."""
+    Skipping unchanged files saved ~4,800 redundant uploads on a step that
+    logs once then computes for hours, but it made the UI's freshness depend
+    on a size probe and the reported result was a ~20s refresh. Cost accepted;
+    freshness is the feature.
+    """
     out, _ = logs
     out.write_text("the only line this step ever prints\n")
     p, calls = spawn_recording_pusher(monkeypatch)
 
     p.start()
-    # Let several cycles elapse with the file unchanged.
-    import time
-
-    time.sleep(0.3)
+    time.sleep(1.4)  # 1.0s of that is the pusher's deliberate initial delay
     p.stop()
 
-    # One upload for the initial content, plus at most the final flush.
-    assert len(calls) <= 2, f"{len(calls)} uploads for an unchanging log"
+    assert len(calls) >= 3, f"expected repeated uploads, got {len(calls)}"
 
 
-def test_new_output_triggers_an_upload(logs, monkeypatch):
+def test_new_output_is_uploaded_promptly(logs, monkeypatch):
     out, _ = logs
     p, calls = spawn_recording_pusher(monkeypatch)
     p.start()
-    import time
-
     time.sleep(1.1)  # the pusher delays its first cycle by 1.0s on purpose
     for i in range(3):
         out.write_text("line %d\n" % i * (i + 1))
         time.sleep(0.08)
     p.stop()
-    assert len(calls) >= 2, "growth must still be uploaded promptly"
+    assert len(calls) >= 2
 
 
 def test_the_pusher_does_nothing_without_the_mflog_env(monkeypatch):
@@ -180,12 +128,15 @@ def test_the_pusher_does_nothing_without_the_mflog_env(monkeypatch):
 
 
 def test_stop_flushes_whatever_arrived_last(logs, monkeypatch):
-    """stop() runs in a finally, so the failure path needs this too."""
+    """stop() runs in a finally, so the failure path needs this too.
+
+    The wait uses `break`, not `return` -- returning would skip the final
+    flush and lose every line written since the last cycle, which on a failing
+    step is the part that explains the failure.
+    """
     out, _ = logs
     p, calls = spawn_recording_pusher(monkeypatch, interval=5.0)
     p.start()
-    import time
-
     time.sleep(1.2)  # past the initial delay, before the first long wait ends
     before = len(calls)
     out.write_text("a line written just before the step ended\n")
@@ -195,82 +146,57 @@ def test_stop_flushes_whatever_arrived_last(logs, monkeypatch):
 
 # ------------------------------------------------- which interpreter to spawn
 #
-# The pusher exists to keep the UI within ~3s of the driver, and it spawns
-# `metaflow.mflog.save_logs` to do it. It used to spawn a bare "python", which
-# is not guaranteed to exist anywhere -- a modern macOS ships only `python3`,
-# and so do plenty of slim Linux images. The resulting FileNotFoundError is an
-# OSError, so the handler swallowed it, every forced upload silently never
-# happened, and the UI fell back to Metaflow's own sidecar. Its sigmoid tops
-# out near 30s, so the symptom was "logs refresh every 30 seconds" with
-# nothing in any log to say why.
+# It used to spawn a bare "python", which need not exist: a modern macOS ships
+# only `python3`, and so do plenty of slim Linux images. The resulting
+# FileNotFoundError is an OSError, so the handler swallowed it, every forced
+# upload silently never happened, and the UI fell back to the sidecar -- with
+# nothing anywhere to say why. (On the Argo driver image both names resolve to
+# the same binary, so this only ever bit local runs.)
 
 
 def test_the_pusher_spawns_the_running_interpreter(monkeypatch):
-    """Not a bare "python" -- that need not exist on PATH at all."""
     seen = []
-    monkeypatch.setattr(
-        rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed()
-    )
+    monkeypatch.setattr(rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed())
 
-    assert rsd._MflogPusher()._save_logs() is True
+    assert _MflogPusher()._save_logs() is True
 
     assert len(seen) == 1
-    assert seen[0][0] == sys.executable, "must spawn the interpreter actually running"
+    assert seen[0][0] == sys.executable
     assert seen[0][1:] == ["-m", "metaflow.mflog.save_logs"]
 
 
 def test_a_missing_interpreter_is_reported_once(monkeypatch, capsys):
     """Silence here is what let a 10x UI lag survive unnoticed."""
+
     def boom(cmd, **kw):
         raise FileNotFoundError(2, "No such file or directory", cmd[0])
 
     monkeypatch.setattr(rsd.subprocess, "run", boom)
-    pusher = rsd._MflogPusher()
+    pusher = _MflogPusher()
 
     assert pusher._save_logs() is False
     first = capsys.readouterr().err
     assert "live log push unavailable" in first
     assert "FileNotFoundError" in first
 
-    # ...and not again on every cycle for the life of the step.
     assert pusher._save_logs() is False
-    assert capsys.readouterr().err == ""
-
-
-def test_a_failed_push_does_not_advance_the_size_watermark(monkeypatch):
-    """Otherwise a recovered interpreter would skip the bytes it missed.
-
-    `last_size` is only updated when the upload actually ran, so output
-    written while pushing was broken is still sent once it works again.
-    """
-    monkeypatch.setattr(
-        rsd.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("nope"))
-    )
-    assert rsd._MflogPusher()._save_logs() is False
+    assert capsys.readouterr().err == "", "reported once per step, not per cycle"
 
 
 def test_an_empty_sys_executable_still_spawns_something(monkeypatch):
     """Embedded interpreters can leave sys.executable blank."""
     seen = []
     monkeypatch.setattr(rsd.sys, "executable", "")
-    monkeypatch.setattr(
-        rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed()
-    )
+    monkeypatch.setattr(rsd.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Completed())
 
-    assert rsd._MflogPusher()._save_logs() is True
+    assert _MflogPusher()._save_logs() is True
     assert seen[0][0] == "python", "fall back rather than spawn an empty string"
 
 
 def test_a_disabled_pusher_says_so(monkeypatch, capsys):
-    """Which of the two cadences is in effect must be visible somewhere.
-
-    Without MFLOG_STDOUT there is no file to upload, so the forced push
-    cannot run and the UI falls back to Metaflow's own sidecar -- roughly a
-    10x difference in staleness, previously with nothing anywhere to say
-    which one you were getting.
-    """
+    """Which cadence is in effect must be visible somewhere."""
     monkeypatch.delenv("MFLOG_STDOUT", raising=False)
-    pusher = rsd._MflogPusher()
+    pusher = _MflogPusher()
 
     pusher.start()
 

@@ -27,7 +27,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 
 try:
     # ob-metaflow / metaflow — same import path.
@@ -82,28 +81,26 @@ FALLBACK_TEAM = "sandbox"
 # every ``MFLOG_FORCE_UPLOAD_INTERVAL_SEC`` seconds so the UI is never
 # behind by more than that regardless of the sidecar's own cadence.
 MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
-# Below this much captured output the tight cadence is kept unconditionally.
+# Flat, and unconditional. Two cleverer schemes were tried here and both cost
+# freshness, which is the only thing this class exists to buy:
 #
-# This was 4 MB, which was far too low and was a regression in everything but
-# name. save_logs re-uploads the whole file, so backing off as it grows bounds
-# the bytes shipped -- but at 4 MB the curve bit almost immediately: 8 MB gave
-# a 6s refresh, 16 MB gave 12s, and 40 MB gave the full 30s. The driver's
-# stdout carries the entire streamed runner-pod log, so a chatty step crosses
-# that in the first minute and the log stops looking live.
+#   - backing the interval off with log size (4 MB threshold, 30s cap). The
+#     driver's stdout carries the whole streamed runner-pod log, so a chatty
+#     step crossed 4 MB in its first minute and the refresh degraded to 6s,
+#     12s, then the full 30s -- exactly the sidecar cadence this class was
+#     written to beat.
+#   - skipping the upload when the capture file had not grown. Cheap in
+#     principle, but it makes freshness depend on os.path.getsize() reflecting
+#     every append on a 3s sample, and the reported symptom was a UI that
+#     refreshed roughly every 20s where the old unconditional loop was
+#     instant.
 #
-# The trade was wrong on its own terms. The waste actually worth fixing was an
-# *idle* step re-uploading identical bytes thousands of times, and
-# skip-if-unchanged below removes all of it without costing a single second of
-# freshness. Backing off on size instead penalises the chatty step, which is
-# the one case where somebody is definitely watching.
-MFLOG_TIGHT_CADENCE_BYTES = 64 * 1024 * 1024
-# A guard for pathological logs, not a cadence anyone should normally meet.
-MFLOG_MAX_INTERVAL_SEC = 10.0
-# Upload this often even when the file has not grown. Without it,
-# skip-if-unchanged means any stall in the size -- a buffered writer, a step
-# that pauses mid-line -- also stalls the UI, with nothing to break it out.
-# An idle step still drops from 1200 uploads an hour to 120.
-MFLOG_IDLE_HEARTBEAT_SEC = 30.0
+# The cost of uploading unconditionally is real -- save_logs re-reads and
+# re-uploads the entire file, and each call spawns an interpreter (~1.4s
+# measured) -- but it is self-limiting in the way that matters:
+# ``subprocess.run`` blocks, so a large file cannot be uploaded more often
+# than it takes to ship. A 28 MB log settles at its own ~16s cadence whatever
+# this constant says. Nothing is gained by also throttling from this side.
 
 
 class _MflogPusher:
@@ -154,20 +151,6 @@ class _MflogPusher:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
-    @staticmethod
-    def _log_size() -> int:
-        """Bytes currently in the task's stdout + stderr capture files."""
-        total = 0
-        for var in ("MFLOG_STDOUT", "MFLOG_STDERR"):
-            path = os.environ.get(var)
-            if not path:
-                continue
-            try:
-                total += os.path.getsize(path)
-            except OSError:
-                continue
-        return total
-
     def _save_logs(self) -> bool:
         """Spawn one `metaflow.mflog.save_logs`. True if it ran.
 
@@ -206,48 +189,22 @@ class _MflogPusher:
                     pass
             return False
 
-    def _interval_for(self, size_bytes: int) -> float:
-        """Cadence for a log of this size.
-
-        `metaflow.mflog.save_logs` reads the whole file and uploads it, so the
-        bytes shipped over a step grow with the square of its output. Backing
-        off as the log grows bounds that, which is the same reason Metaflow's
-        own sidecar has a sigmoid -- this just starts far tighter, since being
-        seconds behind is the thing users notice.
-        """
-        if size_bytes <= MFLOG_TIGHT_CADENCE_BYTES:
-            return self._interval
-        scaled = self._interval * (size_bytes / MFLOG_TIGHT_CADENCE_BYTES)
-        return min(scaled, MFLOG_MAX_INTERVAL_SEC)
-
     def _run(self) -> None:
         # Small initial delay so the very first stdout writes are buffered
         # into the mflog file before we ask for an upload.
         if self._stop.wait(1.0):
             return
-        last_size = -1
-        last_upload_at = 0.0
         while not self._stop.is_set():
-            size = self._log_size()
-            # Only spawn when there is something new. Each upload costs a
-            # fresh interpreter plus a metaflow import, and re-sends the whole
-            # file -- so on a step that logs once and then computes for four
-            # hours this used to burn a large fraction of one of the driver's
-            # two cores, and re-upload identical bytes, ~4,800 times over.
-            stale_for = time.time() - last_upload_at
-            if (size != last_size or stale_for >= MFLOG_IDLE_HEARTBEAT_SEC) and self._save_logs():
-                last_size = size
-                last_upload_at = time.time()
+            self._save_logs()
             # break, not return: stop() sets the event while this thread is
             # usually parked right here, and returning would skip the final
             # flush below -- losing every line written since the last cycle,
             # which on a failing step is the part that explains the failure.
-            if self._stop.wait(self._interval_for(size)):
+            if self._stop.wait(self._interval):
                 break
         # A final upload so whatever landed since the last cycle is not lost.
         # stop() is called in a finally, so this runs on the failure path too.
-        if self._log_size() != last_size:
-            self._save_logs()
+        self._save_logs()
 
 
 def _cached_env_filename(flow_name: str | None, step_name: str | None = None) -> str | None:
