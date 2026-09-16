@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 try:
     # ob-metaflow / metaflow — same import path.
@@ -101,6 +102,19 @@ MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
 # ``subprocess.run`` blocks, so a large file cannot be uploaded more often
 # than it takes to ship. A 28 MB log settles at its own ~16s cadence whatever
 # this constant says. Nothing is gained by also throttling from this side.
+# Upload at least this often even when the capture file has not grown.
+#
+# Skipping unchanged files is what takes an idle driver from ~1200 uploads an
+# hour to ~120 -- each one spawns an interpreter (~1.4s measured) and re-ships
+# the whole file, and a driver waiting out a long step is idle by definition.
+# It costs no freshness, because a flat size means there is nothing new to
+# show.
+#
+# The heartbeat is the floor under that reasoning: if the size can ever stall
+# while output is genuinely pending (a buffered writer, a step that pauses
+# mid-line), nothing else would break it out. Bounded at 30s, and only ever
+# reached on a log that looks quiet.
+MFLOG_IDLE_HEARTBEAT_SEC = 30.0
 
 
 class _MflogPusher:
@@ -151,6 +165,25 @@ class _MflogPusher:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
+    @staticmethod
+    def _log_size() -> int:
+        """Bytes currently in the task's stdout + stderr capture files.
+
+        A missing or unset path contributes nothing rather than raising: the
+        pusher is a background thread and must not die because one of the two
+        streams has not been created yet.
+        """
+        total = 0
+        for var in ("MFLOG_STDOUT", "MFLOG_STDERR"):
+            path = os.environ.get(var)
+            if not path:
+                continue
+            try:
+                total += os.path.getsize(path)
+            except OSError:
+                continue
+        return total
+
     def _save_logs(self) -> bool:
         """Spawn one `metaflow.mflog.save_logs`. True if it ran.
 
@@ -194,16 +227,24 @@ class _MflogPusher:
         # into the mflog file before we ask for an upload.
         if self._stop.wait(1.0):
             return
+        last_size = -1
+        last_upload_at = 0.0
         while not self._stop.is_set():
-            self._save_logs()
+            size = self._log_size()
+            grew = size != last_size
+            overdue = time.time() - last_upload_at >= MFLOG_IDLE_HEARTBEAT_SEC
+            if (grew or overdue) and self._save_logs():
+                last_size = size
+                last_upload_at = time.time()
             # break, not return: stop() sets the event while this thread is
             # usually parked right here, and returning would skip the final
             # flush below -- losing every line written since the last cycle,
             # which on a failing step is the part that explains the failure.
             if self._stop.wait(self._interval):
                 break
-        # A final upload so whatever landed since the last cycle is not lost.
-        # stop() is called in a finally, so this runs on the failure path too.
+        # Unconditional, unlike the loop: this is the one upload that must not
+        # be skipped, and gating it on a size probe would put the lines that
+        # explain a failure behind that probe being right.
         self._save_logs()
 
 

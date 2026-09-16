@@ -33,6 +33,7 @@ import pytest
 from remote_step.plugins import remote_step_decorator as rsd
 from remote_step.plugins.remote_step_decorator import (
     MFLOG_FORCE_UPLOAD_INTERVAL_SEC,
+    MFLOG_IDLE_HEARTBEAT_SEC,
     _MflogPusher,
 )
 
@@ -84,16 +85,38 @@ def test_the_cadence_beats_metaflows_own_slow_end():
     assert MFLOG_FORCE_UPLOAD_INTERVAL_SEC < update_delay(3600)
 
 
+# --------------------------------------------------------------- size probing
+
+
+def test_the_size_is_the_sum_of_both_streams(logs):
+    out, err = logs
+    out.write_text("a" * 10)
+    err.write_text("b" * 7)
+    assert _MflogPusher._log_size() == 17
+
+
+def test_a_missing_file_does_not_raise(logs, monkeypatch):
+    """A background thread must not die because a stream is not created yet."""
+    monkeypatch.setenv("MFLOG_STDOUT", "/nonexistent/path")
+    assert _MflogPusher._log_size() >= 0
+
+
+def test_no_env_means_zero(monkeypatch):
+    monkeypatch.delenv("MFLOG_STDOUT", raising=False)
+    monkeypatch.delenv("MFLOG_STDERR", raising=False)
+    assert _MflogPusher._log_size() == 0
+
+
 # ----------------------------------------------------------------- the loop
 
 
-def test_an_unchanging_log_is_still_uploaded(logs, monkeypatch):
-    """The deliberate trade.
+def test_an_idle_step_stops_uploading(logs, monkeypatch):
+    """The case that cost the most: one log line, then hours of compute.
 
-    Skipping unchanged files saved ~4,800 redundant uploads on a step that
-    logs once then computes for hours, but it made the UI's freshness depend
-    on a size probe and the reported result was a ~20s refresh. Cost accepted;
-    freshness is the feature.
+    Each upload spawns an interpreter (~1.4s measured) and re-ships the whole
+    file, so an unconditional 3s loop burns ~1200 of them an hour on a driver
+    that is idle by definition -- it is waiting out the runner pod. A flat
+    size means there is nothing new to show, so skipping costs no freshness.
     """
     out, _ = logs
     out.write_text("the only line this step ever prints\n")
@@ -103,7 +126,36 @@ def test_an_unchanging_log_is_still_uploaded(logs, monkeypatch):
     time.sleep(1.4)  # 1.0s of that is the pusher's deliberate initial delay
     p.stop()
 
-    assert len(calls) >= 3, f"expected repeated uploads, got {len(calls)}"
+    # One upload for the initial content, plus the unconditional final flush.
+    assert len(calls) <= 2, f"{len(calls)} uploads for an unchanging log"
+
+
+def test_the_heartbeat_bounds_how_stale_a_flat_size_can_get(monkeypatch):
+    """The floor under skip-if-unchanged.
+
+    If the size can ever stall while output is genuinely pending -- a buffered
+    writer, a step pausing mid-line -- nothing else would break it out.
+    """
+    assert 0 < MFLOG_IDLE_HEARTBEAT_SEC <= 30.0
+
+
+def test_the_final_flush_is_not_gated_on_the_size_probe(logs, monkeypatch):
+    """The one upload that must not be skipped.
+
+    Gating it would put the lines explaining a failure behind that probe being
+    right, so it runs unconditionally even when the size looks unchanged.
+    """
+    out, _ = logs
+    out.write_text("x\n")
+    p, calls = spawn_recording_pusher(monkeypatch, interval=5.0)
+    monkeypatch.setattr(p, "_log_size", lambda: 999)  # frozen: never "grows"
+
+    p.start()
+    time.sleep(1.2)
+    before = len(calls)
+    p.stop()
+
+    assert len(calls) > before, "final flush must run regardless of the probe"
 
 
 def test_new_output_is_uploaded_promptly(logs, monkeypatch):
