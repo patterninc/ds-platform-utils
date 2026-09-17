@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-ds-platform-utils = { git = "https://github.com/patterninc/ds-platform-utils.git", rev = "bab27bee0098667a6894669b3bf2a06cf3a8a2c6" }
+ds-platform-utils = { git = "https://github.com/patterninc/ds-platform-utils.git", rev = "1736d5a476bdd9e1e6b6001e17d434791b22740b" }
 
 [dependency-groups]
 # Exercised by fx20: a group must only appear when the step names it.
