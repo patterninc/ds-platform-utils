@@ -13,67 +13,32 @@ locals {
   }
 }
 
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 data "aws_caller_identity" "current" {}
 
 # ---------------------------------------------------------------------------
 # Network
 #
-# Nodes live in private subnets and reach S3/ECR through a NAT gateway, with
-# a gateway endpoint short-circuiting S3 so the multi-GB pickle traffic never
-# touches NAT (which bills per GB and would dominate the cost of a run).
+# The cluster runs in the account's shared VPC (`local-oregon`) rather than one
+# of its own. That VPC was created once by SRE via patterninc/aws_account_setup
+# and is ours to operate; it already provides everything a dedicated VPC was
+# built to provide, and more:
+#
+#   - an allocated CIDR. Ours was 10.42.0.0/16, which was chosen rather than
+#     issued, so it could have collided with a later allocation.
+#   - four private /20s across four AZs (~16k free addresses) versus three.
+#     EKS here runs VPC-CNI with prefix delegation, so nodes claim addresses in
+#     /28 blocks; headroom is the thing that matters and there is more of it.
+#   - a NAT gateway, so we are no longer paying for a second one.
+#   - gateway endpoints for S3 and DynamoDB, plus interface endpoints for
+#     SageMaker and Bedrock. The S3 one is the cost control a dedicated VPC had
+#     to build by hand: step artifacts are GB-scale and NAT bills per GB.
+#   - a Transit Gateway attachment, which a dedicated VPC had no route to.
+#
+# Only OUR resources carry our tags. Nothing here modifies the VPC or its
+# subnets, which keep SRE's Owner/Repo/CostCenter tags -- see the subnet
+# selection note in karpenter-nodeclasses.yaml.tpl for why Karpenter matches
+# subnets by id rather than by adding a tag of ours to someone else's resource.
 # ---------------------------------------------------------------------------
-
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 6.7"
-
-  name = local.name
-  cidr = var.vpc_cidr
-
-  azs             = slice(data.aws_availability_zones.available.names, 0, var.az_count)
-  private_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i)]
-  public_subnets  = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i + 48)]
-
-  enable_nat_gateway = true
-  # One NAT for the whole VPC. Karpenter spreads nodes across AZs for capacity,
-  # not for HA — a node dying mid-step already costs us the step, so paying 3x
-  # for zonal NAT redundancy buys nothing here.
-  single_nat_gateway = true
-
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  private_subnet_tags = merge(local.discovery_tag, {
-    "kubernetes.io/role/internal-elb" = 1
-  })
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
-  }
-
-  tags = local.tags
-}
-
-# S3 gateway endpoint — a cost control, not a convenience. Steps ship
-# GB-scale pickles through S3, and NAT bills $0.045/GB. A gateway endpoint is
-# free and keeps that traffic off NAT entirely.
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = module.vpc.vpc_id
-  service_name      = "com.amazonaws.${var.region}.s3"
-  vpc_endpoint_type = "Gateway"
-
-  # Associating the private route tables is what actually diverts traffic —
-  # without this the endpoint exists but nothing uses it.
-  route_table_ids = module.vpc.private_route_table_ids
-
-  tags = merge(local.tags, {
-    Name = "${local.name}-s3"
-  })
-}
 
 # ---------------------------------------------------------------------------
 # EKS control plane
@@ -86,8 +51,8 @@ module "eks" {
   name               = local.name
   kubernetes_version = var.cluster_version
 
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  vpc_id     = var.vpc_id
+  subnet_ids = var.private_subnet_ids
 
   # The CIDR list is the network control here — see
   # var.public_endpoint_allowed_cidrs.

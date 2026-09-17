@@ -40,9 +40,20 @@ spec:
 
   role: ${node_role_name}
 
+  # Subnets by id, not by tag. The cluster runs in the account's shared VPC,
+  # whose subnets are declared in patterninc/aws_account_setup -- a
+  # karpenter.sh/discovery tag added out of band would be stripped the next time
+  # that repo is applied, and Karpenter would then quietly find no subnets and
+  # launch nothing. The failure is silent and arrives via an unrelated deploy,
+  # which is the worst combination. Ids cannot drift.
+  #
+  # Security groups still match by tag: those are created by our EKS module and
+  # carry karpenter.sh/discovery from `tags` on module.eks, so they are ours to
+  # tag.
   subnetSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: ${cluster_name}
+%{ for id in subnet_ids ~}
+    - id: ${id}
+%{ endfor ~}
 
   securityGroupSelectorTerms:
     - tags:
@@ -100,9 +111,20 @@ spec:
 
   role: ${node_role_name}
 
+  # Subnets by id, not by tag. The cluster runs in the account's shared VPC,
+  # whose subnets are declared in patterninc/aws_account_setup -- a
+  # karpenter.sh/discovery tag added out of band would be stripped the next time
+  # that repo is applied, and Karpenter would then quietly find no subnets and
+  # launch nothing. The failure is silent and arrives via an unrelated deploy,
+  # which is the worst combination. Ids cannot drift.
+  #
+  # Security groups still match by tag: those are created by our EKS module and
+  # carry karpenter.sh/discovery from `tags` on module.eks, so they are ours to
+  # tag.
   subnetSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: ${cluster_name}
+%{ for id in subnet_ids ~}
+    - id: ${id}
+%{ endfor ~}
 
   securityGroupSelectorTerms:
     - tags:

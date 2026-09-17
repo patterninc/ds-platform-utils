@@ -68,6 +68,7 @@ data "kubectl_file_documents" "nodeclasses" {
   content = templatefile("${path.module}/karpenter-nodeclasses.yaml.tpl", {
     cluster_name   = module.eks.cluster_name
     node_role_name = module.karpenter.node_iam_role_name
+    subnet_ids     = var.private_subnet_ids
   })
 }
 

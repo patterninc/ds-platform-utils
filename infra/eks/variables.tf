@@ -12,6 +12,38 @@ variable "aws_profile" {
   type        = string
 }
 
+variable "vpc_id" {
+  description = <<-EOT
+    VPC to run the cluster in.
+
+    The account's shared VPC (`local-oregon`), not one of our own. Pinned by id
+    rather than looked up by tag on purpose: a tag lookup would silently follow
+    a rename onto a different VPC, and moving subnets is a ForceNew change on
+    the managed node group.
+  EOT
+  type        = string
+  default     = "vpc-0728fe099ebc88355"
+}
+
+variable "private_subnet_ids" {
+  description = <<-EOT
+    Private subnets for the cluster and its nodes. All four AZs of
+    `local-oregon`, ~4090 free addresses each.
+
+    Listed explicitly rather than discovered with a data source. Discovery would
+    mean a subnet added to that VPC by anyone silently changes this list, and a
+    change here forces the managed node group to be replaced -- an unrelated
+    apply should not be able to do that to us.
+  EOT
+  type        = list(string)
+  default = [
+    "subnet-0bb0c898df375869f", # us-west-2a
+    "subnet-0bccf99711558cd4d", # us-west-2b
+    "subnet-08ef432e1aaa16085", # us-west-2c
+    "subnet-038f87ef9dd8b87f5", # us-west-2d
+  ]
+}
+
 variable "cluster_version" {
   description = <<-EOT
     EKS control plane version.
@@ -25,28 +57,6 @@ variable "cluster_version" {
   EOT
   type        = string
   default     = "1.35"
-}
-
-variable "vpc_cidr" {
-  description = <<-EOT
-    CIDR for the cluster VPC.
-
-    NOT ISSUED BY IPAM — 10.42.0.0/16 was chosen, not assigned. Have
-    922016401078 assign a range before this cluster is treated as permanent;
-    renumbering later means rebuilding the VPC and the cluster with it.
-  EOT
-  type        = string
-  default     = "10.42.0.0/16"
-}
-
-variable "az_count" {
-  description = <<-EOT
-    Availability zones to spread subnets across. Three gives Karpenter room
-    to find capacity when one AZ is short on a newer instance family; two
-    halves the NAT gateway bill.
-  EOT
-  type        = number
-  default     = 3
 }
 
 variable "teams" {
@@ -328,7 +338,7 @@ variable "s3_integration_role_arns" {
     target roles live in other accounts, and an ARN list is auditable from
     this repo without reading tags in an account we may not control.
   EOT
-  type = list(string)
+  type        = list(string)
   default = [
     # pattern-demand-forecast-models -- written by weekly_flow.publish_artifacts.
     # Registered as the `demand-forecast-models` integration in the prod
