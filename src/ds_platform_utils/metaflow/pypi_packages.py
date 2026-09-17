@@ -112,6 +112,28 @@ def _dependency_applies(dep: dict, environment: dict) -> bool:
     return Marker(marker).evaluate(environment)
 
 
+def _requirement_name(name: str, extras: set) -> str:
+    """Render a package name with the extras it was requested with, PEP 508 style.
+
+    `@pypi` joins its key straight onto the version, so the extras have to live in the key --
+    `snowflake-connector-python[pandas]` there becomes
+    `snowflake-connector-python[pandas]==3.12.0` by the time pip sees it.
+
+    Args:
+        name: the package name as recorded in the lock
+        extras: every extra requested of it, across all the entries that named it
+
+    Returns:
+        `"name"` when nothing extra was asked for, else `"name[extra,extra]"`.
+
+    """
+    if not extras:
+        return name
+    # sorted so the same extras always render the same way, whatever order the lock happened
+    # to list the dependency entries in
+    return f"{name}[{','.join(sorted(extras))}]"
+
+
 def _select_locked_package(dep: dict, locked: list) -> Optional[dict]:
     """Pick the one lock entry a dependency resolves to, or `None` if it cannot be narrowed.
 
@@ -355,7 +377,9 @@ def _get_packages_from_uv_lock(
             Metaflow builds for a remote task.
 
     Returns:
-        A map of package name -> locked version, ready to hand to `@pypi(packages=...)`.
+        A map of package name -> locked version, ready to hand to `@pypi(packages=...)`. A
+        dependency declared with extras keeps them in its name, e.g.
+        `"snowflake-connector-python[pandas]"`, since that is what tells pip to install them.
 
     """
     if isinstance(dependency_groups, str):
@@ -394,7 +418,8 @@ def _get_packages_from_uv_lock(
 
     environment = _marker_environment(python or _find_python_version(project_root), sys_platform)
 
-    packages = {}
+    packages: dict = {}
+    extras: dict = {}
     for dep in dependencies:
         name = dep["name"]
         if not _dependency_applies(dep, environment):
@@ -403,6 +428,10 @@ def _get_packages_from_uv_lock(
         locked = entries.get(name, [])
         if not locked:
             raise ValueError(f"{name!r} is a dependency of the root project but is missing from {lock_path}")
+        # uv records the extras a dependency was requested with, and lists a name requested
+        # with different extras once per set, so they are collected rather than overwritten.
+        requested = extras.setdefault(name, set())
+        requested.update(dep.get("extra", []))
         package = _select_locked_package(dep, locked)
         if package is None:
             # locked several times with nothing to tell the entries apart -- let @pypi resolve.
@@ -414,7 +443,7 @@ def _get_packages_from_uv_lock(
             packages[name] = package["version"]
         else:
             packages[name] = _lock_source_to_direct_reference(name, source)
-    return packages
+    return {_requirement_name(name, extras[name]): version for name, version in packages.items()}
 
 
 def _get_pypi_kwargs(

@@ -52,11 +52,11 @@ Both decorators print the environment they resolved, so a run records what it ac
 
 ```
 @uv_pypi_base on MyFlow: python 3.10, 10 package(s) from uv.lock
-  jinja2                      3.1.6
-  outerbounds                 0.12.39
-  pandas                      2.3.3
-  polars                      (unpinned)
-  snowflake-connector-python  4.7.2
+  jinja2                              3.1.6
+  outerbounds                         0.12.39
+  pandas                              2.3.3
+  polars                              (unpinned)
+  snowflake-connector-python[pandas]  4.7.2
   ...
 ```
 
@@ -134,6 +134,11 @@ uv_pypi(
   `@pypi` passes through to pip verbatim. uv records a git source as one URL carrying the ref in
   the query string and the resolved commit in the fragment; that gets taken apart and
   reassembled around the **commit SHA**, which is what makes the build repeatable.
+- **Keeps extras** on the dependency that declared them. `snowflake-connector-python[pandas]`
+  is emitted under that name, not the bare one, because the extras are what tell pip to pull in
+  the optional dependencies; dropping them bakes an image whose pandas integration is missing. A
+  package requested with different extras in more than one place (a runtime dependency and a
+  dependency group, say) is emitted once with the union of them.
 - **Resolves markers** against the environment being built — see below.
 - **Raises** when `uv.lock` cannot be found, unless the process is already running a task. A
   task re-imports the flow module — re-evaluating the decorator — inside a container whose code
