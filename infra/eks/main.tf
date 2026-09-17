@@ -1,10 +1,6 @@
 locals {
   name = "pattern-ml-platform"
 
-  # Karpenter's EC2NodeClass finds subnets and security groups by tag rather
-  # than by id, so the same manifest works across accounts and rebuilds.
-  # Everything Karpenter is allowed to launch into carries this tag.
-  discovery_tag = { "karpenter.sh/discovery" = local.name }
 
   tags = {
     Project   = local.name
@@ -183,7 +179,18 @@ module "eks" {
   # standalone aws_eks_access_entry for the same reason — it only needs the
   # cluster name, so it can depend on this module without the reverse.
 
-  tags = merge(local.tags, local.discovery_tag)
+  # Plain tags: no karpenter.sh/discovery.
+  #
+  # Karpenter selects both subnets and security groups by id now, so the tag
+  # selects nothing. Removing it is not just tidiness -- the tag is what caused
+  # the problem it used to serve. `tags` here propagates to the cluster, and EKS
+  # propagates cluster tags onto the eks-cluster-sg-* it creates, so a
+  # tag-based securityGroupSelectorTerms matched that group too. It carries an
+  # all-protocol self-referencing ingress rule, which gave every Karpenter node
+  # unrestricted access to every other one and to the control-plane ENIs,
+  # straight past the scoped node SG. With the tag gone, reintroducing tag
+  # selection cannot silently re-create that.
+  tags = local.tags
 }
 
 # ---------------------------------------------------------------------------

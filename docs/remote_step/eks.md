@@ -30,26 +30,49 @@ released within minutes.
 ## 2. Network
 
 ```
-VPC  vpc-01600c42db6aa4217   10.42.0.0/16   3 AZs
-  private  10.42.0.0/20, 10.42.16.0/20, 10.42.32.0/20   (nodes, API ENIs)
-  public   10.42.48.0/24, 10.42.49.0/24, 10.42.50.0/24  (NAT)
-  1 × NAT gateway
-  S3 gateway endpoint on the private route tables
+VPC  vpc-0728fe099ebc88355   local-oregon   10.85.0.0/16   4 AZs
+  private  10.85.0.0/20, 10.85.16.0/20, 10.85.32.0/20, 10.85.48.0/20
+           (nodes, API ENIs)  — ~4090 free addresses each
+  public   10.85.64.0/22, 10.85.68.0/22, 10.85.72.0/22, 10.85.76.0/22
+  1 × NAT gateway            nat-05ed471c5e23a24cb
+  S3 + DynamoDB gateway endpoints, SageMaker + Bedrock interface endpoints
+  Transit Gateway attachment tgw-01a70d0f4e6087978
 ```
 
-Nodes live in private subnets. One NAT, not three: Karpenter spreads nodes
+The cluster does **not** have its own VPC. It runs in the account's shared
+`local-oregon`, created once by SRE via `patterninc/aws_account_setup` and
+operated by us. That VPC also hosts live services (`prod-spectrum-alb`,
+`prod-ds-scoreboard-alb`, some ECS), so the cluster is a tenant, not the owner.
+
+It previously had a dedicated VPC on `10.42.0.0/16`. That was retired because
+`local-oregon` already provided everything it was built for and more: an
+allocated CIDR rather than one chosen by hand, four private `/20`s across four
+AZs instead of three, a NAT gateway, the S3 gateway endpoint, and a Transit
+Gateway route the dedicated VPC never had.
+
+Nodes live in private subnets. One NAT, not four: Karpenter spreads nodes
 across AZs for capacity, not availability — losing a node mid-step already
-costs the step — so paying triple for zonal NAT redundancy buys nothing.
+costs the step — so paying quadruple for zonal NAT redundancy buys nothing.
 
 The **S3 gateway endpoint** is a cost control. Steps ship GB-scale pickles and
 NAT bills per GB processed; the endpoint is free and keeps that traffic out of
-NAT entirely. It only works because the private route tables are associated
-with it — the endpoint alone diverts nothing.
+NAT entirely. It only works because the route table our subnets use is
+associated with it — the endpoint alone diverts nothing. Verified: route table
+`rtb-0cbc10a407a03b8e8` carries `pl-68a54001 -> vpce-0d24b97cc7c7490f9`, and
+all four private subnets use that table. Note this covers **same-region S3
+only**; a bucket outside us-west-2 egresses through NAT and is billed per GB.
 
-`10.42.0.0/16` was **chosen, not assigned by IPAM**. It is absent from the
-per-`/16` list the Client VPN routes, so it collides with nothing currently
-reachable, but it is not an allocation. Renumbering later means rebuilding the
-VPC and the cluster with it.
+Karpenter matches subnets by **id**, not by tag (`karpenter.sh/discovery`).
+Those subnets are declared in `patterninc/aws_account_setup`; a tag added out
+of band would be stripped the next time that repo is applied, and Karpenter
+would then quietly find no subnets and launch nothing — a silent failure
+arriving via an unrelated deploy.
+
+**An EKS cluster cannot change VPC in place.** `terraform plan` reports the
+cluster as "updated in-place" because the provider allows `subnet_ids` to
+change, but AWS rejects the call at apply time with
+`Subnets specified must belong to the VPC: <old>`. Moving VPCs means destroying
+and recreating the cluster — see §10.
 
 ---
 
@@ -67,14 +90,19 @@ hairpinning through NAT.
 > hardening item that depends on nobody else — see
 > [security_review.md](security_review.md) finding 3.
 
-Private-only was investigated and rejected. It needs a Client VPN route for
-our CIDR (the tunnel carries an explicit per-`/16` allow-list), a Transit
-Gateway attachment plus association and propagation in the hub account
-`922016401078`, and a way to resolve the endpoint — the private hosted zone
-EKS creates is owned by `eks.amazonaws.com` and cannot take extra VPC
-associations, and the VPN pushes no resolver. All achievable, but a large
-dependency chain for a cluster whose only human traffic is debugging. The
-rationale lives on `var.enable_public_endpoint`.
+Private-only was investigated and rejected, and the VPC move shortened the
+chain rather than removing it. `local-oregon` already has a Transit Gateway
+attachment — `tgw-attach-0060098f3ccc774bc` → `tgw-01a70d0f4e6087978`,
+`available` — which the dedicated VPC never had, so that piece is no longer
+ours to build. What is left is the association and propagation on the hub
+account `922016401078`'s TGW route tables, a Client VPN route for
+`10.85.0.0/16` (the tunnel carries an explicit per-`/16` allow-list; unlike
+`10.42.0.0/16` this one may already be routed, since `local-oregon` carries
+live services staff reach today — confirm before counting it as work), and a
+way to resolve the endpoint: the private hosted zone EKS creates is owned by
+`eks.amazonaws.com` and cannot take extra VPC associations, and the VPN pushes
+no resolver. Still a dependency chain across two accounts for a cluster whose
+only human traffic is debugging.
 
 **Addons:** CoreDNS, kube-proxy, VPC CNI, EKS Pod Identity Agent, EBS CSI
 driver.
@@ -410,7 +438,8 @@ SSO profile.
 
 - `public_endpoint_allowed_cidrs` is `0.0.0.0/0`.
 - Team quotas are effectively doubled by the per-flavor declaration.
-- `10.42.0.0/16` is not an IPAM allocation.
+- The CIDR is now SRE-allocated (`local-oregon`, 10.85.0.0/16); the
+  hand-picked `10.42.0.0/16` is gone.
 - No log shipping, no metrics scraper.
 - No account-level S3 public-access block, and no bucket policy — so no
   TLS-only or VPC-endpoint restriction as defence in depth.

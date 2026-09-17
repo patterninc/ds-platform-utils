@@ -252,7 +252,7 @@ The bucket has all four public-access blocks on, no bucket policy, SSE-S3
 encryption, versioning disabled, and a rule aborting incomplete multipart
 uploads after a day. Anonymous access returns 403 — verified.
 
-An S3 **gateway endpoint** on the private route tables keeps this traffic off
+An S3 **gateway endpoint** on the route table our subnets use keeps this traffic off
 NAT. That is a cost control, not an access control: steps ship GB-scale
 pickles and NAT bills per GB.
 
@@ -506,7 +506,7 @@ Terraform in [`infra/eks/`](../../infra/eks). Remote state in S3.
 | component | detail |
 |---|---|
 | cluster | `pattern-ml-platform`, Kubernetes 1.35, `authentication_mode = "API"` |
-| VPC | `10.42.0.0/16`, 3 AZs, private subnets, single NAT, S3 gateway endpoint |
+| VPC | shared `local-oregon` `10.85.0.0/16`, 4 AZs, private subnets, single NAT, S3 + DynamoDB gateway endpoints, TGW attached |
 | system node group | 2–4 × m8i.xlarge Bottlerocket, x86, carries Karpenter/CoreDNS/Kueue |
 | autoscaling | Karpenter with Pod Identity, three NodePools |
 | queueing | Kueue, one ClusterQueue per team in a shared cohort |
@@ -516,8 +516,8 @@ Terraform in [`infra/eks/`](../../infra/eks). Remote state in S3.
 | metrics | metrics-server for `kubectl top`. Karpenter and Kueue expose Prometheus endpoints but **nothing scrapes them** |
 
 The API endpoint is public with a CIDR allow-list. Private-only was
-investigated and rejected as disproportionate — see the rationale on
-`var.enable_public_endpoint`.
+investigated and rejected as disproportionate — see the rationale in
+[eks.md](eks.md) §3.
 
 Teams are `advertising`, `content`, `demand-generation`, `forecasting`,
 `market-intelligence`, `operations`, `reference`, `revops`, plus the `sandbox`

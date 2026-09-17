@@ -47,17 +47,26 @@ spec:
   # launch nothing. The failure is silent and arrives via an unrelated deploy,
   # which is the worst combination. Ids cannot drift.
   #
-  # Security groups still match by tag: those are created by our EKS module and
-  # carry karpenter.sh/discovery from `tags` on module.eks, so they are ours to
-  # tag.
   subnetSelectorTerms:
 %{ for id in subnet_ids ~}
     - id: ${id}
 %{ endfor ~}
 
+  # The node security group by id, not by tag.
+  #
+  # Matching on karpenter.sh/discovery attached THREE groups to every Karpenter
+  # node where the managed node group gets one: the scoped node SG, the module's
+  # cluster SG, and EKS's own eks-cluster-sg-*. That last one carries an
+  # all-protocol, all-port, self-referencing ingress rule, so a node running
+  # user pickle code could reach every other Karpenter node on any port and the
+  # control-plane ENIs -- straight past the node SG rules that exist to prevent
+  # exactly that.
+  #
+  # The tag lands on the cluster SG because `tags` on module.eks includes the
+  # discovery tag and EKS propagates cluster tags to the SG it creates. An id
+  # cannot be propagated onto something else.
   securityGroupSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: ${cluster_name}
+    - id: ${node_sg_id}
 
   blockDeviceMappings:
     # OS volume — Bottlerocket's root is read-only and tiny by design.
@@ -118,17 +127,26 @@ spec:
   # launch nothing. The failure is silent and arrives via an unrelated deploy,
   # which is the worst combination. Ids cannot drift.
   #
-  # Security groups still match by tag: those are created by our EKS module and
-  # carry karpenter.sh/discovery from `tags` on module.eks, so they are ours to
-  # tag.
   subnetSelectorTerms:
 %{ for id in subnet_ids ~}
     - id: ${id}
 %{ endfor ~}
 
+  # The node security group by id, not by tag.
+  #
+  # Matching on karpenter.sh/discovery attached THREE groups to every Karpenter
+  # node where the managed node group gets one: the scoped node SG, the module's
+  # cluster SG, and EKS's own eks-cluster-sg-*. That last one carries an
+  # all-protocol, all-port, self-referencing ingress rule, so a node running
+  # user pickle code could reach every other Karpenter node on any port and the
+  # control-plane ENIs -- straight past the node SG rules that exist to prevent
+  # exactly that.
+  #
+  # The tag lands on the cluster SG because `tags` on module.eks includes the
+  # discovery tag and EKS propagates cluster tags to the SG it creates. An id
+  # cannot be propagated onto something else.
   securityGroupSelectorTerms:
-    - tags:
-        karpenter.sh/discovery: ${cluster_name}
+    - id: ${node_sg_id}
 
   blockDeviceMappings:
     - deviceName: /dev/xvda

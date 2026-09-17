@@ -69,6 +69,7 @@ data "kubectl_file_documents" "nodeclasses" {
     cluster_name   = module.eks.cluster_name
     node_role_name = module.karpenter.node_iam_role_name
     subnet_ids     = var.private_subnet_ids
+    node_sg_id     = module.eks.node_security_group_id
   })
 }
 

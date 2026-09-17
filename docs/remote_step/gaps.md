@@ -257,92 +257,6 @@ Legend for **Status**:
   subtly wrong object. numpy 2.0's `numpy.core` → `numpy._core` rename and
   pandas 2.x → 1.x are the known instances.
 
-### 7. `current.model` / `@model(load=[...])` — ✅ load; save still refused
-- **Uses**: 19 sites (embedding models, sklearn, spaCy, `distilbart_mnli_12_3`, etc.).
-- **Bug**: `@model` downloads model artifacts on the driver argo pod, populates
-  `current.model.loaded[...]`. Batch container has neither the files nor the
-  populated dict.
-- **Now**: the download happens in the pod, not on the driver, and only the
-  *names* travel in the spec. That works because the model reference is an
-  ordinary flow artifact — `@model` resolves it with `getattr(flow, name)` —
-  which the spec already ships as an input, so the pod has everything it needs
-  to fetch the model itself.
-- `@model` is **dropped from the driver**, the same way `@kubernetes` is.
-  Otherwise its `task_pre_step` downloads a multi-GB model onto a Small-tier
-  pod with 10 GB of disk that never reads it. Now the file lands next to the
-  GPU and never crosses the driver.
-- The store is reached with `datastore_context.get()`, which builds itself from
-  the forwarded `METAFLOW_*` config — viable because gap 9 established that the
-  pod can read Outerbounds' datastore.
-- A failed load raises rather than warning: the body is about to read a path
-  that would not be there.
-- **`current.model.save()` is still refused**, with a message pointing at a
-  plain artifact instead. Saving needs write access to the model store from
-  the pod, which is a separate piece of work.
-
-### 8. `current.huggingface_hub` / `@huggingface_hub` — ✅ read path; persist refused
-- **Uses**: 17 sites.
-- Same shape as `@model` — the decorator downloaded on the driver — but harder
-  underneath: the registry hangs off `@checkpoint`'s task-scoped
-  `CurrentCheckpointer`, which does not exist in the runner, so it cannot
-  simply be rebuilt the way `LoadedModels` can.
-- **Now**: `@huggingface_hub(load=[...])` is dropped from the driver and the
-  repos are fetched in the pod, exposing `current.huggingface_hub.loaded` and
-  the `load(...)` context manager. Entries may be a bare `repo_id` or a dict
-  of `snapshot_download` arguments; `revision` and the pattern filters are
-  carried through.
-- **The source changes, and that is announced.** The driver serves from the
-  datastore cache and falls back to the Hub; the pod goes to the Hub directly.
-  For a repo without a pinned `revision` those are not guaranteed to be the
-  same content, so the switch is logged rather than left to be discovered:
-
-  ```
-  [remote_step] @huggingface_hub: downloading from the Hugging Face Hub
-                (the driver would have served these from the datastore cache)
-  ```
-
-  Pin `revision` if that matters. Reinstating the datastore cache means
-  rebuilding the checkpointer in the pod — the deeper fix, not done.
-- `current.huggingface_hub.snapshot_download()` is refused: it persists into
-  the datastore, which the pod cannot write to. Same boundary as
-  `current.model.save()`.
-
-### 9. Metaflow client inside step body — ✅ (it already works)
-- **Uses**: 30+ sites of `Flow(...).latest_successful_run`, `Run(pathspec=...)`,
-  `Task(...)`, `namespace(...)`, `default_namespace()`.
-- **The concern was wrong.** This entry assumed the pod would lack IAM
-  permission on Outerbounds' Metaflow datastore. Probed directly from a runner
-  pod (`ClientFlow` run 238592) and both halves answer:
-
-  ```
-  probe: metadata_service -> ok, latest_run=238592
-  probe: datastore_read   -> ok
-  ```
-
-  The metadata service is reached over HTTP with the forwarded
-  `METAFLOW_SERVICE_*` config, and the datastore read succeeds too — so no
-  cross-account role is needed. No work required; keep the probe flow around
-  to catch a regression if Outerbounds changes how the datastore is served.
-
-### 10. `current.run.add_tags(...)` — ✅
-- **Uses**: 7 sites.
-- **Was**: `current.run` resolved to the no-op placeholder `__getattr__` hands
-  out, so the call did nothing at all — silently.
-- **Now**: the pod gets a recorder in place of `current.run` that captures
-  add / remove / replace calls and writes them beside the outputs; the driver
-  replays them after the step succeeds. Failing to apply a tag never fails the
-  step — the body has already run and a tag is metadata.
-- Reads (`run.data`, `run.tags`) are deliberately *not* faked. They would need
-  a real client, and gap 9 shows one can be built in the pod if a use case
-  turns up — better than returning a lie.
-- Verified live: `ClientFlow` run 238594 —
-  `applied run tags from the step: +['gap10-from-pod']`, and the tag is on the
-  run in `end`.
-
----
-
-## Major functional gaps — degrade UX / semantics
-
 ### 10b. An artifact's *type* must exist wherever it is loaded — ⚠️ by design
 - Outputs travel as pickles, so loading one needs the module that defines its
   type. A step-scoped `@pypi` package is installed only in that step's pod, so
@@ -697,6 +611,58 @@ Legend for **Status**:
   and the reader consults that one file with **no fallback** to a less specific
   name — the fallback is the bug, in all three of its forms. A missing entry
   degrades to "resolve nothing", which is recoverable.
+
+### F26. An EKS cluster cannot change VPC in place — ✅
+- **Root**: moving the cluster out of its own `10.42.0.0/16` VPC into the shared
+  `local-oregon` reads like a variable change — new `vpc_id`, new
+  `private_subnet_ids` — and `terraform plan` agrees, reporting the cluster as
+  **updated in-place**. The plan is only a statement about the *provider*:
+  `subnet_ids` is not ForceNew in the AWS provider's schema, so Terraform is
+  willing to issue the update. AWS is not, and says so half an hour into the
+  apply:
+
+  ```
+  InvalidRequestException: Subnets specified must belong to the VPC:
+    vpc-01600c42db6aa4217
+  ```
+
+  The control plane's ENIs already live in the old subnets and there is no API
+  that moves them, so the only route across is destroy-and-recreate. Nothing in
+  the plan tells you that.
+- **Three consequences follow from "recreate", each of which fails on its own:**
+  - The EKS module sets `create_before_destroy`, so a single apply tries to
+    build the new cluster while the old one still stands. Our cluster name is
+    fixed (`pattern-ml-platform` — `config.json`, every role ARN and every
+    access entry reference it), and AWS rejects the duplicate with
+    `ResourceInUseException`. Destroy first, then apply; the random-suffix
+    naming the module defaults to is exactly what buys you the one-apply path,
+    and we gave it up on purpose.
+  - The `kubernetes`, `helm` and `kubectl` providers are configured from
+    `module.eks.cluster_endpoint`. Provider configuration must resolve before
+    the graph runs, so while the cluster does not exist that value is unknown
+    and *every object inside the cluster* is unplannable. One apply cannot
+    create a cluster and its contents: `apply -target=module.eks` first, then
+    an untargeted apply for Karpenter, Kueue and the team namespaces.
+  - The cluster's own ENIs pin the old subnets, so the old VPC cannot be
+    deleted until the cluster is gone — the subnet delete returns
+    `DependencyViolation`. Cluster teardown comes before VPC teardown, not
+    alongside it.
+- **Also, and expensively**: `terraform destroy -target=<a node group>` is not a
+  scalpel. `-target` selects that resource *and everything that depends on it*,
+  and the node group is upstream of the whole Kubernetes layer — the Karpenter
+  release, the node classes and pools, Kueue, and every team namespace, queue
+  and service account. The intent was one resource; the plan removed **68**.
+  Read the resource count in a targeted destroy's plan before confirming it;
+  that count is the only warning you get.
+- **Fix**: none in code — the lesson is the order of operations. A VPC move is
+  destroy the cluster and its contents, change `vpc_id` /
+  `private_subnet_ids`, `apply -target=module.eks`, then a full apply, then
+  refresh `cluster_endpoint` in `config.json` because the rebuild issues a new
+  one. That endpoint was the *only* thing the rebuild cost us: every IAM role
+  has a fixed name so its ARN survived, and Pod Identity trusts
+  `pods.eks.amazonaws.com` rather than the cluster's OIDC issuer. Under IRSA
+  every trust policy would have been pinned to the dead cluster's issuer and
+  needed repair, the cross-account S3 integration roles included.
 
 ---
 
