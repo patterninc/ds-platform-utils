@@ -34,6 +34,14 @@ UV_LOCK = textwrap.dedent("""
         { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
     ]
 
+    [package.optional-dependencies]
+    ml = [{ name = "scikit-learn" }]
+    excel = [{ name = "pandas", extra = ["excel"] }]
+    # a self-referential extra: requesting "all" should pull ml without installing the local project
+    all = [{ name = "my-flows", extra = ["ml"] }]
+    # coverage[toml] -- the extra packages have to be inferred from coverage's own extras table
+    cov = [{ name = "coverage", extra = ["toml"] }]
+
     [package.dev-dependencies]
     dev = [{ name = "pytest" }]
 
@@ -41,6 +49,12 @@ UV_LOCK = textwrap.dedent("""
     name = "pandas"
     version = "2.3.2"
     source = { registry = "https://pypi.org/simple" }
+
+    [package.optional-dependencies]
+    excel = [
+        { name = "openpyxl" },
+        { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
+    ]
 
     [[package]]
     name = "polars"
@@ -62,6 +76,31 @@ UV_LOCK = textwrap.dedent("""
     [[package]]
     name = "pytest"
     version = "8.4.1"
+    source = { registry = "https://pypi.org/simple" }
+
+    [[package]]
+    name = "scikit-learn"
+    version = "1.5.2"
+    source = { registry = "https://pypi.org/simple" }
+
+    [[package]]
+    name = "openpyxl"
+    version = "3.1.5"
+    source = { registry = "https://pypi.org/simple" }
+
+    [[package]]
+    name = "coverage"
+    version = "7.6.1"
+    source = { registry = "https://pypi.org/simple" }
+
+    [package.optional-dependencies]
+    toml = [
+        { name = "tomli", marker = "python_full_version <= '3.11'" },
+    ]
+
+    [[package]]
+    name = "tomli"
+    version = "2.0.2"
     source = { registry = "https://pypi.org/simple" }
 
     [[package]]
@@ -134,6 +173,76 @@ def test_uv_lock_excludes_groups_unless_asked(project_root: Path):
 def test_uv_lock_rejects_unrecorded_group(project_root: Path):
     with pytest.raises(ValueError, match="is not recorded in"):
         _get_packages_from_uv_lock(dependency_groups=["nope"], project_root=project_root)
+
+
+def test_uv_lock_excludes_extras_unless_asked(project_root: Path):
+    packages = _get_packages_from_uv_lock(project_root=project_root)
+    assert "scikit-learn" not in packages
+    assert "openpyxl" not in packages
+    assert "coverage" not in packages
+
+
+def test_uv_lock_includes_requested_extras(project_root: Path):
+    packages = _get_packages_from_uv_lock(extras=["ml"], project_root=project_root)
+    assert packages["scikit-learn"] == "1.5.2"
+    # runtime deps are still present
+    assert packages["pandas"] == "2.3.2"
+
+
+def test_uv_lock_bare_string_extra(project_root: Path):
+    # a bare string would otherwise iterate character by character
+    assert _get_packages_from_uv_lock(extras="ml", project_root=project_root)["scikit-learn"] == "1.5.2"
+
+
+def test_uv_lock_normalises_extra_names(project_root: Path):
+    # PEP 685: Foo_Bar and foo-bar are the same extra; the lock records "ml"
+    assert _get_packages_from_uv_lock(extras="ML", project_root=project_root)["scikit-learn"] == "1.5.2"
+
+
+def test_uv_lock_rejects_unrecorded_extra(project_root: Path):
+    with pytest.raises(ValueError, match="extra 'nope' is not recorded in"):
+        _get_packages_from_uv_lock(extras=["nope"], project_root=project_root)
+
+
+def test_uv_lock_extra_drops_dep_gated_to_another_platform(project_root: Path):
+    linux = _get_packages_from_uv_lock(extras=["excel"], project_root=project_root)
+    assert linux["openpyxl"] == "3.1.5"
+    assert "pyobjc-core" not in linux
+    darwin = _get_packages_from_uv_lock(extras=["excel"], project_root=project_root, sys_platform="darwin")
+    assert darwin["pyobjc-core"] == "10.3.1"
+
+
+def test_uv_lock_infers_extra_packages_requested_on_a_dependency(project_root: Path):
+    # extras=["cov"] pulls coverage[toml]; tomli is not a root extra, it is coverage's extra,
+    # and @pypi has nowhere to put extras, so it has to be lifted into the packages map
+    packages = _get_packages_from_uv_lock(extras=["cov"], project_root=project_root, python="3.10")
+    assert packages["coverage"] == "7.6.1"
+    assert packages["tomli"] == "2.0.2"
+    # tomli is gated to <=3.11, so a 3.12 bake must not be told to install it
+    py312 = _get_packages_from_uv_lock(extras=["cov"], project_root=project_root, python="3.12")
+    assert py312["coverage"] == "7.6.1"
+    assert "tomli" not in py312
+
+
+def test_uv_lock_follows_self_referential_extra(project_root: Path):
+    # extra "all" depends on the local project with extra "ml" -- the local project is not
+    # installable, but ml's packages still have to land in the map
+    packages = _get_packages_from_uv_lock(extras=["all"], project_root=project_root)
+    assert "my-flows" not in packages
+    assert packages["scikit-learn"] == "1.5.2"
+
+
+def test_uv_lock_infers_extras_on_direct_dependencies(project_root: Path):
+    # a root dependency recorded as pandas[excel] must bring excel's packages even when extras=
+    # is not passed -- that is the lock saying the extra is required, not optional
+    lock = (project_root / "uv.lock").read_text()
+    (project_root / "uv.lock").write_text(
+        lock.replace('{ name = "pandas" },', '{ name = "pandas", extra = ["excel"] },')
+    )
+    packages = _get_packages_from_uv_lock(project_root=project_root)
+    assert packages["pandas"] == "2.3.2"
+    assert packages["openpyxl"] == "3.1.5"
+    assert "pyobjc-core" not in packages
 
 
 def test_raises_when_no_lockfile_is_found(tmp_path: Path):
@@ -213,6 +322,10 @@ def test_pypi_base_kwargs_passes_groups_through(project_root: Path):
     assert _get_pypi_kwargs(dependency_groups=["dev"], project_root=project_root)["packages"]["pytest"] == "8.4.1"
 
 
+def test_pypi_base_kwargs_passes_extras_through(project_root: Path):
+    assert _get_pypi_kwargs(extras=["ml"], project_root=project_root)["packages"]["scikit-learn"] == "1.5.2"
+
+
 def _build_flow():
     """Return an undecorated FlowSpec, so a test can apply the decorator itself.
 
@@ -267,6 +380,17 @@ def test_uv_pypi_base_works_bare(project_root: Path, pypi_base_spy: dict, monkey
 def test_uv_pypi_base_passes_groups_and_python_through(project_root: Path, pypi_base_spy: dict):
     uv_pypi_base(dependency_groups=["dev"], python="3.12", project_root=project_root)(_build_flow())
     assert pypi_base_spy["python"] == "3.12"
+    assert pypi_base_spy["packages"]["pytest"] == "8.4.1"
+
+
+def test_uv_pypi_base_passes_extras_through(project_root: Path, pypi_base_spy: dict):
+    uv_pypi_base(extras=["ml"], project_root=project_root)(_build_flow())
+    assert pypi_base_spy["packages"]["scikit-learn"] == "1.5.2"
+
+
+def test_uv_pypi_base_combines_extras_and_groups(project_root: Path, pypi_base_spy: dict):
+    uv_pypi_base(extras=["ml"], dependency_groups=["dev"], project_root=project_root)(_build_flow())
+    assert pypi_base_spy["packages"]["scikit-learn"] == "1.5.2"
     assert pypi_base_spy["packages"]["pytest"] == "8.4.1"
 
 
@@ -393,6 +517,14 @@ def test_uv_pypi_decorates_a_step(project_root: Path):
     attributes = decorated.decorators[0].attributes
     assert attributes["packages"] == _get_packages_from_uv_lock(project_root=project_root)
     assert decorated.decorators[0].name == "pypi"
+
+
+def test_uv_pypi_passes_extras_through(project_root: Path):
+    def train(self):
+        pass
+
+    decorated = uv_pypi(extras=["ml"], project_root=project_root)(step(train))
+    assert decorated.decorators[0].attributes["packages"]["scikit-learn"] == "1.5.2"
 
 
 def test_finds_project_files_by_walking_up_from_cwd(project_root: Path, monkeypatch: pytest.MonkeyPatch):

@@ -32,6 +32,7 @@ when there is something to configure:
 ```python
 @uv_pypi_base                    # derive everything
 @uv_pypi_base(dependency_groups=["dev"])    # add a dependency group
+@uv_pypi_base(extras=["ml"])     # add an extra
 @uv_pypi_base(python="3.11")     # override the derived interpreter
 ```
 
@@ -41,7 +42,7 @@ when there is something to configure:
 
 ```python
 class MyFlow(FlowSpec):
-    @uv_pypi(dependency_groups=["train"])
+    @uv_pypi(extras=["train"])
     @step
     def train(self): ...
 ```
@@ -103,6 +104,7 @@ uv_pypi_base(
     flow=None,                                          # supplied by Python in the bare form
     *,
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
 )                  # the decorated flow, or a decorator
@@ -111,6 +113,7 @@ uv_pypi(
     step=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
 )                  # the decorated step, or a decorator
@@ -121,6 +124,7 @@ uv_pypi(
 | Parameter      | Type               | Required | Description                                                                                                             |
 | -------------- | ------------------ | -------: | ----------------------------------------------------------------------------------------------------------------------- |
 | `dependency_groups` | `str \| list[str]` |       No | Dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`. Excluded by default — groups are optional.  |
+| `extras`       | `str \| list[str]` |       No | Extras (optional-dependencies) to add on top of the runtime dependencies, e.g. `["ml"]`. Read from `uv.lock`'s `[package.optional-dependencies]` table. Excluded by default — extras are optional. |
 | `python`       | `str`              |       No | Overrides the version derived from the project, e.g. `"3.11"`.                                                          |
 | `project_root` | `str \| Path`      |       No | Directory holding the project files. Defaults to searching upward from the launch directory.                             |
 
@@ -130,6 +134,15 @@ uv_pypi(
   Lock entries are marker-gated per platform (`appnope` on darwin, `colorama` on win32), so
   pinning the whole graph would break a bake on any platform but the one that resolved it.
   `@pypi` resolves transitives itself from the pinned roots.
+- Adds **extras** named in `extras=` from the root project's `[package.optional-dependencies]`
+  table. Same idea as `dependency_groups=`, and excluded by default for the same reason —
+  extras are optional.
+- **Infers extra packages** requested on a dependency. uv records `pandas[excel]` as
+  `{ name = "pandas", extra = ["excel"] }`. `@pypi` takes a flat name → version map with
+  nowhere to put extras, so those extra packages are lifted out of
+  `[package.optional-dependencies]` and pinned alongside the package. Nested extras (an extra
+  depending on another extra, including a self-referential extra of the local project) are
+  followed. Without this a bake would install pandas and skip openpyxl.
 - Renders non-PyPI dependencies as PEP 508 direct references (`@ git+https://...@<sha>`), which
   `@pypi` passes through to pip verbatim. uv records a git source as one URL carrying the ref in
   the query string and the resolved commit in the fragment; that gets taken apart and
@@ -207,6 +220,7 @@ task, where the lock is expected to be absent.
 `ValueError` for a lockfile that cannot produce a usable environment:
 
 - a requested dependency group is not recorded in the lock
+- a requested extra is not recorded in the lock
 - a lock `source` is `path` or `workspace` — local-only, so a remote task cannot fetch it
 - a root dependency is missing from the lock (stale lockfile — run `uv lock`)
 

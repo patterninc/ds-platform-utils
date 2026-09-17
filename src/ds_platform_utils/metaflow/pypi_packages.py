@@ -313,8 +313,164 @@ def _split_lock_packages(lock: dict, lock_path: Path) -> Tuple[dict, dict]:
     return root, entries
 
 
+def _as_name_list(value: Optional[Union[str, list]]) -> list:
+    """Normalise a name-or-list argument so a bare string is one name, not characters.
+
+    Args:
+        value: a single name, a list of names, or `None`
+
+    Returns:
+        A list of names, empty when nothing was passed.
+
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
+def _normalize_extra(name: str) -> str:
+    """Apply PEP 685 extra-name normalisation so `Foo_Bar` and `foo-bar` are the same extra.
+
+    Args:
+        name: an extra as written in a lockfile or a decorator argument
+
+    """
+    return name.lower().replace("_", "-")
+
+
+def _extend_from_lock_table(
+    dependencies: list,
+    table: dict,
+    names: list,
+    *,
+    kind: str,
+    lock_path: Path,
+) -> None:
+    """Append named extras or dependency groups from a lock table onto `dependencies`.
+
+    Args:
+        dependencies: the list being built, mutated in place
+        table: `optional-dependencies` or `dev-dependencies` from the root lock entry
+        names: extras or groups requested by the caller
+        kind: `"extra"` or `"group"`, used in the error message
+        lock_path: the lockfile, named when a requested name is missing
+
+    """
+    if kind == "extra":
+        lookup = {_normalize_extra(key): value for key, value in table.items()}
+        label, heading = "extra", "Extras"
+    else:
+        lookup = table
+        label, heading = "dependency group", "Groups"
+
+    for name in names:
+        key = _normalize_extra(name) if kind == "extra" else name
+        try:
+            dependencies.extend(lookup[key])
+        except KeyError:
+            raise ValueError(
+                f"{label} {name!r} is not recorded in {lock_path}. "
+                f"{heading} present: {', '.join(sorted(table)) or '(none)'}"
+            ) from None
+
+
+def _optional_dependencies_of(name: str, dep: dict, entries: dict, root: dict) -> dict:
+    """Return the extras table for a locked package, or for the root project itself.
+
+    Args:
+        name: the package whose extras are wanted
+        dep: the dependency entry that named it, used to pick among multiple lock versions
+        entries: installable lock entries, keyed by name
+        root: the local project entry, which is not in `entries`
+
+    """
+    locked = entries.get(name, [])
+    package = _select_locked_package(dep, locked) if locked else None
+    if package is not None:
+        return package.get("optional-dependencies") or {}
+    for candidate in locked:
+        optional = candidate.get("optional-dependencies") or {}
+        if optional:
+            return optional
+    if name == root["name"]:
+        return root.get("optional-dependencies") or {}
+    return {}
+
+
+def _queue_requested_extras(
+    dep: dict,
+    entries: dict,
+    root: dict,
+    pending: list,
+    seen_extras: set,
+) -> None:
+    """Enqueue extra-dependencies requested on `dep` via its `extra` list.
+
+    uv records `pandas[excel]` as `{ name = "pandas", extra = ["excel"] }`. `@pypi` takes a
+    flat name -> version map with nowhere to put extras, so those extra packages have to be
+    lifted into the map as additional pins -- otherwise the bake installs pandas without
+    openpyxl. Nested extras (an extra depending on another extra) are followed; `(name, extra)`
+    pairs already seen are skipped so a cycle cannot loop.
+
+    Args:
+        dep: a lock dependency entry, possibly carrying an `extra` list
+        entries: installable lock entries, keyed by name
+        root: the local project entry
+        pending: the worklist being processed, mutated in place
+        seen_extras: `(package, extra)` pairs already expanded
+
+    """
+    requested = dep.get("extra") or []
+    if not requested:
+        return
+    name = dep["name"]
+    optional = {
+        _normalize_extra(key): value for key, value in _optional_dependencies_of(name, dep, entries, root).items()
+    }
+    for extra in requested:
+        key = (name, _normalize_extra(extra))
+        if key in seen_extras:
+            continue
+        seen_extras.add(key)
+        pending.extend(optional.get(_normalize_extra(extra), []))
+
+
+def _pin_dependency(dep: dict, entries: dict, lock_path: Path, root: dict) -> Optional[Tuple[str, str]]:
+    """Turn one lock dependency into a `@pypi` name -> spec pair.
+
+    Args:
+        dep: a dependency entry from the root, a group, or an extra
+        entries: installable lock entries, keyed by name
+        lock_path: the lockfile, named when the package is missing
+        root: the local project entry, which is not something `@pypi` should install
+
+    Returns:
+        `(name, spec)`, or `None` when `dep` is the local project itself (a self-referential
+        extra).
+
+    """
+    name = dep["name"]
+    locked = entries.get(name, [])
+    if not locked:
+        if name == root["name"]:
+            return None
+        raise ValueError(f"{name!r} is a dependency of the root project but is missing from {lock_path}")
+    package = _select_locked_package(dep, locked)
+    if package is None:
+        # locked several times with nothing to tell the entries apart -- let @pypi resolve.
+        return name, ""
+    source = package.get("source", {})
+    if "registry" in source:
+        # metaflow prepends "==" to a bare version.
+        return name, package["version"]
+    return name, _lock_source_to_direct_reference(name, source)
+
+
 def _get_packages_from_uv_lock(
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     project_root: Optional[Union[str, Path]] = None,
     python: Optional[str] = None,
     sys_platform: str = _DEFAULT_SYS_PLATFORM,
@@ -323,8 +479,8 @@ def _get_packages_from_uv_lock(
 
     Emits the root project's direct runtime dependencies pinned to their locked versions, so
     the image Metaflow bakes matches the environment `uv sync` gives you locally. Dependency
-    groups are excluded unless named in `dependency_groups`, since uv keeps them in a separate table and
-    they are optional by definition.
+    groups and extras are excluded unless named in `dependency_groups` / `extras`, since uv
+    keeps them in separate tables and they are optional by definition.
 
     A uv.lock is a *universal* resolution: it holds the answer for every Python version and
     platform in range at once, each tagged with the marker it applies to. `@pypi` takes a flat
@@ -332,6 +488,11 @@ def _get_packages_from_uv_lock(
     environment actually being built -- a dependency gated to another platform is dropped, and
     a name locked at two versions collapses to whichever one `python` selects. That is why
     `pandas` can be `2.3.3` on 3.10 and `3.0.5` on 3.11 from one unchanged lockfile.
+
+    The same flat map has nowhere to put extras either. A direct dependency recorded as
+    `{ name = "pandas", extra = ["excel"] }` therefore has its extra packages lifted out of
+    `[package.optional-dependencies]` and pinned alongside it, or the bake would install pandas
+    without them.
 
     Deliberately *not* the full transitive closure: `@pypi` resolves transitives itself from
     these pinned roots, and per-platform wheel availability is its job rather than this one's.
@@ -346,6 +507,10 @@ def _get_packages_from_uv_lock(
         dependency_groups: names of dependency groups to add on top of the runtime dependencies, e.g.
             `["dev"]`. uv resolves `include-group` references when it writes the lock, so the
             groups recorded here are already flat.
+        extras: names of extras (optional-dependencies) to add on top of the runtime
+            dependencies, e.g. `["ml"]`. Looked up on the root project's
+            `[package.optional-dependencies]` table. A bare string is accepted, matching
+            `dependency_groups`.
         project_root: directory holding `uv.lock`. Defaults to searching upward from the
             directory the flow was launched from.
         python: the Python version the flow will run on, used to resolve markers. Defaults to
@@ -358,9 +523,8 @@ def _get_packages_from_uv_lock(
         A map of package name -> locked version, ready to hand to `@pypi(packages=...)`.
 
     """
-    if isinstance(dependency_groups, str):
-        # a bare string would otherwise iterate character by character
-        dependency_groups = [dependency_groups]
+    extras = _as_name_list(extras)
+    dependency_groups = _as_name_list(dependency_groups)
 
     lock_path = _find_project_file("uv.lock", project_root)
     if lock_path is None:
@@ -380,45 +544,44 @@ def _get_packages_from_uv_lock(
 
     root, entries = _split_lock_packages(lock, lock_path)
 
-    dependencies = list(root.get("dependencies", []))
-    if dependency_groups:
-        declared = root.get("dev-dependencies", {})
-        for group in dependency_groups:
-            try:
-                dependencies.extend(declared[group])
-            except KeyError:
-                raise ValueError(
-                    f"dependency group {group!r} is not recorded in {lock_path}. "
-                    f"Groups present: {', '.join(sorted(declared)) or '(none)'}"
-                ) from None
+    pending = list(root.get("dependencies") or [])
+    _extend_from_lock_table(
+        pending, root.get("optional-dependencies") or {}, extras, kind="extra", lock_path=lock_path
+    )
+    _extend_from_lock_table(
+        pending,
+        root.get("dev-dependencies") or {},
+        dependency_groups,
+        kind="group",
+        lock_path=lock_path,
+    )
 
     environment = _marker_environment(python or _find_python_version(project_root), sys_platform)
 
     packages = {}
-    for dep in dependencies:
-        name = dep["name"]
+    seen_extras: set = set()
+    for extra in extras:
+        # already expanded from the root table above; recording them prevents a
+        # self-referential extra from enqueueing the same work again
+        seen_extras.add((root["name"], _normalize_extra(extra)))
+    index = 0
+    while index < len(pending):
+        dep = pending[index]
+        index += 1
         if not _dependency_applies(dep, environment):
             # gated to a platform or Python version this image is not being built for
             continue
-        locked = entries.get(name, [])
-        if not locked:
-            raise ValueError(f"{name!r} is a dependency of the root project but is missing from {lock_path}")
-        package = _select_locked_package(dep, locked)
-        if package is None:
-            # locked several times with nothing to tell the entries apart -- let @pypi resolve.
-            packages[name] = ""
-            continue
-        source = package.get("source", {})
-        if "registry" in source:
-            # metaflow prepends "==" to a bare version.
-            packages[name] = package["version"]
-        else:
-            packages[name] = _lock_source_to_direct_reference(name, source)
+        pinned = _pin_dependency(dep, entries, lock_path, root)
+        if pinned is not None:
+            name, spec = pinned
+            packages[name] = spec
+        _queue_requested_extras(dep, entries, root, pending, seen_extras)
     return packages
 
 
 def _get_pypi_kwargs(
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
     sys_platform: str = _DEFAULT_SYS_PLATFORM,
@@ -453,6 +616,8 @@ def _get_pypi_kwargs(
     Args:
         dependency_groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
             Excluded by default, since groups are optional by definition.
+        extras: extras (optional-dependencies) to add on top of the runtime dependencies, e.g.
+            `["ml"]`. Excluded by default, since extras are optional by definition.
         python: Python version to use instead of the one derived from the project, e.g.
             `"3.11"`. Reach for this when the flow has to run on a different interpreter than
             the repo develops against.
@@ -471,7 +636,11 @@ def _get_pypi_kwargs(
     return {
         "python": python,
         "packages": _get_packages_from_uv_lock(
-            dependency_groups=dependency_groups, project_root=project_root, python=python, sys_platform=sys_platform
+            dependency_groups=dependency_groups,
+            extras=extras,
+            project_root=project_root,
+            python=python,
+            sys_platform=sys_platform,
         ),
     }
 
@@ -542,7 +711,7 @@ def _format_pypi_environment(label: str, pypi_kwargs: dict) -> str:
 def _apply_uv_pypi(decorator, target, label, **kwargs):
     """Wrap a Metaflow pypi decorator so its environment comes from the project.
 
-    Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(dependency_groups=["dev"])`)
+    Supports both the bare (`@uv_pypi_base`) and called (`@uv_pypi_base(extras=["ml"])`)
     forms: in the bare form the decorated object arrives as `target`, in the called form
     `target` is `None` and the returned closure receives it instead.
 
@@ -559,7 +728,7 @@ def _apply_uv_pypi(decorator, target, label, **kwargs):
         decorator: the Metaflow decorator to delegate to, `pypi_base` or `pypi`
         target: the flow or step being decorated, or `None` in the called form
         label: the decorator's own name, used to say which one resolved the environment
-        **kwargs: `dependency_groups`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
+        **kwargs: `dependency_groups`, `extras`, `python` and `project_root`, forwarded to `_get_pypi_kwargs`
 
     """
 
@@ -577,6 +746,7 @@ def uv_pypi_base(
     flow=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
 ):
@@ -613,6 +783,7 @@ def uv_pypi_base(
     ```python
     @uv_pypi_base                       # equivalent to @pypi_base(**_get_pypi_kwargs())
     @uv_pypi_base(dependency_groups=["dev"])       # add a dependency group
+    @uv_pypi_base(extras=["ml"])        # add an extra
     @uv_pypi_base(python="3.11")        # override the derived interpreter
     ```
 
@@ -621,6 +792,9 @@ def uv_pypi_base(
             yourself.
         dependency_groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
             Excluded by default, since groups are optional by definition.
+        extras: extras (optional-dependencies) to add on top of the runtime dependencies, e.g.
+            `["ml"]`. Looked up on the root project's `[package.optional-dependencies]` table
+            in `uv.lock`. Excluded by default, since extras are optional by definition.
         python: Python version to use instead of the one derived from the project, e.g.
             `"3.11"`.
         project_root: directory holding the project files. Defaults to searching upward from
@@ -637,6 +811,7 @@ def uv_pypi_base(
         flow,
         "@uv_pypi_base",
         dependency_groups=dependency_groups,
+        extras=extras,
         python=python,
         project_root=project_root,
     )
@@ -646,6 +821,7 @@ def uv_pypi(
     step=None,
     *,
     dependency_groups: Optional[Union[str, list]] = None,
+    extras: Optional[Union[str, list]] = None,
     python: Optional[str] = None,
     project_root: Optional[Union[str, Path]] = None,
 ):
@@ -670,7 +846,7 @@ def uv_pypi(
         def start(self):
             self.next(self.train)
 
-        @uv_pypi(dependency_groups=["train"])
+        @uv_pypi(extras=["train"])
         @step
         def train(self):
             self.next(self.end)
@@ -685,6 +861,9 @@ def uv_pypi(
             this yourself.
         dependency_groups: dependency groups to add on top of the runtime dependencies, e.g. `["dev"]`.
             Excluded by default, since groups are optional by definition.
+        extras: extras (optional-dependencies) to add on top of the runtime dependencies, e.g.
+            `["train"]`. Looked up on the root project's `[package.optional-dependencies]` table
+            in `uv.lock`. Excluded by default, since extras are optional by definition.
         python: Python version to use instead of the one derived from the project, e.g.
             `"3.11"`.
         project_root: directory holding the project files. Defaults to searching upward from
@@ -697,5 +876,11 @@ def uv_pypi(
     from metaflow import pypi
 
     return _apply_uv_pypi(
-        pypi, step, "@uv_pypi", dependency_groups=dependency_groups, python=python, project_root=project_root
+        pypi,
+        step,
+        "@uv_pypi",
+        dependency_groups=dependency_groups,
+        extras=extras,
+        python=python,
+        project_root=project_root,
     )
