@@ -880,11 +880,22 @@ Measured on Argo, a plain step emitting ~192 KB/s to 28 MB:
 | < 4 MB | ~3-4s |
 | > 4 MB | median 19.6s, p90 34.6s, max 42.6s |
 
-The interval is not the binding constraint there. `subprocess.run` blocks, so
-once one upload takes longer than the sleep, cycles serialise and the
-effective cadence becomes the upload duration — at 28 MB that is ~15-17s, and
-it grows with the file. Asking more often cannot help; the bytes still have to
-go.
+The interval is not the binding constraint there, and the first version of
+this entry got the mechanism wrong. `subprocess.run` blocks, so cycles
+serialise — but the call also carried `timeout=15`, which is *shorter than the
+upload it was timing*. At 28 MB the upload measures ~16s, so every push was
+killed mid-flight, `_save_logs` returned False, the size watermark never
+advanced, and the next cycle began another doomed 15s attempt. The push did not
+degrade to the upload duration; on a large log it **never completed at all**,
+and the UI fell back entirely to Metaflow's own sidecar. The only trace was one
+warn-once line in the driver's stderr:
+
+    [remote_step] live log push unavailable (TimeoutExpired: ... timed out
+    after 15 seconds); the UI will lag by Metaflow's own upload cadence
+
+The timeout is now 180s — it exists so a genuinely wedged upload cannot pin the
+pusher thread, not as a cadence control. With that corrected, the cadence does
+become the upload duration, which is the bound described below.
 
 A previous attempt to manage this by backing the *interval* off with size
 (4 MB threshold, 30s cap) made it strictly worse: it added delay on top of an

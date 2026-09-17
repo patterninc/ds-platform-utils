@@ -115,6 +115,9 @@ MFLOG_FORCE_UPLOAD_INTERVAL_SEC = 3.0
 # mid-line), nothing else would break it out. Bounded at 30s, and only ever
 # reached on a log that looks quiet.
 MFLOG_IDLE_HEARTBEAT_SEC = 30.0
+# Ceiling on one save_logs call. Only a wedged upload should ever reach it --
+# see the note at the call site for why 15s was actively harmful.
+MFLOG_UPLOAD_TIMEOUT_SEC = 180.0
 
 
 class _MflogPusher:
@@ -205,7 +208,20 @@ class _MflogPusher:
                 [exe, "-m", "metaflow.mflog.save_logs"],
                 check=False,
                 capture_output=True,
-                timeout=15,
+                # Generous on purpose. This was 15s, which is shorter than the
+                # thing it was timing: save_logs re-reads and re-uploads the
+                # WHOLE capture file, and a 28 MB log measures ~16s. So on
+                # exactly the chatty steps where someone is watching, every push
+                # was killed mid-upload, _save_logs returned False, last_size
+                # never advanced, and the next cycle started another doomed 15s
+                # attempt. The push did not degrade -- it stopped working, and
+                # the UI silently fell back to Metaflow's own sidecar.
+                #
+                # The timeout exists only so a genuinely wedged upload cannot
+                # pin this thread forever; it is not a cadence control. The loop
+                # already self-limits because subprocess.run blocks, so a big
+                # file simply uploads as often as it can.
+                timeout=MFLOG_UPLOAD_TIMEOUT_SEC,
             )
             return True
         except (subprocess.SubprocessError, OSError) as exc:

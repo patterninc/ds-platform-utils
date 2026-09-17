@@ -254,3 +254,41 @@ def test_a_disabled_pusher_says_so(monkeypatch, capsys):
 
     assert pusher._thread is None, "no thread when there is nothing to upload"
     assert "live log push disabled" in capsys.readouterr().err
+
+
+def test_the_upload_timeout_exceeds_a_realistic_upload(monkeypatch):
+    """The timeout must not be shorter than the thing it times.
+
+    It was 15s. save_logs re-reads and re-uploads the whole capture file, and a
+    28 MB log measures ~16s -- so on exactly the chatty steps someone watches,
+    every push was killed mid-upload, returned False, and the next cycle began
+    another doomed attempt. The push did not slow down, it stopped working, and
+    the UI fell back to Metaflow's own sidecar with only a single warning line
+    to say so.
+    """
+    from remote_step.plugins.remote_step_decorator import MFLOG_UPLOAD_TIMEOUT_SEC
+
+    assert MFLOG_UPLOAD_TIMEOUT_SEC >= 60, "must clear a multi-MB whole-file upload"
+
+
+def test_the_upload_timeout_is_what_gets_passed(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        rsd.subprocess, "run", lambda cmd, **kw: seen.update(kw) or _Completed()
+    )
+
+    _MflogPusher()._save_logs()
+
+    assert seen["timeout"] == rsd.MFLOG_UPLOAD_TIMEOUT_SEC
+
+
+def test_a_timed_out_upload_is_reported_and_does_not_advance_the_watermark(monkeypatch, capsys):
+    """What the operator actually saw in a fanout task's stderr."""
+    def slow(cmd, **kw):
+        raise rsd.subprocess.TimeoutExpired(cmd, kw.get("timeout", 0))
+
+    monkeypatch.setattr(rsd.subprocess, "run", slow)
+    pusher = _MflogPusher()
+
+    assert pusher._save_logs() is False, "a timeout must not count as a successful upload"
+    assert "live log push unavailable" in capsys.readouterr().err
