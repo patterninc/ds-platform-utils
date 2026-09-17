@@ -14,7 +14,7 @@ from ds_platform_utils.metaflow.pypi_packages import _get_packages_from_uv_lock,
 PYPROJECT = textwrap.dedent("""
     [project]
     name = "my-flows"
-    dependencies = ["pandas", "polars", "ds-platform-utils"]
+    dependencies = ["pandas", "polars", "ds-platform-utils", "snowflake-connector-python[pandas]"]
 """)
 
 UV_LOCK = textwrap.dedent("""
@@ -32,10 +32,15 @@ UV_LOCK = textwrap.dedent("""
         { name = "numpy", version = "1.26.4", marker = "python_full_version < '3.11'" },
         { name = "numpy", version = "2.3.0", marker = "python_full_version >= '3.11'" },
         { name = "pyobjc-core", marker = "sys_platform == 'darwin'" },
+        # extras live on the dependency entry, not on the package it points at
+        { name = "snowflake-connector-python", extra = ["pandas"] },
     ]
 
     [package.dev-dependencies]
-    dev = [{ name = "pytest" }]
+    dev = [
+        { name = "pytest" },
+        { name = "snowflake-connector-python", extra = ["secure-local-storage"] },
+    ]
 
     [[package]]
     name = "pandas"
@@ -80,6 +85,15 @@ UV_LOCK = textwrap.dedent("""
     name = "pyobjc-core"
     version = "10.3.1"
     source = { registry = "https://pypi.org/simple" }
+
+    [[package]]
+    name = "snowflake-connector-python"
+    version = "3.12.0"
+    source = { registry = "https://pypi.org/simple" }
+
+    [package.optional-dependencies]
+    pandas = [{ name = "pandas" }]
+    secure-local-storage = [{ name = "keyring" }]
 """)
 
 
@@ -124,6 +138,21 @@ def test_uv_lock_leaves_indistinguishable_multi_version_dep_unpinned(project_roo
     # polars is locked at two versions but its root entry carries no marker or version, so
     # there is nothing to resolve against -- hand it to @pypi rather than guess
     assert packages["polars"] == ""
+
+
+def test_uv_lock_keeps_the_extras_a_dep_was_declared_with(project_root: Path):
+    packages = _get_packages_from_uv_lock(project_root=project_root)
+    # dropping the extra would install the bare connector and leave the flow importing a
+    # pandas integration that was never pulled in
+    assert "snowflake-connector-python" not in packages
+    assert packages["snowflake-connector-python[pandas]"] == "3.12.0"
+
+
+def test_uv_lock_merges_extras_requested_across_entries(project_root: Path):
+    # the runtime dep asks for [pandas] and the dev group for [secure-local-storage]; pip gets
+    # one requirement, so both have to survive rather than the later one winning
+    packages = _get_packages_from_uv_lock(dependency_groups=["dev"], project_root=project_root)
+    assert packages["snowflake-connector-python[pandas,secure-local-storage]"] == "3.12.0"
 
 
 def test_uv_lock_excludes_groups_unless_asked(project_root: Path):
@@ -278,7 +307,7 @@ def test_uv_pypi_base_prints_the_resolved_environment(
     out = capsys.readouterr().out
 
     header, *rows = out.rstrip("\n").splitlines()
-    assert header == "@uv_pypi_base on MyFlow: python 3.11, 4 package(s) from uv.lock"
+    assert header == "@uv_pypi_base on MyFlow: python 3.11, 5 package(s) from uv.lock"
 
     names = [row.split()[0] for row in rows]
     assert names == sorted(names), "listed by name so two runs compare by eye"
@@ -290,6 +319,8 @@ def test_uv_pypi_base_prints_the_resolved_environment(
     # a deliberate "let @pypi resolve it" has to read as such rather than as a blank column
     assert versions["polars"].strip() == "(unpinned)"
     assert versions["ds-platform-utils"].strip().startswith("@ git+https://")
+    # extras belong in the reported name, since that is the requirement pip will be given
+    assert versions["snowflake-connector-python[pandas]"].strip() == "3.12.0"
 
     # every version starts at the same column, padded to the longest name
     assert len({len(row) - len(row.split(maxsplit=1)[1]) for row in rows}) == 1
