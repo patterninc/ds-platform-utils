@@ -1802,11 +1802,7 @@ class RemoteStepDecorator(StepDecorator):
                     elif node_type == "foreach" and len(out_funcs) == 1:
                         target = out_funcs[0]
                         if hasattr(self_flow, target):
-                            kwargs = {}
-                            if num_parallel is not None:
-                                kwargs["num_parallel"] = num_parallel
-                            elif foreach_param is not None:
-                                kwargs["foreach"] = foreach_param
+                            kwargs = _foreach_next_kwargs(num_parallel, foreach_param)
                             self_flow.next(getattr(self_flow, target), **kwargs)
                     else:
                         next_refs = [getattr(self_flow, f) for f in out_funcs if hasattr(self_flow, f)]
@@ -1818,6 +1814,24 @@ class RemoteStepDecorator(StepDecorator):
         driver.__name__ = step_name
         driver.__wrapped__ = step_func
         return driver
+
+
+def _foreach_next_kwargs(num_parallel: int | None, foreach_param: str | None) -> dict:
+    """The kwargs that replay a foreach transition through `self.next()`.
+
+    Keyed off `num_parallel`'s *value*, not its presence: `DAGNode.num_parallel`
+    is 0 on every node and only rises above it for a `num_parallel=` foreach, so
+    an `is not None` test sent an ordinary `foreach=` node down the parallel
+    branch and dropped the foreach kwarg. `next()` then skipped its foreach
+    block entirely, left `_foreach_num_splits` at None, and Argo's
+    `task_finished` raised `TypeError: 'NoneType' ...` on `range(None)` — one
+    step after the cause, naming neither the step nor @remote_step.
+    """
+    if num_parallel:
+        return {"num_parallel": num_parallel}
+    if foreach_param is not None:
+        return {"foreach": foreach_param}
+    return {}
 
 
 def _pickleable(v) -> bool:
