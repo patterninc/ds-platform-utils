@@ -128,9 +128,18 @@ variable "teams" {
       gpu_memory_borrow = "0"
     }
     operations = {
-      cpu_quota         = "128"
+      # 5x the original 128 / 512Gi. Note these are PER FLAVOR, so this grants
+      # 640 x86 cores AND 640 arm64 -- 1280 effective, against a NodePool
+      # ceiling of 2000 per pool. It also makes operations the largest team by
+      # 2.5x; forecasting, content and market-intelligence sit at 256.
+      #
+      # cpu_borrow stays 512. Kueue's borrowingLimit is headroom ABOVE nominal,
+      # so a borrow below nominal is valid, just proportionally much less
+      # generous than it was: 4x nominal before, 0.8x now. Raise it if the
+      # intent was to keep the same borrowing ratio.
+      cpu_quota         = "640"
       cpu_borrow        = "512"
-      memory_quota      = "512Gi"
+      memory_quota      = "2560Gi"
       memory_borrow     = "2048Gi"
       gpu_quota         = "0"
       gpu_borrow        = "4"
